@@ -1,0 +1,212 @@
+syntax = "proto3";
+
+package prism.router.v1;
+
+option go_package = "github.com/aspect-build/prism-gateway/gen/prism/router/v1;routerv1";
+
+// ──────────────────────────────────────────────
+// Router Service
+// ──────────────────────────────────────────────
+
+// RouterService provides LLM routing decisions.
+// It can be consumed by any API gateway (Higress, Envoy, APISIX, custom)
+// or embedded via FFI for maximum performance.
+service RouterService {
+  // Route performs a single routing decision.
+  rpc Route(RouteRequest) returns (RouteResponse);
+
+  // RouteBatch performs multiple routing decisions in a single RPC.
+  rpc RouteBatch(RouteBatchRequest) returns (RouteBatchResponse);
+
+  // ReportOutcome feeds back the result of a routed request
+  // for real-time performance tracking and quality estimation.
+  rpc ReportOutcome(OutcomeReport) returns (ReportResponse);
+
+  // HealthCheck returns the router's health status.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// ──────────────────────────────────────────────
+// Route Request
+// ──────────────────────────────────────────────
+
+message RouteRequest {
+  // Chat messages for complexity / task-type analysis.
+  repeated ChatMessage messages = 1;
+
+  // Routing strategy override. Values: "balanced", "cost_first",
+  // "slo_first", "quality_first", "pinned".
+  // If unset, the server-side default is used.
+  optional string strategy = 2;
+
+  // Model hint. "auto" triggers intelligent routing;
+  // a concrete model id activates Pinned mode.
+  optional string model = 3;
+
+  // Restrict candidates to these model pools.
+  repeated string pool_ids = 4;
+
+  // Exclude specific models from candidates.
+  repeated string exclude_models = 5;
+
+  // Exclude specific providers from candidates.
+  repeated string exclude_providers = 6;
+
+  // Affinity key (e.g. session id) for account-level cache affinity.
+  optional string affinity_key = 7;
+
+  // Tenant id for cost-isolation routing.
+  optional string tenant_id = 8;
+
+  // Hard capability constraints — models that don't satisfy are filtered.
+  optional CapabilityRequirements capabilities = 9;
+
+  // Strategy parameter overrides (weights, SLO thresholds, budgets).
+  optional StrategyParams strategy_params = 10;
+
+  // Opaque metadata passed through to the response.
+  map<string, string> metadata = 15;
+}
+
+message ChatMessage {
+  string role = 1;
+  string content = 2;
+}
+
+message CapabilityRequirements {
+  optional uint32 min_context_window = 1;
+  optional bool vision = 2;
+  optional bool function_calling = 3;
+  optional bool json_mode = 4;
+  optional bool reasoning = 5;
+}
+
+message StrategyParams {
+  // Balanced mode weights (must sum to ~1.0).
+  optional float cost_weight = 1;
+  optional float quality_weight = 2;
+  optional float latency_weight = 3;
+
+  // SLO constraints.
+  optional uint32 max_latency_ms = 4;
+  optional uint32 max_ttft_ms = 5;
+  optional float min_quality_score = 6;
+
+  // Cost constraint.
+  optional double budget_per_request = 7;
+}
+
+// ──────────────────────────────────────────────
+// Route Response
+// ──────────────────────────────────────────────
+
+message RouteResponse {
+  // Selected identifiers.
+  string model = 1;
+  string provider = 2;
+  string variant = 3;
+  string account = 4;
+
+  // Connection details for the gateway to forward the request.
+  Upstream upstream = 5;
+
+  // Ordered fallback chain (try next on failure).
+  repeated Upstream fallback_chain = 6;
+
+  // Observability.
+  RoutingReason reason = 7;
+  float score = 8;
+  int64 decision_time_us = 9;
+
+  // Extra metadata to pass back as response headers.
+  map<string, string> response_metadata = 10;
+}
+
+// Upstream carries everything a gateway needs to forward a request.
+message Upstream {
+  // Base URL of the provider endpoint.
+  string base_url = 1;
+
+  // The model name to send to the provider (may differ from the
+  // logical model id, e.g. deployment-specific names on Azure).
+  string model_name = 2;
+
+  // Headers to attach (Authorization, x-api-key, etc.).
+  map<string, string> headers = 3;
+
+  // API path (default: "/v1/chat/completions").
+  string path = 4;
+
+  // Request timeout in milliseconds.
+  int32 timeout_ms = 5;
+
+  // Variant id — used by the gateway when calling ReportOutcome.
+  string variant_id = 6;
+}
+
+message RoutingReason {
+  string l1_model = 1;
+  string l2_provider = 2;
+  string l3_account = 3;
+  string l4_variant = 4;
+  repeated string constraints_applied = 5;
+  uint32 candidates_filtered = 6;
+}
+
+// ──────────────────────────────────────────────
+// Outcome Report (feedback loop)
+// ──────────────────────────────────────────────
+
+message OutcomeReport {
+  // Trace / request id.
+  string request_id = 1;
+
+  // The variant that actually served the request.
+  string variant_id = 2;
+
+  // HTTP status code returned by the provider.
+  int32 status_code = 3;
+
+  // End-to-end latency (ms).
+  int64 latency_ms = 4;
+
+  // Time to first token (ms); 0 if non-streaming.
+  int64 ttft_ms = 5;
+
+  // Token counts.
+  int32 input_tokens = 6;
+  int32 output_tokens = 7;
+
+  // Error message (if any).
+  optional string error = 8;
+
+  // Whether a fallback was used.
+  bool used_fallback = 9;
+
+  // If fallback was used, which variant served the request.
+  optional string fallback_variant_id = 10;
+}
+
+message ReportResponse {}
+
+// ──────────────────────────────────────────────
+// Batch & Health
+// ──────────────────────────────────────────────
+
+message RouteBatchRequest {
+  repeated RouteRequest requests = 1;
+}
+
+message RouteBatchResponse {
+  repeated RouteResponse responses = 1;
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  // "healthy", "degraded", "down"
+  string status = 1;
+  int64 uptime_seconds = 2;
+  uint32 registered_models = 3;
+  uint32 active_variants = 4;
+}

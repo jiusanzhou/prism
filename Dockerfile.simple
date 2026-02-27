@@ -1,0 +1,23 @@
+# Dockerfile.simple — non-FFI build (StaticRouter, no Rust dependency)
+# Useful for quick testing and development.
+
+FROM golang:1.22 AS builder
+WORKDIR /build
+
+COPY prism-gateway/ prism-gateway/
+WORKDIR /build/prism-gateway
+
+# Build without the 'ffi' tag → uses StaticRouter
+RUN CGO_ENABLED=0 go build -o /build/bin/prism ./cmd/prism/
+
+FROM debian:bookworm-slim
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/bin/prism /usr/local/bin/prism
+COPY configs/prism.example.yaml /etc/prism/prism.yaml
+
+EXPOSE 8080
+ENTRYPOINT ["prism"]
+CMD ["--config", "/etc/prism/prism.yaml"]

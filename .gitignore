@@ -1,0 +1,38 @@
+# Build artifacts
+/target/
+/bin/
+/prism-gateway/bin/
+/prism-router/bin/
+/prism-admin/bin/
+
+# Rust
+*.so
+*.dylib
+*.dll
+*.a
+
+# Go
+*.exe
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config with secrets
+configs/prism.yaml
+
+# Docker
+*.tar
+
+# Misc
+*.log
+tmp/
