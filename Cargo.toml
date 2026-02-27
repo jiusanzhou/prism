@@ -1,3 +1,4 @@
 [workspace]
 members = ["prism-core"]
+exclude = ["prism-wasm-analyzer"]
 resolver = "2"

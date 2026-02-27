@@ -1,9 +1,15 @@
-package discovery
+// Package catalog provides a built-in database of well-known LLM model metadata.
+//
+// This is a hardcoded snapshot of model metadata (pricing, capabilities, quality
+// tier, context window) for well-known models from OpenAI, Anthropic, DeepSeek,
+// and Google. It provides defaults when the user doesn't specify full model details.
+//
+// The catalog is intentionally Go-only. Rust core stays pure (routing decisions
+// only). Catalog data reaches Rust via config.ToRouterConfigJSON() at init time.
+package catalog
 
-// CatalogData provides a Go-side built-in model catalog that mirrors the Rust catalog.
-// This is used by auto-config and discovery to enrich discovered models with
-// pricing, capabilities, and quality tier information without requiring FFI calls.
-type CatalogData struct {
+// ModelCatalog is the built-in model metadata database.
+type ModelCatalog struct {
 	models map[string]*CatalogEntry
 	// alias → canonical model ID
 	aliases map[string]string
@@ -23,13 +29,13 @@ type CatalogEntry struct {
 
 // CatalogCapabilities describes what a model can do.
 type CatalogCapabilities struct {
-	MaxContextWindow      int
-	MaxOutputTokens       int
-	SupportsStreaming      bool
+	MaxContextWindow        int
+	MaxOutputTokens         int
+	SupportsStreaming        bool
 	SupportsFunctionCalling bool
-	SupportsVision        bool
-	SupportsJSONMode      bool
-	SupportsReasoning     bool
+	SupportsVision          bool
+	SupportsJSONMode        bool
+	SupportsReasoning       bool
 }
 
 // CatalogPricing holds pricing per 1M tokens.
@@ -38,9 +44,9 @@ type CatalogPricing struct {
 	OutputPer1MTokens float64
 }
 
-// DefaultCatalog creates a catalog populated with all known models.
-func DefaultCatalog() *CatalogData {
-	c := &CatalogData{
+// New creates a catalog populated with all known models.
+func New() *ModelCatalog {
+	c := &ModelCatalog{
 		models:  make(map[string]*CatalogEntry),
 		aliases: make(map[string]string),
 	}
@@ -52,7 +58,7 @@ func DefaultCatalog() *CatalogData {
 }
 
 // Lookup finds a model by ID or alias.
-func (c *CatalogData) Lookup(modelID string) *CatalogEntry {
+func (c *ModelCatalog) Lookup(modelID string) *CatalogEntry {
 	if entry, ok := c.models[modelID]; ok {
 		return entry
 	}
@@ -63,7 +69,7 @@ func (c *CatalogData) Lookup(modelID string) *CatalogEntry {
 }
 
 // ModelsForProvider returns all models for a given provider.
-func (c *CatalogData) ModelsForProvider(provider string) []*CatalogEntry {
+func (c *ModelCatalog) ModelsForProvider(provider string) []*CatalogEntry {
 	var result []*CatalogEntry
 	for _, entry := range c.models {
 		if entry.Provider == provider {
@@ -74,18 +80,22 @@ func (c *CatalogData) ModelsForProvider(provider string) []*CatalogEntry {
 }
 
 // AllModels returns all catalog entries.
-func (c *CatalogData) AllModels() map[string]*CatalogEntry {
+func (c *ModelCatalog) AllModels() map[string]*CatalogEntry {
 	return c.models
 }
 
-func (c *CatalogData) register(entry *CatalogEntry) {
+func (c *ModelCatalog) register(entry *CatalogEntry) {
 	c.models[entry.ID] = entry
 	for _, alias := range entry.Aliases {
 		c.aliases[alias] = entry.ID
 	}
 }
 
-func (c *CatalogData) registerOpenAI() {
+// ──────────────────────────────────────────────
+// OpenAI models
+// ──────────────────────────────────────────────
+
+func (c *ModelCatalog) registerOpenAI() {
 	c.register(&CatalogEntry{
 		ID: "gpt-4o", DisplayName: "GPT-4o", Provider: "openai", QualityTier: "S",
 		Capabilities: CatalogCapabilities{
@@ -93,9 +103,8 @@ func (c *CatalogData) registerOpenAI() {
 			SupportsStreaming: true, SupportsFunctionCalling: true,
 			SupportsVision: true, SupportsJSONMode: true, SupportsReasoning: true,
 		},
-		Pricing:     CatalogPricing{InputPer1MTokens: 2.50, OutputPer1MTokens: 10.00},
-		Specialties: nil,
-		Aliases:     []string{"gpt-4o-2024-11-20", "gpt-4o-2024-08-06", "gpt-4o-2024-05-13"},
+		Pricing: CatalogPricing{InputPer1MTokens: 2.50, OutputPer1MTokens: 10.00},
+		Aliases: []string{"gpt-4o-2024-11-20", "gpt-4o-2024-08-06", "gpt-4o-2024-05-13"},
 	})
 	c.register(&CatalogEntry{
 		ID: "gpt-4o-mini", DisplayName: "GPT-4o Mini", Provider: "openai", QualityTier: "A",
@@ -162,7 +171,11 @@ func (c *CatalogData) registerOpenAI() {
 	})
 }
 
-func (c *CatalogData) registerAnthropic() {
+// ──────────────────────────────────────────────
+// Anthropic models
+// ──────────────────────────────────────────────
+
+func (c *ModelCatalog) registerAnthropic() {
 	c.register(&CatalogEntry{
 		ID: "claude-sonnet-4-20250514", DisplayName: "Claude Sonnet 4", Provider: "anthropic", QualityTier: "S",
 		Capabilities: CatalogCapabilities{
@@ -208,7 +221,11 @@ func (c *CatalogData) registerAnthropic() {
 	})
 }
 
-func (c *CatalogData) registerDeepSeek() {
+// ──────────────────────────────────────────────
+// DeepSeek models
+// ──────────────────────────────────────────────
+
+func (c *ModelCatalog) registerDeepSeek() {
 	c.register(&CatalogEntry{
 		ID: "deepseek-chat", DisplayName: "DeepSeek Chat (V3)", Provider: "deepseek", QualityTier: "A",
 		Capabilities: CatalogCapabilities{
@@ -233,7 +250,11 @@ func (c *CatalogData) registerDeepSeek() {
 	})
 }
 
-func (c *CatalogData) registerGoogle() {
+// ──────────────────────────────────────────────
+// Google models
+// ──────────────────────────────────────────────
+
+func (c *ModelCatalog) registerGoogle() {
 	c.register(&CatalogEntry{
 		ID: "gemini-2.0-flash", DisplayName: "Gemini 2.0 Flash", Provider: "google", QualityTier: "A",
 		Capabilities: CatalogCapabilities{

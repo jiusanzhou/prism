@@ -3,11 +3,12 @@ package discovery
 import (
 	"testing"
 
+	"github.com/aspect-build/prism-gateway/internal/catalog"
 	"github.com/aspect-build/prism-gateway/internal/config"
 )
 
 func TestCatalogLookup(t *testing.T) {
-	catalog := DefaultCatalog()
+	cat := catalog.New()
 
 	tests := []struct {
 		name     string
@@ -28,7 +29,7 @@ func TestCatalogLookup(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			entry := catalog.Lookup(tt.modelID)
+			entry := cat.Lookup(tt.modelID)
 			if tt.wantNil {
 				if entry != nil {
 					t.Errorf("expected nil for %q, got %v", tt.modelID, entry)
@@ -49,7 +50,7 @@ func TestCatalogLookup(t *testing.T) {
 }
 
 func TestCatalogModelsForProvider(t *testing.T) {
-	catalog := DefaultCatalog()
+	cat := catalog.New()
 
 	tests := []struct {
 		provider string
@@ -63,7 +64,7 @@ func TestCatalogModelsForProvider(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.provider, func(t *testing.T) {
-			models := catalog.ModelsForProvider(tt.provider)
+			models := cat.ModelsForProvider(tt.provider)
 			if len(models) < tt.minCount {
 				t.Errorf("got %d models for %q, want at least %d", len(models), tt.provider, tt.minCount)
 			}

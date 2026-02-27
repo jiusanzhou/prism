@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/aspect-build/prism-gateway/internal/catalog"
 	"github.com/aspect-build/prism-gateway/internal/config"
 )
 
@@ -24,7 +25,7 @@ func AutoConfig(
 		return nil, fmt.Errorf("auto_config: no providers configured")
 	}
 
-	catalog := DefaultCatalog()
+	cat := catalog.New()
 	cfg := config.DefaultConfig()
 	cfg.Providers = providers
 
@@ -63,7 +64,7 @@ func AutoConfig(
 			if catalogProvider == "openai-compatible" {
 				catalogProvider = "openai"
 			}
-			for _, entry := range catalog.ModelsForProvider(catalogProvider) {
+			for _, entry := range cat.ModelsForProvider(catalogProvider) {
 				modelIDs = append(modelIDs, entry.ID)
 			}
 		}
@@ -73,7 +74,7 @@ func AutoConfig(
 
 		for _, modelID := range modelIDs {
 			// Look up in catalog for enrichment
-			entry := catalog.Lookup(modelID)
+			entry := cat.Lookup(modelID)
 
 			if entry != nil {
 				// Use the canonical ID
@@ -200,14 +201,14 @@ func EnrichConfig(cfg *config.Config, discovered map[string]*ProviderInfo) (*con
 // FilterCatalogModels returns only catalog models that match a specific provider type,
 // useful for filtering discovered models against the catalog.
 func FilterCatalogModels(providerType string) []string {
-	catalog := DefaultCatalog()
+	cat := catalog.New()
 	catalogProvider := providerType
 	if catalogProvider == "openai-compatible" {
 		catalogProvider = "openai"
 	}
 
 	var result []string
-	for _, entry := range catalog.ModelsForProvider(catalogProvider) {
+	for _, entry := range cat.ModelsForProvider(catalogProvider) {
 		result = append(result, entry.ID)
 	}
 	sort.Strings(result)
@@ -244,8 +245,8 @@ func IsChatModel(modelID string) bool {
 	}
 
 	// If in catalog, it's a chat model
-	catalog := DefaultCatalog()
-	if catalog.Lookup(modelID) != nil {
+	cat := catalog.New()
+	if cat.Lookup(modelID) != nil {
 		return true
 	}
 

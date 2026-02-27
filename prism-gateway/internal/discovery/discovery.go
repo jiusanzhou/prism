@@ -1,7 +1,7 @@
 // Package discovery provides auto-discovery of provider models and capabilities.
 //
 // It queries provider APIs (like OpenAI's /v1/models) to discover available models,
-// then cross-references with a built-in catalog to enrich results with pricing,
+// then cross-references with the built-in catalog to enrich results with pricing,
 // capabilities, and quality tier information.
 package discovery
 
@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/aspect-build/prism-gateway/internal/catalog"
 )
 
 // ProviderDiscovery auto-discovers models and capabilities from provider APIs.
@@ -22,7 +24,7 @@ type ProviderDiscovery struct {
 	mu        sync.RWMutex
 	providers map[string]*ProviderInfo
 	client    *http.Client
-	catalog   *CatalogData
+	catalog   *catalog.ModelCatalog
 }
 
 // ProviderInfo holds information about a single provider including discovered data.
@@ -63,7 +65,7 @@ func NewProviderDiscovery() *ProviderDiscovery {
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 		},
-		catalog: DefaultCatalog(),
+		catalog: catalog.New(),
 	}
 }
 
