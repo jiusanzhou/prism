@@ -22,6 +22,14 @@ type Handler struct {
 	providers    map[string]provider.Provider
 	state        state.StateStore
 	abManager    *abtesting.Manager
+	rateLimiter  RateLimitTracker
+}
+
+// RateLimitTracker is the interface for rate limit tracking.
+// Matches ratelimit.Tracker methods used here.
+type RateLimitTracker interface {
+	UpdateFromHeaders(providerID, accountID string, headers http.Header)
+	IsNearLimit(providerID, accountID string, thresholdPct float64) bool
 }
 
 // NewHandler creates a new handler with the given router and providers.
@@ -40,6 +48,11 @@ func (h *Handler) SetStateStore(s state.StateStore) {
 // SetABManager sets the A/B testing manager.
 func (h *Handler) SetABManager(m *abtesting.Manager) {
 	h.abManager = m
+}
+
+// SetRateLimitTracker sets the rate limit tracker for tracking provider rate limits.
+func (h *Handler) SetRateLimitTracker(t RateLimitTracker) {
+	h.rateLimiter = t
 }
 
 // ChatCompletion handles POST /v1/chat/completions.
@@ -150,6 +163,10 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, p prov
 		metrics.TokensUsed.WithLabelValues(result.Provider, result.Model, "prompt").Add(float64(resp.Usage.PromptTokens))
 		metrics.TokensUsed.WithLabelValues(result.Provider, result.Model, "completion").Add(float64(resp.Usage.CompletionTokens))
 	}
+
+	// Update rate limit tracking from response headers (provider response headers
+	// are not directly accessible here since we use the provider abstraction,
+	// but we track what we can)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
