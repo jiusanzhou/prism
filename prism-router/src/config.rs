@@ -3,6 +3,11 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use prism_core::discovery::static_discovery::{
+    StaticDiscovery, StaticDiscoveryConfig, StaticModelConfig, StaticPoolConfig,
+    StaticProviderConfig, StaticVariantConfig,
+};
+use prism_core::discovery::Discovery;
 use prism_core::registry::{InMemoryRegistry, ModelRegistryTrait};
 use prism_core::types::*;
 
@@ -187,107 +192,95 @@ fn expand_env_vars(input: &str) -> String {
 
 /// Build an `InMemoryRegistry` from a parsed configuration.
 pub fn build_registry(config: &PrismConfig) -> InMemoryRegistry {
+    let static_config = to_static_discovery_config(config);
+    let discovery = StaticDiscovery::new(static_config);
+    let result = discovery
+        .discover()
+        .expect("static discovery should never fail");
+
     let mut registry = InMemoryRegistry::new();
+    registry.apply_discovery(&result);
+    registry
+}
 
-    // Register providers — each provider also gets a default endpoint and account
-    for (id, pc) in &config.providers {
-        let auth = match &pc.api_key {
-            Some(key) => AuthConfig::ApiKey {
-                key: format!("Bearer {}", key),
-                header: "Authorization".to_string(),
-            },
-            None => AuthConfig::default(),
-        };
+/// Build an `InMemoryRegistry` from config plus additional discovery sources.
+///
+/// The static config is always loaded first; then each additional discovery
+/// source is applied in order (later sources can overwrite earlier ones).
+pub fn build_registry_with_discoveries(
+    config: &PrismConfig,
+    extra_discoveries: &[Box<dyn Discovery>],
+) -> InMemoryRegistry {
+    let mut registry = build_registry(config);
 
-        let provider = Provider {
-            id: id.clone(),
-            name: pc.provider_type.clone().unwrap_or_else(|| id.clone()),
-            auth: auth.clone(),
-            base_url: pc.base_url.clone(),
-            rate_limit: None,
-            status: HealthStatus::Healthy,
-            metadata: HashMap::new(),
-            protocols: pc.protocols.clone(),
-        };
-        registry.add_provider(provider);
-
-        // Create a default endpoint for this provider
-        let endpoint_id = format!("{}-ep", id);
-        let endpoint = Endpoint {
-            id: endpoint_id.clone(),
-            provider_id: id.clone(),
-            base_url: Some(pc.base_url.clone()),
-            region: None,
-            auth_override: None,
-            rate_limit: None,
-            priority: 0,
-            status: HealthStatus::Healthy,
-        };
-        registry.add_endpoint(endpoint);
-
-        // Create a default account for this endpoint
-        let account_id = format!("{}-acct", id);
-        let account = Account {
-            id: account_id,
-            endpoint_id,
-            auth,
-            project_id: None,
-            rate_limit: None,
-            billing_tag: None,
-            weight: 1.0,
-            status: HealthStatus::Healthy,
-            metadata: HashMap::new(),
-        };
-        registry.add_account(account);
+    for discovery in extra_discoveries {
+        if let Ok(result) = discovery.discover() {
+            registry.apply_discovery(&result);
+        }
     }
 
-    // Register models
-    for mc in &config.models {
-        let model = Model {
+    registry
+}
+
+/// Convert a `PrismConfig` into a `StaticDiscoveryConfig`.
+fn to_static_discovery_config(config: &PrismConfig) -> StaticDiscoveryConfig {
+    let providers = config
+        .providers
+        .iter()
+        .map(|(id, pc)| {
+            (
+                id.clone(),
+                StaticProviderConfig {
+                    provider_type: pc.provider_type.clone(),
+                    api_key: pc.api_key.clone(),
+                    base_url: pc.base_url.clone(),
+                    protocols: pc.protocols.clone(),
+                },
+            )
+        })
+        .collect();
+
+    let models = config
+        .models
+        .iter()
+        .map(|mc| StaticModelConfig {
             id: mc.id.clone(),
             display_name: mc.display_name.clone(),
             quality_tier: mc.quality_tier,
             capabilities: mc.capabilities.clone(),
             pricing: mc.pricing.clone(),
             specialties: mc.specialties.clone(),
-            limits: None,
-            status: ModelStatus::Available,
-        };
-        registry.add_model(model);
-    }
+        })
+        .collect();
 
-    // Register variants
-    for vc in &config.variants {
-        let endpoint_id = format!("{}-ep", vc.provider_id);
-        let account_id = format!("{}-acct", vc.provider_id);
-
-        let variant = ModelVariant {
+    let variants = config
+        .variants
+        .iter()
+        .map(|vc| StaticVariantConfig {
             id: vc.id.clone(),
             model_id: vc.model_id.clone(),
-            endpoint_id,
-            account_id: Some(account_id),
-            deployment_name: None,
-            weight: vc.weight.unwrap_or(1.0),
-            performance: ModelPerformance::default(),
-            pricing_override: None,
-            status: VariantStatus::Active,
-        };
-        registry.add_variant(variant);
-    }
+            provider_id: vc.provider_id.clone(),
+            weight: vc.weight,
+        })
+        .collect();
 
-    // Register pools
-    for pc in &config.pools {
-        let pool = ModelPool {
+    let pools = config
+        .pools
+        .iter()
+        .map(|pc| StaticPoolConfig {
             id: pc.id.clone(),
             name: pc.name.clone(),
             variants: pc.variants.clone(),
-            selection_mode: pc.selection_mode.clone().unwrap_or_default(),
-            description: None,
-        };
-        registry.add_pool(pool);
-    }
+            selection_mode: pc.selection_mode.clone(),
+        })
+        .collect();
 
-    registry
+    StaticDiscoveryConfig {
+        providers,
+        models,
+        variants,
+        pools,
+    }
 }
 
 #[cfg(test)]

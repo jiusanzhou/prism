@@ -2,6 +2,7 @@ pub mod types;
 pub mod analyzer;
 pub mod strategy;
 pub mod data;
+pub mod discovery;
 pub mod registry;
 pub mod selector;
 pub mod plugin;

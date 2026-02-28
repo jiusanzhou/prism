@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::data::{DataLayer, MetricKind, MetricValue, PerformanceDataSource};
+use crate::discovery::{Discovery, DiscoveryResult};
 use crate::types::*;
 
 /// Trait for managing all scheduling objects and their runtime state.
@@ -146,6 +147,59 @@ impl InMemoryRegistry {
 
     pub fn add_pool(&mut self, p: ModelPool) {
         self.pools.insert(p.id.clone(), p);
+    }
+
+    /// Apply a [`DiscoveryResult`] to this registry, merging all objects.
+    ///
+    /// Objects with the same id are overwritten (last-write wins).
+    pub fn apply_discovery(&mut self, result: &DiscoveryResult) {
+        for p in &result.providers {
+            self.providers.insert(p.id.clone(), p.clone());
+        }
+        for e in &result.endpoints {
+            self.endpoints.insert(e.id.clone(), e.clone());
+        }
+        for a in &result.accounts {
+            self.accounts.insert(a.id.clone(), a.clone());
+        }
+        for m in &result.models {
+            self.models.insert(m.id.clone(), m.clone());
+        }
+        for v in &result.variants {
+            self.variants.insert(v.id.clone(), v.clone());
+        }
+        for p in &result.pools {
+            self.pools.insert(p.id.clone(), p.clone());
+        }
+    }
+
+    /// Refresh the registry from multiple discovery sources.
+    ///
+    /// Clears all existing data and re-populates from the given discoveries.
+    /// Discovery errors are logged (via the returned error list) but do not
+    /// prevent other sources from being applied.
+    pub fn refresh_from_discoveries(
+        &mut self,
+        discoveries: &[Box<dyn Discovery>],
+    ) -> Vec<(String, crate::discovery::DiscoveryError)> {
+        // Clear existing data
+        self.providers.clear();
+        self.endpoints.clear();
+        self.accounts.clear();
+        self.models.clear();
+        self.variants.clear();
+        self.pools.clear();
+
+        let mut errors = Vec::new();
+
+        for discovery in discoveries {
+            match discovery.discover() {
+                Ok(result) => self.apply_discovery(&result),
+                Err(e) => errors.push((discovery.name().to_string(), e)),
+            }
+        }
+
+        errors
     }
 
     /// Assemble a ModelCandidate from a variant by resolving all references.
