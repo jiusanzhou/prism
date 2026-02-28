@@ -10,6 +10,7 @@ use tracing::{debug, error, info, warn};
 use prism_core::analyzer::ChatMessage;
 use prism_core::router::{PrismRouter, RouteMetadata, RouteRequest, Router};
 
+use crate::metrics::{MetricsCollector, RequestRecord};
 use crate::protocol::LlmProtocol;
 
 /// Per-request context stored across Pingora proxy phases.
@@ -50,11 +51,12 @@ impl Default for ProxyContext {
 /// The Prism proxy service — routes LLM API requests to appropriate providers.
 pub struct PrismProxy {
     pub router: Arc<PrismRouter>,
+    pub metrics: Arc<MetricsCollector>,
 }
 
 impl PrismProxy {
-    pub fn new(router: Arc<PrismRouter>) -> Self {
-        Self { router }
+    pub fn new(router: Arc<PrismRouter>, metrics: Arc<MetricsCollector>) -> Self {
+        Self { router, metrics }
     }
 
     /// Parse a base URL into (host, port, use_tls).
@@ -241,7 +243,7 @@ impl ProxyHttp for PrismProxy {
         Ok(())
     }
 
-    /// Phase 5: Log the completed request.
+    /// Phase 5: Log the completed request and record metrics.
     async fn logging(
         &self,
         session: &mut Session,
@@ -264,9 +266,17 @@ impl ProxyHttp for PrismProxy {
             "Request completed"
         );
 
-        // TODO: Record outcome to feedback collector for quality-aware routing
-        // if let Some(ref variant_id) = ctx.selected_variant {
-        //     self.router.record_outcome(&OutcomeReport { ... });
-        // }
+        // Record outcome to metrics collector → DataLayer feedback loop
+        if let Some(ref variant_id) = ctx.selected_variant {
+            self.metrics.record(RequestRecord {
+                variant_id: variant_id.clone(),
+                latency_ms: elapsed.as_millis() as u64,
+                ttft_ms: None, // TODO: capture from streaming first byte
+                success: status >= 200 && status < 400,
+                input_tokens: None, // TODO: parse from response
+                output_tokens: None,
+                timestamp: Instant::now(),
+            });
+        }
     }
 }

@@ -1,5 +1,6 @@
 mod api;
 mod config;
+pub mod metrics;
 mod state;
 
 #[cfg(feature = "grpc")]
@@ -20,6 +21,8 @@ mod proxy;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use axum::routing::{get, post};
 use axum::Router;
@@ -94,6 +97,13 @@ async fn main() {
     let registry = build_registry(&config);
     let router = prism_core::router::PrismRouter::new(registry);
     let state = AppState::new(router);
+
+    // Start metrics flush background task (every 5 seconds)
+    let _metrics_flush = metrics::spawn_metrics_flush(
+        Arc::clone(&state.metrics),
+        Arc::clone(state.data_layer()),
+        Duration::from_secs(5),
+    );
 
     // Build Axum HTTP router
     let app = Router::new()
@@ -173,7 +183,7 @@ async fn main() {
             });
             info!("  Proxy → {}", proxy_addr_str);
 
-            let prism_proxy = PrismProxy::new(Arc::clone(&state.router));
+            let prism_proxy = PrismProxy::new(Arc::clone(&state.router), Arc::clone(&state.metrics));
 
             // Pingora runs in its own thread (blocking)
             let proxy_handle = std::thread::spawn(move || {

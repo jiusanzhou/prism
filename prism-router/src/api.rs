@@ -4,12 +4,15 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
+use std::time::Instant;
+
 use prism_core::analyzer::ChatMessage;
 use prism_core::feedback::OutcomeReport;
 use prism_core::registry::ModelRegistryTrait;
 use prism_core::router::{RouteMetadata, RouteRequest, Router, RouterError};
 use prism_core::strategy::ModelSelectionStrategy;
 
+use crate::metrics::RequestRecord;
 use crate::state::AppState;
 
 // ──────────────────────────────────────────────
@@ -118,6 +121,8 @@ pub async fn route_handler(
     // Parse strategy from string to enum
     let strategy = parse_strategy(body.strategy.as_deref());
 
+    let _start = Instant::now();
+
     let request = RouteRequest {
         messages,
         strategy,
@@ -169,6 +174,17 @@ pub async fn outcomes_handler(
     State(state): State<AppState>,
     Json(report): Json<OutcomeReport>,
 ) -> impl IntoResponse {
+    // Record into metrics collector for DataLayer feedback loop
+    state.metrics.record(RequestRecord {
+        variant_id: report.variant_id.clone(),
+        latency_ms: report.latency_ms,
+        ttft_ms: None,
+        success: report.success,
+        input_tokens: report.prompt_tokens,
+        output_tokens: report.completion_tokens,
+        timestamp: Instant::now(),
+    });
+
     state.router.record_outcome(&report);
     (
         StatusCode::OK,
@@ -202,15 +218,85 @@ pub async fn version_handler() -> impl IntoResponse {
     (StatusCode::OK, Json(response))
 }
 
-/// GET /metrics — Prometheus metrics placeholder
-pub async fn metrics_handler() -> impl IntoResponse {
-    // TODO: integrate with prometheus crate
-    (
-        StatusCode::OK,
-        "# HELP prism_router_requests_total Total routing requests\n\
-         # TYPE prism_router_requests_total counter\n\
-         prism_router_requests_total 0\n",
-    )
+/// GET /metrics — Prometheus metrics
+pub async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let total_requests = state.metrics.total_requests();
+    let total_errors = state.metrics.total_errors();
+    let uptime = state.start_time.elapsed().as_secs();
+    let model_count = state.router.registry.models.len();
+    let variant_count = state.router.registry.get_all_candidates().len();
+
+    let mut output = String::new();
+
+    // Global counters
+    output.push_str("# HELP prism_requests_total Total routing requests\n");
+    output.push_str("# TYPE prism_requests_total counter\n");
+    output.push_str(&format!("prism_requests_total {}\n", total_requests));
+
+    output.push_str("# HELP prism_errors_total Total failed requests\n");
+    output.push_str("# TYPE prism_errors_total counter\n");
+    output.push_str(&format!("prism_errors_total {}\n", total_errors));
+
+    output.push_str("# HELP prism_uptime_seconds Router uptime\n");
+    output.push_str("# TYPE prism_uptime_seconds gauge\n");
+    output.push_str(&format!("prism_uptime_seconds {}\n", uptime));
+
+    output.push_str("# HELP prism_registered_models Number of registered models\n");
+    output.push_str("# TYPE prism_registered_models gauge\n");
+    output.push_str(&format!("prism_registered_models {}\n", model_count));
+
+    output.push_str("# HELP prism_active_variants Number of active variants\n");
+    output.push_str("# TYPE prism_active_variants gauge\n");
+    output.push_str(&format!("prism_active_variants {}\n", variant_count));
+
+    // Per-variant metrics
+    let variants = state.metrics.tracked_variants();
+    if !variants.is_empty() {
+        output.push_str("# HELP prism_variant_latency_p50_ms P50 latency per variant\n");
+        output.push_str("# TYPE prism_variant_latency_p50_ms gauge\n");
+        output.push_str("# HELP prism_variant_latency_p95_ms P95 latency per variant\n");
+        output.push_str("# TYPE prism_variant_latency_p95_ms gauge\n");
+        output.push_str("# HELP prism_variant_latency_p99_ms P99 latency per variant\n");
+        output.push_str("# TYPE prism_variant_latency_p99_ms gauge\n");
+        output.push_str("# HELP prism_variant_error_rate Error rate per variant\n");
+        output.push_str("# TYPE prism_variant_error_rate gauge\n");
+        output.push_str("# HELP prism_variant_qps Current QPS per variant\n");
+        output.push_str("# TYPE prism_variant_qps gauge\n");
+        output.push_str("# HELP prism_variant_ttft_p50_ms P50 TTFT per variant\n");
+        output.push_str("# TYPE prism_variant_ttft_p50_ms gauge\n");
+
+        for variant_id in &variants {
+            if let Some(snap) = state.metrics.snapshot(variant_id) {
+                let label = format!("variant=\"{}\"", variant_id);
+                output.push_str(&format!(
+                    "prism_variant_latency_p50_ms{{{}}} {}\n",
+                    label, snap.p50_latency_ms
+                ));
+                output.push_str(&format!(
+                    "prism_variant_latency_p95_ms{{{}}} {}\n",
+                    label, snap.p95_latency_ms
+                ));
+                output.push_str(&format!(
+                    "prism_variant_latency_p99_ms{{{}}} {}\n",
+                    label, snap.p99_latency_ms
+                ));
+                output.push_str(&format!(
+                    "prism_variant_error_rate{{{}}} {:.4}\n",
+                    label, snap.error_rate
+                ));
+                output.push_str(&format!(
+                    "prism_variant_qps{{{}}} {:.2}\n",
+                    label, snap.current_qps
+                ));
+                output.push_str(&format!(
+                    "prism_variant_ttft_p50_ms{{{}}} {}\n",
+                    label, snap.ttft_p50_ms
+                ));
+            }
+        }
+    }
+
+    (StatusCode::OK, output)
 }
 
 // ──────────────────────────────────────────────
@@ -697,7 +783,7 @@ mod tests {
 
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let text = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(text.contains("prism_router_requests_total"));
+        assert!(text.contains("prism_requests_total"));
     }
 
     // ── parse_strategy ──

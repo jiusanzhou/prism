@@ -1,5 +1,7 @@
 use tonic::{Request, Response, Status};
 
+use std::time::Instant;
+
 use prism_core::analyzer::ChatMessage;
 use prism_core::feedback::OutcomeReport as CoreOutcomeReport;
 use prism_core::registry::ModelRegistryTrait;
@@ -9,6 +11,7 @@ use prism_core::types::AuthConfig;
 
 use crate::gen::prism_router_v1 as pb;
 use crate::gen::prism_router_v1::router_service_server::RouterService;
+use crate::metrics::RequestRecord;
 use crate::state::AppState;
 
 /// gRPC service implementation backed by the shared AppState.
@@ -152,9 +155,34 @@ impl RouterService for GrpcRouterService {
     ) -> Result<Response<pb::ReportResponse>, Status> {
         let report = request.into_inner();
 
+        let success = report.status_code >= 200 && report.status_code < 400 && report.error.is_none();
+
+        // Record into metrics collector for DataLayer feedback loop
+        self.state.metrics.record(RequestRecord {
+            variant_id: report.variant_id.clone(),
+            latency_ms: report.latency_ms as u64,
+            ttft_ms: if report.ttft_ms > 0 {
+                Some(report.ttft_ms as u64)
+            } else {
+                None
+            },
+            success,
+            input_tokens: if report.input_tokens > 0 {
+                Some(report.input_tokens as u32)
+            } else {
+                None
+            },
+            output_tokens: if report.output_tokens > 0 {
+                Some(report.output_tokens as u32)
+            } else {
+                None
+            },
+            timestamp: Instant::now(),
+        });
+
         let core_report = CoreOutcomeReport {
             variant_id: report.variant_id,
-            success: report.status_code >= 200 && report.status_code < 400 && report.error.is_none(),
+            success,
             latency_ms: report.latency_ms as u64,
             prompt_tokens: if report.input_tokens > 0 {
                 Some(report.input_tokens as u32)
