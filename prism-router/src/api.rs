@@ -1,6 +1,3 @@
-use std::sync::Arc;
-use std::time::Instant;
-
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -8,8 +5,8 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use prism_core::analyzer::ChatMessage;
-use prism_core::registry::ModelRegistryTrait;
 use prism_core::feedback::OutcomeReport;
+use prism_core::registry::ModelRegistryTrait;
 use prism_core::router::{RouteMetadata, RouteRequest, Router, RouterError};
 use prism_core::strategy::ModelSelectionStrategy;
 
@@ -221,7 +218,7 @@ pub async fn metrics_handler() -> impl IntoResponse {
 // ──────────────────────────────────────────────
 
 /// Parse a strategy name string into a `ModelSelectionStrategy`.
-fn parse_strategy(name: Option<&str>) -> Option<ModelSelectionStrategy> {
+pub(crate) fn parse_strategy(name: Option<&str>) -> Option<ModelSelectionStrategy> {
     match name {
         Some("balanced") | None => None, // use default
         Some("cost_first") => Some(ModelSelectionStrategy::Auto {
@@ -253,6 +250,518 @@ fn parse_strategy(name: Option<&str>) -> Option<ModelSelectionStrategy> {
             Some(ModelSelectionStrategy::Pinned {
                 model_id: model_id.to_string(),
             })
+        }
+    }
+}
+
+// ──────────────────────────────────────────────
+// Tests
+// ──────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::routing::{get, post};
+    use axum::Router;
+    use http_body_util::BodyExt;
+    use prism_core::registry::InMemoryRegistry;
+    use prism_core::router::PrismRouter;
+    use prism_core::types::*;
+    use std::collections::HashMap;
+    use tower::ServiceExt;
+
+    fn test_registry() -> InMemoryRegistry {
+        let mut registry = InMemoryRegistry::new();
+
+        registry.add_provider(Provider {
+            id: "openai".into(),
+            name: "OpenAI".into(),
+            auth: AuthConfig::ApiKey {
+                key: "Bearer sk-test".into(),
+                header: "Authorization".into(),
+            },
+            base_url: "https://api.openai.com/v1".into(),
+            rate_limit: None,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
+            protocols: vec!["openai".into()],
+        });
+
+        registry.add_endpoint(Endpoint {
+            id: "openai-ep".into(),
+            provider_id: "openai".into(),
+            base_url: Some("https://api.openai.com/v1".into()),
+            region: None,
+            auth_override: None,
+            rate_limit: None,
+            priority: 0,
+            status: HealthStatus::Healthy,
+        });
+
+        registry.add_account(Account {
+            id: "openai-acct".into(),
+            endpoint_id: "openai-ep".into(),
+            auth: AuthConfig::ApiKey {
+                key: "Bearer sk-test".into(),
+                header: "Authorization".into(),
+            },
+            project_id: None,
+            rate_limit: None,
+            billing_tag: None,
+            weight: 1.0,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
+        });
+
+        registry.add_model(Model {
+            id: "gpt-4o".into(),
+            display_name: "GPT-4o".into(),
+            quality_tier: QualityTier::S,
+            capabilities: ModelCapabilities {
+                max_context_window: 128000,
+                max_output_tokens: 16384,
+                supports_streaming: true,
+                supports_function_calling: true,
+                supports_vision: true,
+                supports_json_mode: true,
+                supports_reasoning: false,
+            },
+            pricing: ModelPricing {
+                input_per_1m_tokens: 2.5,
+                output_per_1m_tokens: 10.0,
+                ..Default::default()
+            },
+            specialties: vec![],
+            limits: None,
+            status: ModelStatus::Available,
+        });
+
+        registry.add_variant(ModelVariant {
+            id: "gpt-4o@openai".into(),
+            model_id: "gpt-4o".into(),
+            endpoint_id: "openai-ep".into(),
+            account_id: Some("openai-acct".into()),
+            deployment_name: None,
+            weight: 1.0,
+            performance: ModelPerformance::default(),
+            pricing_override: None,
+            status: VariantStatus::Active,
+        });
+
+        registry.add_pool(ModelPool {
+            id: "default".into(),
+            name: "Default".into(),
+            variants: vec!["gpt-4o@openai".into()],
+            selection_mode: SelectionMode::default(),
+            description: None,
+        });
+
+        registry
+    }
+
+    fn test_app() -> Router {
+        let state = AppState::new(PrismRouter::new(test_registry()));
+        Router::new()
+            .route("/v1/route", post(route_handler))
+            .route("/v1/outcomes", post(outcomes_handler))
+            .route("/health", get(health_handler))
+            .route("/version", get(version_handler))
+            .route("/metrics", get(metrics_handler))
+            .with_state(state)
+    }
+
+    fn empty_app() -> Router {
+        let state = AppState::new(PrismRouter::new(InMemoryRegistry::new()));
+        Router::new()
+            .route("/v1/route", post(route_handler))
+            .route("/health", get(health_handler))
+            .with_state(state)
+    }
+
+    async fn body_json(resp: axum::http::Response<axum::body::Body>) -> serde_json::Value {
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    // ── POST /v1/route ──
+
+    #[tokio::test]
+    async fn test_http_route_basic() {
+        let app = test_app();
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"messages":[{"role":"user","content":"hello"}]}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["selected_model"], "gpt-4o");
+        assert_eq!(json["selected_provider"], "openai");
+        assert_eq!(json["selected_variant"], "gpt-4o@openai");
+        assert_eq!(json["selected_account"], "openai-acct");
+        assert!(json["score"].as_f64().unwrap() > 0.0);
+        assert!(json["decision_time_us"].as_u64().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_http_route_empty_messages() {
+        let app = test_app();
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(r#"{"messages":[]}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["code"], "INVALID_REQUEST");
+    }
+
+    #[tokio::test]
+    async fn test_http_route_with_strategy_cost_first() {
+        let app = test_app();
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"messages":[{"role":"user","content":"hi"}],"strategy":"cost_first"}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["selected_model"], "gpt-4o");
+    }
+
+    #[tokio::test]
+    async fn test_http_route_with_strategy_quality_first() {
+        let app = test_app();
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"messages":[{"role":"user","content":"hi"}],"strategy":"quality_first"}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_http_route_with_strategy_latency_first() {
+        let app = test_app();
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"messages":[{"role":"user","content":"hi"}],"strategy":"latency_first"}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_http_route_pinned_via_strategy() {
+        let app = test_app();
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"messages":[{"role":"user","content":"hi"}],"strategy":"gpt-4o"}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["selected_model"], "gpt-4o");
+    }
+
+    #[tokio::test]
+    async fn test_http_route_with_metadata() {
+        let app = test_app();
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"messages":[{"role":"user","content":"hi"}],"metadata":{"affinity_key":"sess-1","tenant_id":"acme","region":"us-east"}}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_http_route_with_required_protocol() {
+        let app = test_app();
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"messages":[{"role":"user","content":"hi"}],"required_protocol":"openai"}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["selected_model"], "gpt-4o");
+    }
+
+    #[tokio::test]
+    async fn test_http_route_no_candidates() {
+        let app = empty_app();
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"messages":[{"role":"user","content":"hi"}]}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["code"], "NO_CANDIDATES");
+    }
+
+    #[tokio::test]
+    async fn test_http_route_multiple_messages() {
+        let app = test_app();
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"messages":[{"role":"system","content":"You are helpful"},{"role":"user","content":"hello"},{"role":"assistant","content":"Hi!"},{"role":"user","content":"How are you?"}]}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["selected_model"], "gpt-4o");
+    }
+
+    #[tokio::test]
+    async fn test_http_route_response_has_fallback_chain() {
+        let app = test_app();
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"messages":[{"role":"user","content":"hi"}]}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let json = body_json(resp).await;
+        assert!(json["fallback_chain"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_http_route_response_has_reason() {
+        let app = test_app();
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"messages":[{"role":"user","content":"hi"}]}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let json = body_json(resp).await;
+        assert!(json["reason"].is_object());
+    }
+
+    // ── POST /v1/outcomes ──
+
+    #[tokio::test]
+    async fn test_http_outcomes() {
+        let app = test_app();
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/outcomes")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"variant_id":"gpt-4o@openai","success":true,"latency_ms":150}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["status"], "recorded");
+    }
+
+    // ── GET /health ──
+
+    #[tokio::test]
+    async fn test_http_health() {
+        let app = test_app();
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/health")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["status"], "healthy");
+        assert_eq!(json["registered_models"], 1);
+        assert_eq!(json["active_variants"], 1);
+        assert!(json["uptime_seconds"].as_u64().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_http_health_empty_registry() {
+        let app = empty_app();
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/health")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["registered_models"], 0);
+        assert_eq!(json["active_variants"], 0);
+    }
+
+    // ── GET /version ──
+
+    #[tokio::test]
+    async fn test_http_version() {
+        let app = test_app();
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/version")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["name"], "prism-router");
+        assert!(json["version"].as_str().is_some());
+    }
+
+    // ── GET /metrics ──
+
+    #[tokio::test]
+    async fn test_http_metrics() {
+        let app = test_app();
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(text.contains("prism_router_requests_total"));
+    }
+
+    // ── parse_strategy ──
+
+    #[test]
+    fn test_parse_strategy_balanced() {
+        assert!(parse_strategy(Some("balanced")).is_none());
+    }
+
+    #[test]
+    fn test_parse_strategy_none() {
+        assert!(parse_strategy(None).is_none());
+    }
+
+    #[test]
+    fn test_parse_strategy_cost_first() {
+        let s = parse_strategy(Some("cost_first")).unwrap();
+        match s {
+            ModelSelectionStrategy::Auto { objective, .. } => {
+                assert!(matches!(
+                    objective,
+                    prism_core::strategy::RoutingObjective::CostFirst { .. }
+                ));
+            }
+            _ => panic!("expected Auto"),
+        }
+    }
+
+    #[test]
+    fn test_parse_strategy_quality_first() {
+        let s = parse_strategy(Some("quality_first")).unwrap();
+        match s {
+            ModelSelectionStrategy::Auto { objective, .. } => {
+                assert!(matches!(
+                    objective,
+                    prism_core::strategy::RoutingObjective::QualityFirst { .. }
+                ));
+            }
+            _ => panic!("expected Auto"),
+        }
+    }
+
+    #[test]
+    fn test_parse_strategy_latency_first() {
+        let s = parse_strategy(Some("latency_first")).unwrap();
+        match s {
+            ModelSelectionStrategy::Auto { objective, .. } => {
+                assert!(matches!(
+                    objective,
+                    prism_core::strategy::RoutingObjective::SloFirst { .. }
+                ));
+            }
+            _ => panic!("expected Auto"),
+        }
+    }
+
+    #[test]
+    fn test_parse_strategy_pinned() {
+        let s = parse_strategy(Some("claude-3-opus")).unwrap();
+        match s {
+            ModelSelectionStrategy::Pinned { model_id } => {
+                assert_eq!(model_id, "claude-3-opus");
+            }
+            _ => panic!("expected Pinned"),
         }
     }
 }

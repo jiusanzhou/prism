@@ -311,6 +311,31 @@ mod tests {
     }
 
     #[test]
+    fn test_expand_env_vars_multiple() {
+        std::env::set_var("TEST_A", "aaa");
+        std::env::set_var("TEST_B", "bbb");
+        let input = "a: ${TEST_A}, b: ${TEST_B}";
+        let result = expand_env_vars(input);
+        assert_eq!(result, "a: aaa, b: bbb");
+        std::env::remove_var("TEST_A");
+        std::env::remove_var("TEST_B");
+    }
+
+    #[test]
+    fn test_expand_env_vars_no_vars() {
+        let input = "no variables here";
+        let result = expand_env_vars(input);
+        assert_eq!(result, "no variables here");
+    }
+
+    #[test]
+    fn test_expand_env_vars_unclosed_brace() {
+        let input = "key: ${UNCLOSED";
+        let result = expand_env_vars(input);
+        assert_eq!(result, "key: ${UNCLOSED");
+    }
+
+    #[test]
     fn test_parse_minimal_config() {
         let yaml = r#"
 server:
@@ -333,10 +358,39 @@ pools:
 "#;
         let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.server.http_port, 9090);
+        assert_eq!(config.server.grpc_port, 9090); // default
+        assert_eq!(config.server.proxy_port, 8000); // default
         assert_eq!(config.providers.len(), 1);
         assert_eq!(config.models.len(), 1);
         assert_eq!(config.variants.len(), 1);
         assert_eq!(config.pools.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_empty_config() {
+        let yaml = "{}";
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.server.http_port, 8080);
+        assert_eq!(config.server.grpc_port, 9090);
+        assert_eq!(config.server.proxy_port, 8000);
+        assert!(config.providers.is_empty());
+        assert!(config.models.is_empty());
+        assert!(config.variants.is_empty());
+        assert!(config.pools.is_empty());
+    }
+
+    #[test]
+    fn test_parse_config_all_ports() {
+        let yaml = r#"
+server:
+  http_port: 3000
+  grpc_port: 3001
+  proxy_port: 3002
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.server.http_port, 3000);
+        assert_eq!(config.server.grpc_port, 3001);
+        assert_eq!(config.server.proxy_port, 3002);
     }
 
     #[test]
@@ -379,5 +433,127 @@ pools:
         assert_eq!(candidates[0].variant.id, "gpt-4o@openai");
         assert_eq!(candidates[0].model.id, "gpt-4o");
         assert_eq!(candidates[0].provider.id, "openai");
+    }
+
+    #[test]
+    fn test_build_registry_multi_provider() {
+        let yaml = r#"
+providers:
+  openai:
+    base_url: https://api.openai.com/v1
+    api_key: sk-openai
+    protocols: [openai]
+  anthropic:
+    base_url: https://api.anthropic.com
+    api_key: sk-ant
+    protocols: [anthropic]
+models:
+  - id: gpt-4o
+    display_name: GPT-4o
+    quality_tier: S
+  - id: claude-3
+    display_name: Claude 3
+    quality_tier: S
+variants:
+  - id: gpt-4o@openai
+    model_id: gpt-4o
+    provider_id: openai
+  - id: claude-3@anthropic
+    model_id: claude-3
+    provider_id: anthropic
+    weight: 0.5
+pools:
+  - id: default
+    name: Default Pool
+    variants: [gpt-4o@openai, claude-3@anthropic]
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        let registry = build_registry(&config);
+
+        let candidates = registry.get_all_candidates();
+        assert_eq!(candidates.len(), 2);
+
+        // Check providers have correct protocols
+        let openai = registry.providers.get("openai").unwrap();
+        assert_eq!(openai.protocols, vec!["openai".to_string()]);
+
+        let anthropic = registry.providers.get("anthropic").unwrap();
+        assert_eq!(anthropic.protocols, vec!["anthropic".to_string()]);
+
+        // Check api_key was set
+        match &openai.auth {
+            AuthConfig::ApiKey { key, .. } => assert_eq!(key, "Bearer sk-openai"),
+            _ => panic!("expected ApiKey auth"),
+        }
+    }
+
+    #[test]
+    fn test_build_registry_no_api_key() {
+        let yaml = r#"
+providers:
+  local:
+    base_url: http://localhost:8000
+models:
+  - id: llama
+    display_name: Llama
+    quality_tier: B
+variants:
+  - id: llama@local
+    model_id: llama
+    provider_id: local
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        let registry = build_registry(&config);
+
+        let provider = registry.providers.get("local").unwrap();
+        match &provider.auth {
+            AuthConfig::ApiKey { key, .. } => assert!(key.is_empty()),
+            _ => panic!("expected default ApiKey auth"),
+        }
+    }
+
+    #[test]
+    fn test_build_registry_variant_weight() {
+        let yaml = r#"
+providers:
+  p1:
+    base_url: http://localhost
+models:
+  - id: m1
+    display_name: M1
+    quality_tier: A
+variants:
+  - id: m1@p1
+    model_id: m1
+    provider_id: p1
+    weight: 0.7
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        let registry = build_registry(&config);
+
+        let variant = registry.variants.get("m1@p1").unwrap();
+        assert!((variant.weight - 0.7).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_build_registry_default_variant_weight() {
+        let yaml = r#"
+providers:
+  p1:
+    base_url: http://localhost
+models:
+  - id: m1
+    display_name: M1
+    quality_tier: A
+variants:
+  - id: m1@p1
+    model_id: m1
+    provider_id: p1
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        let registry = build_registry(&config);
+
+        let variant = registry.variants.get("m1@p1").unwrap();
+        assert!((variant.weight - 1.0).abs() < 0.001);
     }
 }

@@ -78,6 +78,39 @@ mod tests {
     }
 
     #[test]
+    fn test_protocol_completions() {
+        assert_eq!(
+            LlmProtocol::from_path("/v1/completions"),
+            LlmProtocol::OpenAI
+        );
+    }
+
+    #[test]
+    fn test_protocol_messages_with_query() {
+        assert_eq!(
+            LlmProtocol::from_path("/v1/messages?foo=bar"),
+            LlmProtocol::Anthropic
+        );
+    }
+
+    #[test]
+    fn test_protocol_empty_path() {
+        assert_eq!(LlmProtocol::from_path(""), LlmProtocol::Unknown);
+    }
+
+    #[test]
+    fn test_protocol_root_path() {
+        assert_eq!(LlmProtocol::from_path("/"), LlmProtocol::Unknown);
+    }
+
+    #[test]
+    fn test_protocol_as_str() {
+        assert_eq!(LlmProtocol::OpenAI.as_str(), "openai");
+        assert_eq!(LlmProtocol::Anthropic.as_str(), "anthropic");
+        assert_eq!(LlmProtocol::Unknown.as_str(), "unknown");
+    }
+
+    #[test]
     fn test_extract_model_from_body() {
         let body = br#"{"model": "gpt-4o", "messages": []}"#;
         assert_eq!(
@@ -90,5 +123,37 @@ mod tests {
 
         let body = b"not json";
         assert_eq!(extract_model_from_body(body), None);
+    }
+
+    #[test]
+    fn test_extract_model_empty_body() {
+        assert_eq!(extract_model_from_body(b""), None);
+    }
+
+    #[test]
+    fn test_extract_model_number_value() {
+        let body = br#"{"model": 42}"#;
+        assert_eq!(extract_model_from_body(body), None);
+    }
+
+    #[test]
+    fn test_extract_model_anthropic_format() {
+        let body = br#"{"model": "claude-3-opus-20240229", "max_tokens": 1024}"#;
+        assert_eq!(
+            extract_model_from_body(body),
+            Some("claude-3-opus-20240229".to_string())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_path_passthrough() {
+        assert_eq!(
+            rewrite_path("/v1/chat/completions", &LlmProtocol::OpenAI),
+            "/v1/chat/completions"
+        );
+        assert_eq!(
+            rewrite_path("/v1/messages", &LlmProtocol::Anthropic),
+            "/v1/messages"
+        );
     }
 }
