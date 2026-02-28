@@ -81,11 +81,12 @@ type ResilienceConfig struct {
 
 // ProviderConfig for a single provider.
 type ProviderConfig struct {
-	Type          string `yaml:"type"`
-	APIKey        string `yaml:"api_key"`
-	BaseURL       string `yaml:"base_url"`
-	TimeoutMs     int    `yaml:"timeout_ms"`
-	MaxConcurrent int    `yaml:"max_concurrent"`
+	Type          string   `yaml:"type"`
+	APIKey        string   `yaml:"api_key"`
+	BaseURL       string   `yaml:"base_url"`
+	TimeoutMs     int      `yaml:"timeout_ms"`
+	MaxConcurrent int      `yaml:"max_concurrent"`
+	Protocols     []string `yaml:"protocols"` // e.g., ["openai"], ["anthropic"], ["openai", "anthropic"]
 }
 
 // ModelConfig describes a model known to the routing engine.

@@ -17,6 +17,7 @@ fn make_provider(id: &str) -> Provider {
         rate_limit: None,
         status: HealthStatus::Healthy,
         metadata: Default::default(),
+        protocols: vec![],
     }
 }
 
@@ -187,6 +188,7 @@ fn simple_request(content: &str) -> RouteRequest {
         strategy: None,
         metadata: RouteMetadata::default(),
         analyze_context: None,
+        required_protocol: None,
     }
 }
 

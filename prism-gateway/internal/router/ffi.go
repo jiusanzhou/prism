@@ -13,6 +13,7 @@ typedef struct {
     const char* strategy_json;
     const char* metadata_json;
     const char* analyze_context_json;
+    const char* required_protocol;
 } PrismRouteRequest;
 
 typedef struct {
@@ -123,12 +124,19 @@ func (r *FFIRouter) Route(req *RouteRequest) (*RouteResult, error) {
 		defer C.free(unsafe.Pointer(cAnalyzeContext))
 	}
 
+	var cRequiredProtocol *C.char
+	if req.RequiredProtocol != "" {
+		cRequiredProtocol = C.CString(req.RequiredProtocol)
+		defer C.free(unsafe.Pointer(cRequiredProtocol))
+	}
+
 	// Build the C request struct
 	cReq := C.PrismRouteRequest{
 		messages_json:        cMessages,
 		strategy_json:        cStrategy,
 		metadata_json:        cMetadata,
 		analyze_context_json: cAnalyzeContext,
+		required_protocol:    cRequiredProtocol,
 	}
 
 	// Call Rust

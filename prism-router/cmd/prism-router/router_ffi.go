@@ -39,11 +39,12 @@ type authConfigJSON struct {
 // Mirrors prism-gateway/internal/config/loader.go.
 func toRouterConfigJSON(cfg *Config) (string, error) {
 	type rustProvider struct {
-		ID      string          `json:"id"`
-		Name    string          `json:"name"`
-		BaseURL string          `json:"base_url"`
-		Auth    *authConfigJSON `json:"auth,omitempty"`
-		Status  string          `json:"status"`
+		ID        string          `json:"id"`
+		Name      string          `json:"name"`
+		BaseURL   string          `json:"base_url"`
+		Auth      *authConfigJSON `json:"auth,omitempty"`
+		Status    string          `json:"status"`
+		Protocols []string        `json:"protocols,omitempty"`
 	}
 	type rustEndpoint struct {
 		ID         string `json:"id"`
@@ -107,7 +108,7 @@ func toRouterConfigJSON(cfg *Config) (string, error) {
 			}
 		}
 		rc.Providers = append(rc.Providers, rustProvider{
-			ID: id, Name: id, BaseURL: pcfg.BaseURL, Auth: auth, Status: "Healthy",
+			ID: id, Name: id, BaseURL: pcfg.BaseURL, Auth: auth, Status: "Healthy", Protocols: pcfg.Protocols,
 		})
 		epID := id + "-ep"
 		rc.Endpoints = append(rc.Endpoints, rustEndpoint{ID: epID, ProviderID: id, Status: "Healthy"})

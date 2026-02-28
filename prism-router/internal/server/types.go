@@ -41,6 +41,9 @@ type RouteRequest struct {
 	// Strategy parameter overrides (weights, SLO thresholds, budgets).
 	StrategyParams *StrategyParams `json:"strategy_params,omitempty"`
 
+	// Required protocol filter ("openai", "anthropic", or omitted for no filter).
+	RequiredProtocol *string `json:"required_protocol,omitempty"`
+
 	// Opaque metadata passed through to the response.
 	Metadata map[string]string `json:"metadata,omitempty"`
 }

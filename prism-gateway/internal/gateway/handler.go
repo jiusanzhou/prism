@@ -66,6 +66,7 @@ func (h *Handler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	// Build route request from headers + body
 	routeReq := h.buildRouteRequest(&req, r)
+	routeReq.RequiredProtocol = "openai"
 
 	// Perform routing decision (timed)
 	routeStart := time.Now()

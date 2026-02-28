@@ -14,6 +14,7 @@ fn build_multi_account_registry() -> InMemoryRegistry {
         rate_limit: None,
         status: HealthStatus::Healthy,
         metadata: Default::default(),
+        protocols: vec![],
     });
 
     reg.add_endpoint(Endpoint {
@@ -123,6 +124,7 @@ fn request_with_session(content: &str, session_id: &str) -> RouteRequest {
             analyze_context: None,
         },
         analyze_context: None,
+        required_protocol: None,
     }
 }
 
@@ -160,6 +162,7 @@ fn test_soft_affinity_migrates_on_overload() {
         rate_limit: None,
         status: HealthStatus::Healthy,
         metadata: Default::default(),
+        protocols: vec![],
     });
 
     reg.add_endpoint(Endpoint {
@@ -294,6 +297,7 @@ fn test_hard_affinity_rejects_on_overload() {
         rate_limit: None,
         status: HealthStatus::Healthy,
         metadata: Default::default(),
+        protocols: vec![],
     });
 
     reg.add_endpoint(Endpoint {
@@ -394,6 +398,7 @@ fn test_load_balanced_distribution() {
             strategy: None,
             metadata: RouteMetadata::default(),
             analyze_context: None,
+            required_protocol: None,
         };
         let decision = router.route(&req).unwrap();
         *account_counts
@@ -423,6 +428,7 @@ fn test_cost_isolation_tenant_routing() {
             analyze_context: None,
         },
         analyze_context: None,
+        required_protocol: None,
     };
     let d1 = router.route(&req1).unwrap();
     assert_eq!(d1.selected_account, "project-1",
@@ -441,6 +447,7 @@ fn test_cost_isolation_tenant_routing() {
             analyze_context: None,
         },
         analyze_context: None,
+        required_protocol: None,
     };
     let d2 = router.route(&req2).unwrap();
     assert_eq!(d2.selected_account, "project-2",
@@ -459,6 +466,7 @@ fn test_cost_isolation_tenant_routing() {
             analyze_context: None,
         },
         analyze_context: None,
+        required_protocol: None,
     };
     let d3 = router.route(&req3).unwrap();
     assert_eq!(d3.selected_account, "project-3",

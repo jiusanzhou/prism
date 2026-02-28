@@ -12,6 +12,7 @@ typedef struct {
     const char* strategy_json;
     const char* metadata_json;
     const char* analyze_context_json;
+    const char* required_protocol;
 } PrismRouteRequest;
 
 typedef struct {
@@ -101,11 +102,18 @@ func (f *FFIImpl) Route(req *RouteRequest) (*RouteResult, error) {
 		defer C.free(unsafe.Pointer(cMetadata))
 	}
 
+	var cRequiredProtocol *C.char
+	if req.RequiredProtocol != "" {
+		cRequiredProtocol = C.CString(req.RequiredProtocol)
+		defer C.free(unsafe.Pointer(cRequiredProtocol))
+	}
+
 	cReq := C.PrismRouteRequest{
 		messages_json:        cMessages,
 		strategy_json:        cStrategy,
 		metadata_json:        cMetadata,
 		analyze_context_json: nil,
+		required_protocol:    cRequiredProtocol,
 	}
 
 	cResult := C.prism_route(&cReq)

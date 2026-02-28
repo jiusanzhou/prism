@@ -34,11 +34,12 @@ type BalancedConfig struct {
 }
 
 type ProviderConfig struct {
-	Type          string `yaml:"type"`
-	APIKey        string `yaml:"api_key"`
-	BaseURL       string `yaml:"base_url"`
-	TimeoutMs     int    `yaml:"timeout_ms"`
-	MaxConcurrent int    `yaml:"max_concurrent"`
+	Type          string   `yaml:"type"`
+	APIKey        string   `yaml:"api_key"`
+	BaseURL       string   `yaml:"base_url"`
+	TimeoutMs     int      `yaml:"timeout_ms"`
+	MaxConcurrent int      `yaml:"max_concurrent"`
+	Protocols     []string `yaml:"protocols"`
 }
 
 type ModelConfig struct {

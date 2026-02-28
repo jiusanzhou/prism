@@ -16,6 +16,7 @@ fn build_resilience_registry() -> InMemoryRegistry {
         rate_limit: None,
         status: HealthStatus::Healthy,
         metadata: Default::default(),
+        protocols: vec![],
     });
 
     // Backup provider
@@ -27,6 +28,7 @@ fn build_resilience_registry() -> InMemoryRegistry {
         rate_limit: None,
         status: HealthStatus::Healthy,
         metadata: Default::default(),
+        protocols: vec![],
     });
 
     reg.add_endpoint(Endpoint {
@@ -185,6 +187,7 @@ fn simple_request(content: &str) -> RouteRequest {
         strategy: None,
         metadata: RouteMetadata::default(),
         analyze_context: None,
+        required_protocol: None,
     }
 }
 

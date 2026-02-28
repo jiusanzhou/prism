@@ -227,6 +227,10 @@ func (s *Server) convertToFFIRequest(req *RouteRequest) *ffi.RouteRequest {
 		ffiReq.MaxTTFTMs = req.StrategyParams.MaxTTFTMs
 	}
 
+	if req.RequiredProtocol != nil {
+		ffiReq.RequiredProtocol = *req.RequiredProtocol
+	}
+
 	return ffiReq
 }
 

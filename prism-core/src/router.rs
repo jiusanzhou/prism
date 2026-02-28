@@ -25,6 +25,9 @@ pub struct RouteRequest {
     pub metadata: RouteMetadata,
     /// Optional context for the analyzer (caller type, source, tags, etc.)
     pub analyze_context: Option<AnalyzeContext>,
+    /// Required protocol for this request (e.g., "openai", "anthropic").
+    /// If set, only candidates whose provider supports this protocol are considered.
+    pub required_protocol: Option<String>,
 }
 
 /// Extra metadata attached to a routing request.
@@ -730,6 +733,27 @@ impl Router for PrismRouter {
 
         if candidates.is_empty() {
             return Err(RouterError::NoCandidates);
+        }
+
+        // Protocol filtering: if required_protocol is set, only keep candidates
+        // whose provider declares support for that protocol.
+        // Providers with empty protocols list are considered to support all protocols (backward compat).
+        let candidates: Vec<ModelCandidate> = if let Some(ref protocol) = request.required_protocol {
+            candidates
+                .into_iter()
+                .filter(|c| c.provider.protocols.is_empty() || c.provider.protocols.contains(protocol))
+                .collect()
+        } else {
+            candidates
+        };
+
+        if candidates.is_empty() {
+            return Err(RouterError::AllFiltered {
+                reason: format!(
+                    "no candidates support required protocol '{}'",
+                    request.required_protocol.as_deref().unwrap_or("unknown")
+                ),
+            });
         }
 
         // L1 model selection

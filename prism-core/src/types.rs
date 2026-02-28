@@ -69,6 +69,10 @@ pub struct Provider {
     pub status: HealthStatus,
     #[serde(default)]
     pub metadata: HashMap<String, String>,
+    /// Supported API protocols (e.g., ["openai"], ["anthropic"], ["openai", "anthropic"]).
+    /// Empty means all protocols are supported (backward compatible).
+    #[serde(default)]
+    pub protocols: Vec<String>,
 }
 
 /// An access-point under a Provider (region / deployment)

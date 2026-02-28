@@ -26,6 +26,9 @@ type RouteRequest struct {
 	CallerType string
 	Source     string
 	Tags       map[string]string
+
+	// Protocol filtering: "openai", "anthropic", or "" (no filter)
+	RequiredProtocol string
 }
 
 // RouteResult is the output of a routing decision.

@@ -22,6 +22,9 @@ type RouteRequest struct {
 	LatencyWeight *float32
 	MaxLatencyMs  *uint32
 	MaxTTFTMs     *uint32
+
+	// Protocol filtering
+	RequiredProtocol string
 }
 
 // RouteResult is the output of a routing decision.

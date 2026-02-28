@@ -58,6 +58,7 @@ func NewServer(cfg *config.Config, r router.Router, providers map[string]provide
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/chat/completions", h.ChatCompletion)
+	mux.HandleFunc("POST /v1/messages", h.AnthropicMessages)
 	mux.HandleFunc("POST /v1/outcomes", h.ReportOutcome)
 	mux.HandleFunc("GET /v1/experiments", h.ListExperiments)
 	mux.HandleFunc("GET /v1/experiments/{id}", h.GetExperiment)

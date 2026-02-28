@@ -14,11 +14,12 @@ func (c *Config) ToRouterConfigJSON() (string, error) {
 	}
 
 	type rustProvider struct {
-		ID      string      `json:"id"`
-		Name    string      `json:"name"`
-		BaseURL string      `json:"base_url"`
-		Auth    *authConfig `json:"auth,omitempty"`
-		Status  string      `json:"status"`
+		ID        string      `json:"id"`
+		Name      string      `json:"name"`
+		BaseURL   string      `json:"base_url"`
+		Auth      *authConfig `json:"auth,omitempty"`
+		Status    string      `json:"status"`
+		Protocols []string    `json:"protocols,omitempty"`
 	}
 
 	type rustEndpoint struct {
@@ -107,11 +108,12 @@ func (c *Config) ToRouterConfigJSON() (string, error) {
 		}
 
 		rc.Providers = append(rc.Providers, rustProvider{
-			ID:      id,
-			Name:    id, // use ID as display name
-			BaseURL: pcfg.BaseURL,
-			Auth:    auth,
-			Status:  "Healthy",
+			ID:        id,
+			Name:      id, // use ID as display name
+			BaseURL:   pcfg.BaseURL,
+			Auth:      auth,
+			Status:    "Healthy",
+			Protocols: pcfg.Protocols,
 		})
 
 		epID := id + "-ep"

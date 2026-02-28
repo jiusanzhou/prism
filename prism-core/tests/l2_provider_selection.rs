@@ -19,6 +19,7 @@ fn build_multi_provider_registry() -> InMemoryRegistry {
         rate_limit: None,
         status: HealthStatus::Healthy,
         metadata: Default::default(),
+        protocols: vec![],
     });
     reg.add_provider(Provider {
         id: "provider-cheap".into(),
@@ -28,6 +29,7 @@ fn build_multi_provider_registry() -> InMemoryRegistry {
         rate_limit: None,
         status: HealthStatus::Healthy,
         metadata: Default::default(),
+        protocols: vec![],
     });
     reg.add_provider(Provider {
         id: "provider-down".into(),
@@ -37,6 +39,7 @@ fn build_multi_provider_registry() -> InMemoryRegistry {
         rate_limit: None,
         status: HealthStatus::Down,
         metadata: Default::default(),
+        protocols: vec![],
     });
 
     reg.add_endpoint(Endpoint {
@@ -208,6 +211,7 @@ fn simple_request(content: &str) -> RouteRequest {
         strategy: None,
         metadata: RouteMetadata::default(),
         analyze_context: None,
+        required_protocol: None,
     }
 }
 
@@ -272,6 +276,7 @@ fn test_quota_aware_selection() {
         rate_limit: None,
         status: HealthStatus::Healthy,
         metadata: Default::default(),
+        protocols: vec![],
     });
     reg.add_provider(Provider {
         id: "provider-cheap".into(),
@@ -281,6 +286,7 @@ fn test_quota_aware_selection() {
         rate_limit: None,
         status: HealthStatus::Healthy,
         metadata: Default::default(),
+        protocols: vec![],
     });
 
     reg.add_endpoint(Endpoint {
@@ -431,6 +437,7 @@ fn test_geo_proximity_selection() {
             ..Default::default()
         },
         analyze_context: None,
+        required_protocol: None,
     };
     let decision = router.route(&req).unwrap();
     assert_eq!(decision.selected_variant, "claude@fast");
@@ -447,6 +454,7 @@ fn test_geo_proximity_selection() {
             ..Default::default()
         },
         analyze_context: None,
+        required_protocol: None,
     };
     let decision_eu = router.route(&req_eu).unwrap();
     assert_eq!(decision_eu.selected_variant, "claude@cheap");

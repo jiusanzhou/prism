@@ -37,6 +37,7 @@ pub struct PrismRouteRequest {
     pub strategy_json: *const c_char,
     pub metadata_json: *const c_char,
     pub analyze_context_json: *const c_char,
+    pub required_protocol: *const c_char,
 }
 
 /// Result returned over FFI boundary.
@@ -215,11 +216,17 @@ pub extern "C" fn prism_route(request: *const PrismRouteRequest) -> *mut PrismRo
             .filter(|s| !s.is_empty())
             .and_then(|s| serde_json::from_str(s).ok());
 
+    // Parse required protocol (optional — null/empty means None)
+    let required_protocol: Option<String> = unsafe { cstr_to_str(req.required_protocol) }
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
     let route_req = RouteRequest {
         messages,
         strategy,
         metadata,
         analyze_context,
+        required_protocol,
     };
 
     // Execute routing
