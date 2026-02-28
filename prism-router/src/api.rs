@@ -121,7 +121,14 @@ pub async fn route_handler(
     // Parse strategy from string to enum
     let strategy = parse_strategy(body.strategy.as_deref());
 
-    let _start = Instant::now();
+    // Determine strategy name for metrics
+    let strategy_name = match body.strategy.as_deref() {
+        Some("cost_first") => "cost_first",
+        Some("quality_first") => "quality_first",
+        Some("latency_first") => "latency_first",
+        Some("balanced") | None => "balanced",
+        Some(_) => "pinned",
+    };
 
     let request = RouteRequest {
         messages,
@@ -131,8 +138,33 @@ pub async fn route_handler(
         required_protocol: body.required_protocol,
     };
 
-    match state.router.route(&request) {
+    let route_start = Instant::now();
+    let result = state.router.route(&request);
+    let decision_time_us = route_start.elapsed().as_micros() as u64;
+
+    match result {
         Ok(decision) => {
+            // Record routing decision metrics
+            state
+                .metrics
+                .record_routing_decision(decision_time_us, strategy_name);
+
+            // Record traffic distribution
+            state.metrics.routes_by_model.inc(&decision.selected_model);
+            state
+                .metrics
+                .routes_by_provider
+                .inc(&decision.selected_provider);
+            state
+                .metrics
+                .routes_by_account
+                .inc(&decision.selected_account);
+
+            // Record fallback if fallback_chain is non-empty
+            if !decision.fallback_chain.is_empty() {
+                state.metrics.record_fallback();
+            }
+
             let response = RouteResponseBody {
                 selected_variant: decision.selected_variant,
                 selected_model: decision.selected_model,
@@ -175,7 +207,7 @@ pub async fn outcomes_handler(
     Json(report): Json<OutcomeReport>,
 ) -> impl IntoResponse {
     // Record into metrics collector for DataLayer feedback loop
-    state.metrics.record(RequestRecord {
+    let record = RequestRecord {
         variant_id: report.variant_id.clone(),
         latency_ms: report.latency_ms,
         ttft_ms: None,
@@ -183,7 +215,23 @@ pub async fn outcomes_handler(
         input_tokens: report.prompt_tokens,
         output_tokens: report.completion_tokens,
         timestamp: Instant::now(),
-    });
+    };
+
+    // Extract provider/model/account from variant_id if possible (format: model@provider)
+    // Fall back to variant_id itself for each dimension
+    let variant_id = &report.variant_id;
+    let (model, provider) = if let Some(at_pos) = variant_id.find('@') {
+        (
+            &variant_id[..at_pos],
+            &variant_id[at_pos + 1..],
+        )
+    } else {
+        (variant_id.as_str(), variant_id.as_str())
+    };
+
+    state
+        .metrics
+        .record_with_context(record, provider, model, variant_id);
 
     state.router.record_outcome(&report);
     (
@@ -220,81 +268,11 @@ pub async fn version_handler() -> impl IntoResponse {
 
 /// GET /metrics — Prometheus metrics
 pub async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let total_requests = state.metrics.total_requests();
-    let total_errors = state.metrics.total_errors();
     let uptime = state.start_time.elapsed().as_secs();
     let model_count = state.router.registry.models.len();
     let variant_count = state.router.registry.get_all_candidates().len();
 
-    let mut output = String::new();
-
-    // Global counters
-    output.push_str("# HELP prism_requests_total Total routing requests\n");
-    output.push_str("# TYPE prism_requests_total counter\n");
-    output.push_str(&format!("prism_requests_total {}\n", total_requests));
-
-    output.push_str("# HELP prism_errors_total Total failed requests\n");
-    output.push_str("# TYPE prism_errors_total counter\n");
-    output.push_str(&format!("prism_errors_total {}\n", total_errors));
-
-    output.push_str("# HELP prism_uptime_seconds Router uptime\n");
-    output.push_str("# TYPE prism_uptime_seconds gauge\n");
-    output.push_str(&format!("prism_uptime_seconds {}\n", uptime));
-
-    output.push_str("# HELP prism_registered_models Number of registered models\n");
-    output.push_str("# TYPE prism_registered_models gauge\n");
-    output.push_str(&format!("prism_registered_models {}\n", model_count));
-
-    output.push_str("# HELP prism_active_variants Number of active variants\n");
-    output.push_str("# TYPE prism_active_variants gauge\n");
-    output.push_str(&format!("prism_active_variants {}\n", variant_count));
-
-    // Per-variant metrics
-    let variants = state.metrics.tracked_variants();
-    if !variants.is_empty() {
-        output.push_str("# HELP prism_variant_latency_p50_ms P50 latency per variant\n");
-        output.push_str("# TYPE prism_variant_latency_p50_ms gauge\n");
-        output.push_str("# HELP prism_variant_latency_p95_ms P95 latency per variant\n");
-        output.push_str("# TYPE prism_variant_latency_p95_ms gauge\n");
-        output.push_str("# HELP prism_variant_latency_p99_ms P99 latency per variant\n");
-        output.push_str("# TYPE prism_variant_latency_p99_ms gauge\n");
-        output.push_str("# HELP prism_variant_error_rate Error rate per variant\n");
-        output.push_str("# TYPE prism_variant_error_rate gauge\n");
-        output.push_str("# HELP prism_variant_qps Current QPS per variant\n");
-        output.push_str("# TYPE prism_variant_qps gauge\n");
-        output.push_str("# HELP prism_variant_ttft_p50_ms P50 TTFT per variant\n");
-        output.push_str("# TYPE prism_variant_ttft_p50_ms gauge\n");
-
-        for variant_id in &variants {
-            if let Some(snap) = state.metrics.snapshot(variant_id) {
-                let label = format!("variant=\"{}\"", variant_id);
-                output.push_str(&format!(
-                    "prism_variant_latency_p50_ms{{{}}} {}\n",
-                    label, snap.p50_latency_ms
-                ));
-                output.push_str(&format!(
-                    "prism_variant_latency_p95_ms{{{}}} {}\n",
-                    label, snap.p95_latency_ms
-                ));
-                output.push_str(&format!(
-                    "prism_variant_latency_p99_ms{{{}}} {}\n",
-                    label, snap.p99_latency_ms
-                ));
-                output.push_str(&format!(
-                    "prism_variant_error_rate{{{}}} {:.4}\n",
-                    label, snap.error_rate
-                ));
-                output.push_str(&format!(
-                    "prism_variant_qps{{{}}} {:.2}\n",
-                    label, snap.current_qps
-                ));
-                output.push_str(&format!(
-                    "prism_variant_ttft_p50_ms{{{}}} {}\n",
-                    label, snap.ttft_p50_ms
-                ));
-            }
-        }
-    }
+    let output = state.metrics.format_prometheus(uptime, model_count, variant_count);
 
     (StatusCode::OK, output)
 }
