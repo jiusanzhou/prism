@@ -30,6 +30,8 @@ pub struct ServerConfig {
     pub listen: String,
     #[serde(default = "default_http_port")]
     pub http_port: u16,
+    #[serde(default = "default_grpc_port")]
+    pub grpc_port: u16,
 }
 
 impl Default for ServerConfig {
@@ -37,6 +39,7 @@ impl Default for ServerConfig {
         Self {
             listen: default_listen(),
             http_port: default_http_port(),
+            grpc_port: default_grpc_port(),
         }
     }
 }
@@ -47,6 +50,10 @@ fn default_listen() -> String {
 
 fn default_http_port() -> u16 {
     8080
+}
+
+fn default_grpc_port() -> u16 {
+    9090
 }
 
 /// Provider configuration — map key is the provider id.

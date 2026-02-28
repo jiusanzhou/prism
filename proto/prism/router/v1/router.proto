@@ -2,7 +2,9 @@ syntax = "proto3";
 
 package prism.router.v1;
 
-option go_package = "github.com/aspect-build/prism-gateway/gen/prism/router/v1;routerv1";
+option go_package = "go.zoe.im/prism-router/gen/prism/router/v1;routerv1";
+option java_multiple_files = true;
+option java_package = "im.zoe.prism.router.v1";
 
 // ──────────────────────────────────────────────
 // Router Service
