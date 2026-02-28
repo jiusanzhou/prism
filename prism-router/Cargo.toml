@@ -3,6 +3,11 @@ name = "prism-router"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["grpc", "proxy"]
+grpc = ["tonic", "prost", "prost-types"]
+proxy = ["pingora", "async-trait", "bytes"]
+
 [dependencies]
 prism-core = { path = "../prism-core" }
 axum = "0.8"
@@ -15,9 +20,17 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 clap = { version = "4", features = ["derive"] }
-tonic = "0.12"
-prost = "0.13"
-prost-types = "0.13"
+http = "1"
+
+# gRPC feature deps
+tonic = { version = "0.12", optional = true }
+prost = { version = "0.13", optional = true }
+prost-types = { version = "0.13", optional = true }
+
+# proxy feature deps
+pingora = { version = "0.7", features = ["lb", "proxy"], optional = true }
+async-trait = { version = "0.1", optional = true }
+bytes = { version = "1", optional = true }
 
 [build-dependencies]
 tonic-build = "0.12"

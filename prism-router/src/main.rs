@@ -1,15 +1,22 @@
 mod api;
 mod config;
-pub mod grpc;
 mod state;
 
-/// Generated protobuf / gRPC code.
+#[cfg(feature = "grpc")]
+pub mod grpc;
+
+#[cfg(feature = "grpc")]
 mod gen {
     #[allow(clippy::all, warnings)]
     pub mod prism_router_v1 {
         include!("gen/prism.router.v1.rs");
     }
 }
+
+#[cfg(feature = "proxy")]
+mod protocol;
+#[cfg(feature = "proxy")]
+mod proxy;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -22,11 +29,9 @@ use tower_http::trace::TraceLayer;
 use tracing::{info, error};
 
 use crate::config::{build_registry, load_config};
-use crate::gen::prism_router_v1::router_service_server::RouterServiceServer;
-use crate::grpc::GrpcRouterService;
 use crate::state::AppState;
 
-/// Prism Router — LLM routing decision service
+/// Prism Router — LLM routing decision service with optional proxy gateway
 #[derive(Parser, Debug)]
 #[command(name = "prism-router", version, about)]
 struct Cli {
@@ -39,8 +44,19 @@ struct Cli {
     listen: Option<String>,
 
     /// gRPC listen address (overrides config file)
-    #[arg(long)]
+    #[cfg_attr(feature = "grpc", arg(long))]
+    #[cfg(feature = "grpc")]
     grpc_listen: Option<String>,
+
+    /// Proxy listen address (overrides config file)
+    #[cfg_attr(feature = "proxy", arg(long))]
+    #[cfg(feature = "proxy")]
+    proxy_listen: Option<String>,
+
+    /// Disable proxy even if compiled with proxy feature
+    #[cfg_attr(feature = "proxy", arg(long))]
+    #[cfg(feature = "proxy")]
+    no_proxy: bool,
 }
 
 #[tokio::main]
@@ -74,11 +90,6 @@ async fn main() {
         }
     });
 
-    // Determine gRPC listen address
-    let grpc_addr_str = cli.grpc_listen.unwrap_or_else(|| {
-        format!("0.0.0.0:{}", config.server.grpc_port)
-    });
-
     // Build registry and router
     let registry = build_registry(&config);
     let router = prism_core::router::PrismRouter::new(registry);
@@ -95,46 +106,103 @@ async fn main() {
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
-    // Parse addresses
+    // Parse HTTP address
     let http_addr: SocketAddr = http_addr_str.parse().unwrap_or_else(|e| {
         error!("Invalid HTTP listen address '{}': {}", http_addr_str, e);
         std::process::exit(1);
     });
 
-    let grpc_addr: SocketAddr = grpc_addr_str.parse().unwrap_or_else(|e| {
-        error!("Invalid gRPC listen address '{}': {}", grpc_addr_str, e);
-        std::process::exit(1);
-    });
+    // ── Collect features info for startup banner ──
+    let mut features = vec!["http"];
+    #[cfg(feature = "grpc")]
+    { features.push("grpc"); }
+    #[cfg(feature = "proxy")]
+    { features.push("proxy"); }
 
-    info!("🚀 Prism Router starting — HTTP on {}, gRPC on {}", http_addr, grpc_addr);
+    info!(
+        "🚀 Prism Router starting — features: [{}]",
+        features.join(", ")
+    );
 
-    // Build gRPC server
-    let grpc_service = GrpcRouterService::new(state);
-    let grpc_server = tonic::transport::Server::builder()
-        .add_service(RouterServiceServer::new(grpc_service))
-        .serve_with_shutdown(grpc_addr, shutdown_signal());
-
-    // Build HTTP server
+    // ── Start HTTP server ──
     let http_listener = tokio::net::TcpListener::bind(http_addr).await.unwrap_or_else(|e| {
         error!("Failed to bind HTTP to {}: {}", http_addr, e);
         std::process::exit(1);
     });
+    info!("  HTTP  → {}", http_addr);
     let http_server = axum::serve(http_listener, app)
         .with_graceful_shutdown(shutdown_signal());
 
-    // Run both servers concurrently
-    tokio::select! {
-        result = http_server => {
-            if let Err(e) = result {
-                error!("HTTP server error: {}", e);
-            }
-        }
-        result = grpc_server => {
-            if let Err(e) = result {
+    // ── Start gRPC server (if feature enabled) ──
+    #[cfg(feature = "grpc")]
+    let grpc_handle = {
+        use crate::gen::prism_router_v1::router_service_server::RouterServiceServer;
+        use crate::grpc::GrpcRouterService;
+
+        let grpc_addr_str = cli.grpc_listen.unwrap_or_else(|| {
+            format!("0.0.0.0:{}", config.server.grpc_port)
+        });
+        let grpc_addr: SocketAddr = grpc_addr_str.parse().unwrap_or_else(|e| {
+            error!("Invalid gRPC listen address '{}': {}", grpc_addr_str, e);
+            std::process::exit(1);
+        });
+        info!("  gRPC  → {}", grpc_addr);
+
+        let grpc_service = GrpcRouterService::new(state.clone());
+        let grpc_server = tonic::transport::Server::builder()
+            .add_service(RouterServiceServer::new(grpc_service))
+            .serve_with_shutdown(grpc_addr, shutdown_signal());
+
+        tokio::spawn(async move {
+            if let Err(e) = grpc_server.await {
                 error!("gRPC server error: {}", e);
             }
+        })
+    };
+
+    // ── Start Proxy server (if feature enabled and not disabled) ──
+    #[cfg(feature = "proxy")]
+    let proxy_handle = {
+        let run_proxy = !cli.no_proxy;
+        if run_proxy {
+            use std::sync::Arc;
+            use crate::proxy::PrismProxy;
+
+            let proxy_addr_str = cli.proxy_listen.unwrap_or_else(|| {
+                format!("0.0.0.0:{}", config.server.proxy_port)
+            });
+            info!("  Proxy → {}", proxy_addr_str);
+
+            let prism_proxy = PrismProxy::new(Arc::clone(&state.router));
+
+            // Pingora runs in its own thread (blocking)
+            let proxy_handle = std::thread::spawn(move || {
+                let mut server = pingora::prelude::Server::new(None).unwrap();
+                server.bootstrap();
+
+                let mut proxy_service = pingora::proxy::http_proxy_service(
+                    &server.configuration,
+                    prism_proxy,
+                );
+                proxy_service.add_tcp(&proxy_addr_str);
+                server.add_service(proxy_service);
+                server.run_forever();
+            });
+            Some(proxy_handle)
+        } else {
+            info!("  Proxy → disabled (--no-proxy)");
+            None
         }
+    };
+
+    // ── Run HTTP server (main task) ──
+    if let Err(e) = http_server.await {
+        error!("HTTP server error: {}", e);
     }
+
+    // Wait for gRPC to finish
+    #[cfg(feature = "grpc")]
+    { let _ = grpc_handle.await; }
 
     info!("Prism Router stopped");
 }

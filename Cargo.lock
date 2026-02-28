@@ -2044,30 +2044,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "prism-proxy"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "clap",
- "http",
- "pingora",
- "prism-core",
- "serde",
- "serde_json",
- "serde_yaml",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "prism-router"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum 0.8.8",
+ "bytes",
  "clap",
+ "http",
  "http-body-util",
  "hyper",
+ "pingora",
  "prism-core",
  "prost",
  "prost-types",
