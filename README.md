@@ -7,17 +7,16 @@
 *Route every request to the optimal model — automatically.*
 
 [![Rust](https://img.shields.io/badge/Rust-Core_Engine-orange?logo=rust)](prism-core/)
-[![Go](https://img.shields.io/badge/Go-API_Gateway-00ADD8?logo=go)](prism-gateway/)
-[![Tests](https://img.shields.io/badge/Tests-205_passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-97_passing-brightgreen)]()
 [![License](https://img.shields.io/badge/License-MIT-blue)]()
 
-[English](#-why-prism) · [中文](#-为什么需要-prism)
+[English](./README.md) · [中文](./README.zh-CN.md)
 
 </div>
 
 ---
 
-## 🤔 Why Prism?
+## Why Prism?
 
 When you use multiple LLMs (GPT-4o, Claude, DeepSeek, etc.) simultaneously, you face these problems:
 
@@ -36,30 +35,36 @@ When you use multiple LLMs (GPT-4o, Claude, DeepSeek, etc.) simultaneously, you 
 | ⚡ | **Blazing Fast** | Rust core engine, **8μs** routing decisions, P99 < 5ms |
 | 🎯 | **Multi-Strategy** | Balanced / SLO / Cost-First / Quality-First — switchable per request |
 | 🔌 | **Drop-in** | OpenAI-compatible API — just change `base_url` |
-| 📊 | **Observable** | Prometheus metrics, request tracing, cost analysis |
+| 📊 | **Observable** | Prometheus metrics with 6-dimension monitoring, request tracing, cost analysis |
 | 🔄 | **Feedback Loop** | Dynamically adjusts routing weights based on actual outcomes |
 | 🧪 | **A/B Testing** | Config-driven experiments with traffic splitting |
-| 🏗️ | **Flexible Deploy** | FFI embedded (< 0.5ms) / Standalone HTTP / Envoy ext_proc |
-| 🔧 | **Extensible Analyzer** | Built-in rules / YAML config / Webhook / WASM plugins |
+| 🏗️ | **Flexible Deploy** | Standalone HTTP + gRPC + Reverse Proxy (Pingora) |
+| 🔧 | **Plugin System** | Extensible filter/scorer plugins for custom routing logic |
 
-## 🏛️ Architecture
+## Architecture
+
+Prism is a Rust workspace with two crates:
 
 ```
-                                    ┌──────────────────────────────┐
-                                    │      prism-core (Rust)       │
-                                    │                              │
-Client ───▶ prism-gateway (Go) ─FFI─▶  L1 Model Selection        │
-                 │                  │  L2 Provider Selection       │
-                 │                  │  L3 Account Selection        │
-                 │                  │  L4 Variant Selection        │
-                 │                  │  L5 Resilience (retry/cb)    │
-                 │                  │  Feedback Collector           │
-                 │                  └──────────────────────────────┘
-                 │
-                 ├───▶ OpenAI
-                 ├───▶ Anthropic
-                 ├───▶ DeepSeek
-                 └───▶ Any OpenAI-compatible provider
+                          ┌──────────────────────────────────────┐
+                          │         prism-router (Rust)          │
+                          │                                      │
+                          │  HTTP API ──┐                        │
+  Client ─────────────────│  gRPC API ──┼──▶ prism-core (Rust)  │
+  (OpenAI-compatible)     │  Proxy   ───┘   │                   │
+                          │                 ├─ Analyzer          │
+                          │                 ├─ Plugin System     │
+                          │                 ├─ Strategy Engine   │
+                          │                 ├─ Model Registry    │
+                          │                 ├─ DataLayer         │
+                          │                 └─ Feedback Loop     │
+                          └──────────────────────────────────────┘
+                                        │
+                          ┌─────────────┼──────────────┐
+                          │             │              │
+                          ▼             ▼              ▼
+                       OpenAI      Anthropic       DeepSeek
+                                                  (any OpenAI-compatible)
 ```
 
 ### 5-Layer Scheduling Engine
@@ -72,20 +77,36 @@ Client ───▶ prism-gateway (Go) ─FFI─▶  L1 Model Selection        �
 | **L4** | Variant Selection | *"Send 10% traffic to canary version"* |
 | **L5** | Resilience | *"Provider timeout → auto retry / fallback"* |
 
-## 🚀 Quick Start
+### Serving Modes
+
+prism-router exposes three interfaces simultaneously, each toggleable via feature flags:
+
+| Interface | Feature Flag | Default Port | Use Case |
+|---|---|---|---|
+| **HTTP API** | *(always on)* | 8080 | Routing decisions via REST, health checks, Prometheus metrics |
+| **gRPC** | `grpc` | 9090 | High-performance routing service for gateway integration |
+| **Reverse Proxy** | `proxy` | 8081 | Drop-in OpenAI-compatible proxy (Pingora-based), routes + forwards requests |
+
+## Quick Start
 
 ### Build
 
 ```bash
-# Requires Rust 1.82+ and Go 1.22+
-make build
+# Requires Rust 1.82+
+cargo build --release
+
+# With all features (default)
+cargo build --release -p prism-router
+
+# HTTP-only (no gRPC, no proxy)
+cargo build --release -p prism-router --no-default-features
 ```
 
 ### Configure
 
 ```bash
 cp configs/prism.example.yaml configs/prism.yaml
-# Edit prism.yaml with your API keys
+# Edit prism.yaml with your API keys and model definitions
 ```
 
 <details>
@@ -94,6 +115,8 @@ cp configs/prism.example.yaml configs/prism.yaml
 ```yaml
 server:
   http_port: 8080
+  grpc_port: 9090
+  proxy_port: 8081
 
 providers:
   openai:
@@ -143,7 +166,7 @@ routing:
 
 ```bash
 # Direct
-./bin/prism --config configs/prism.yaml
+./target/release/prism-router --config configs/prism.yaml
 
 # Or Docker
 docker compose up -d
@@ -151,9 +174,22 @@ docker compose up -d
 
 ### Use
 
+**HTTP API — Routing Decision:**
+
+```bash
+curl -X POST http://localhost:8080/v1/route \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [{"role": "user", "content": "Write a quicksort in Rust"}],
+    "strategy": "balanced"
+  }'
+```
+
+**Reverse Proxy — Drop-in OpenAI Replacement (port 8081):**
+
 ```bash
 # Same as OpenAI API — just change base_url
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:8081/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "auto",
@@ -161,7 +197,7 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-The response includes routing metadata in headers:
+The proxy response includes routing metadata in headers:
 
 ```
 X-Prism-Model: gpt-4o-mini
@@ -170,7 +206,7 @@ X-Prism-Variant: gpt-4o-mini@openai
 X-Prism-Decision-Time-Us: 8
 ```
 
-## 🎯 Routing Strategies
+## Routing Strategies
 
 Specify strategy per request via header or body:
 
@@ -195,7 +231,7 @@ curl -H "X-Prism-Strategy: balanced" \
 curl -d '{"model": "gpt-4o", ...}'
 ```
 
-## 🔧 Advanced Features
+## Advanced Features
 
 <details>
 <summary><b>Session Affinity</b> — improve KV cache hit rate</summary>
@@ -216,27 +252,6 @@ curl -H "X-Prism-Tenant-Id: team-backend" ...
 ```
 
 Routes to the account with matching `billing_tag`.
-
-</details>
-
-<details>
-<summary><b>Platform-Specific Rules</b> — different rules for different sources</summary>
-
-```yaml
-analyzer:
-  scopes:
-    - name: mobile_users
-      match_on:
-        sources: [mobile, ios, android]
-      rules:
-        - keywords: [help]
-          task_type: simple_qa
-          complexity: 0.1
-```
-
-```bash
-curl -H "X-Prism-Source: mobile" -H "X-Prism-Caller-Type: user" ...
-```
 
 </details>
 
@@ -274,197 +289,128 @@ curl -X POST http://localhost:8080/v1/outcomes \
   }'
 ```
 
-Prism adjusts routing scores based on real-world outcomes.
+Prism adjusts routing scores based on real-world outcomes via its feedback loop.
 
 </details>
 
-## 🏗️ Deployment Modes
+<details>
+<summary><b>Plugin System</b> — extensible routing logic</summary>
 
-| Mode | Routing Latency | Use Case |
-|---|---|---|
-| **A: FFI Embedded** | < 0.5ms | Best performance, self-contained |
-| **B: Standalone Service** | 1-3ms | Integrate with existing gateways (Higress/Envoy/APISIX) |
-| **C: Envoy ext_proc** | 1-3ms | Deep Envoy ecosystem integration |
+prism-core uses a plugin pipeline for routing decisions:
 
-```bash
-# Mode A (default) — FFI embedded
-./bin/prism --config configs/prism.yaml
+- **Filter Plugins** — remove candidates that don't meet requirements (capabilities, health, circuit breaker, protocol)
+- **Scorer Plugins** — score remaining candidates on cost, latency, quality, specialty, feedback, geo-proximity, strategy weights
 
-# Mode B — standalone routing service
-./bin/prism-router --config configs/prism.yaml --listen :8081
-```
+Built-in plugins: `HealthFilter`, `CapabilityFilter`, `CircuitBreaker`, `ProtocolFilter`, `PinnedModel`, `CostScorer`, `LatencyScorer`, `QualityScorer`, `SpecialtyScorer`, `FeedbackScorer`, `GeoProximity`, `StrategyScorer`, `AffinityScorer`, `Canary`, `Weighted`
 
-## 📊 Observability
+Custom plugins implement the `RoutingPlugin` trait.
+
+</details>
+
+## Observability
 
 ```bash
 # Prometheus metrics
 curl http://localhost:8080/metrics
 ```
 
-| Metric | Description |
+### Metrics Dimensions (6 categories)
+
+| Category | Metrics |
 |---|---|
-| `prism_routing_decision_duration_seconds` | Routing decision latency |
-| `prism_provider_request_duration_seconds` | Provider request latency |
-| `prism_provider_requests_total` | Request count by provider/model/status |
-| `prism_tokens_total` | Token usage (prompt/completion) |
-| `prism_active_requests` | Active concurrent requests |
-| `prism_ttft_seconds` | Time to first token (streaming) |
+| **Routing Decision** | `prism_routing_decision_duration_us` (histogram), `prism_strategy_calls_total`, `prism_fallback_triggered_total`, plugin filter/score duration |
+| **Provider** | `prism_provider_requests_total`, `prism_provider_errors_total`, `prism_provider_latency_sum_ms`, `prism_rate_limit_utilization`, `prism_circuit_breaker_state` |
+| **Traffic Distribution** | `prism_routes_by_model_total`, `prism_routes_by_provider_total`, `prism_routes_by_account_total`, `prism_experiment_assignments_total` |
+| **Token Usage** | `prism_input_tokens_total`, `prism_output_tokens_total`, `prism_tokens_per_second` |
+| **Resources** | `prism_active_requests`, `prism_queue_depth` |
+| **DataLayer** | `prism_data_layer_queries_total`, `prism_data_layer_hits_total`, `prism_data_layer_latency_sum_us` |
 
-## 🛠️ Admin Dashboard
+Per-variant latency percentiles (P50/P95/P99), error rate, QPS, and TTFT are also exported.
 
-```bash
-./bin/prism-admin --config configs/prism.yaml --listen :8081
-```
-
-| Endpoint | Description |
-|---|---|
-| `GET /api/v1/status` | System health |
-| `GET /api/v1/providers` | Provider list + status |
-| `GET /api/v1/models` | Model list + capabilities |
-| `GET /api/v1/variants` | Variants + real-time performance |
-| `GET /api/v1/dashboard/overview` | Aggregated dashboard |
-| `GET /api/v1/experiments` | A/B test results |
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 prism/
-├── prism-core/          # 🦀 Rust routing engine
+├── prism-core/              # 🦀 Rust routing engine (library)
 │   ├── src/
-│   │   ├── analyzer.rs      # Request analyzer (rules/YAML/webhook/WASM)
-│   │   ├── strategy.rs      # L1-L5 scheduling strategies
-│   │   ├── router.rs        # PrismRouter main logic
-│   │   ├── registry.rs      # Model registry
-│   │   ├── feedback.rs      # Feedback collector
-│   │   ├── ffi.rs           # C FFI interface
-│   │   └── types.rs         # Core type definitions
-│   └── tests/               # 76 tests
-├── prism-gateway/       # 🐹 Go API gateway
-│   ├── internal/
-│   │   ├── gateway/         # HTTP handler + streaming
-│   │   ├── provider/        # OpenAI / Anthropic / DeepSeek
-│   │   ├── router/          # FFI bridge + strategy mapping
-│   │   ├── metrics/         # Prometheus collectors
-│   │   ├── state/           # Redis / in-memory state store
-│   │   ├── abtesting/       # A/B testing framework
-│   │   └── config/          # YAML config loading
-│   └── tests/e2e/           # E2E tests
-├── prism-router/        # 📡 Standalone routing service (Mode B)
-├── prism-admin/         # 🖥️ Admin dashboard backend
-├── proto/               # 📋 Protobuf definitions
-├── configs/             # ⚙️ Configuration + Prometheus
-├── Dockerfile           # 🐳 Multi-stage build (Rust + Go)
-└── docker-compose.yml   # Prism + Redis + Prometheus
+│   │   ├── lib.rs               # Module declarations
+│   │   ├── types.rs             # Core types: Model, Variant, Provider, Pool, etc.
+│   │   ├── analyzer.rs          # Request analyzer (rule-based / feature / webhook)
+│   │   ├── strategy.rs          # L1-L5 strategy definitions
+│   │   ├── router.rs            # PrismRouter — main routing logic
+│   │   ├── selector.rs          # Candidate scoring & selection
+│   │   ├── registry.rs          # ModelRegistry — model/variant/pool management
+│   │   ├── plugin.rs            # RoutingPlugin trait & pipeline
+│   │   ├── plugins/             # 15 built-in plugins (filter + scorer)
+│   │   ├── data.rs              # DataLayer — metrics storage abstraction
+│   │   ├── feedback.rs          # Feedback collector (outcome → weight adjustment)
+│   │   └── ffi.rs               # C FFI interface for embedding
+│   └── Cargo.toml
+├── prism-router/            # 🚀 Standalone routing service
+│   ├── src/
+│   │   ├── main.rs              # Entrypoint: HTTP + gRPC + Proxy servers
+│   │   ├── api.rs               # Axum HTTP handlers (route, outcomes, health, metrics)
+│   │   ├── grpc.rs              # tonic gRPC RouterService implementation
+│   │   ├── proxy.rs             # Pingora reverse proxy (OpenAI-compatible)
+│   │   ├── protocol.rs          # Protocol detection (completions, embeddings, etc.)
+│   │   ├── metrics.rs           # MetricsCollector — 6-dimension Prometheus metrics
+│   │   ├── config.rs            # YAML config loading → Registry construction
+│   │   └── state.rs             # AppState (shared Router + Metrics)
+│   └── Cargo.toml
+├── proto/                   # 📋 Protobuf definitions
+│   └── prism/router/v1/
+│       └── router.proto
+├── configs/                 # ⚙️ Configuration files
+│   ├── prism.example.yaml
+│   ├── prism.yaml
+│   └── prometheus.yml
+├── Makefile                 # Build & test commands
+├── Dockerfile               # Multi-stage build (Rust + Go FFI gateway)
+├── docker-compose.yml       # Prism + Redis + PostgreSQL + Prometheus
+└── DESIGN.md                # Full technical design document
 ```
 
-## 🧑‍💻 Development
+## Development
 
 ```bash
-make build           # Build everything
-make test-all        # Run all tests (Rust + Go)
-make test-core       # Rust tests (76)
-make test-e2e        # Go E2E tests
-make test-ffi        # Go FFI tests
-make fmt             # Format code
-make lint            # Lint check
-make docker-up       # Start with Docker
+cargo build --release        # Build everything
+cargo test                   # Run all tests (97 passing)
+cargo bench                  # Benchmarks (prism-core)
+cargo fmt --all              # Format code
+cargo clippy -- -D warnings  # Lint check
 ```
 
-## ⚡ Performance
+### Feature Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `grpc` | ✅ | Enable gRPC RouterService (tonic) |
+| `proxy` | ✅ | Enable Pingora reverse proxy |
+| `wasm` | ❌ | Enable WASM plugin support (wasmtime) in prism-core |
+
+## Performance
 
 | Metric | Measured | Target |
 |---|---|---|
 | Routing decision | **8μs** | < 500μs |
-| FFI call overhead | < 0.01ms | < 0.5ms |
-| Gateway overhead | < 5ms | < 10ms |
-| 1000 routing decisions | < 50ms | — |
+| P99 latency | < 5ms | < 5ms |
+| Memory footprint | ~30MB | < 100MB |
 
-## 🧱 Tech Stack
+## Tech Stack
 
-| Component | Language | Purpose |
+| Component | Technology | Purpose |
 |---|---|---|
-| prism-core | Rust | Routing engine, request analysis, scoring |
-| prism-gateway | Go | API gateway, provider integration, streaming |
-| prism-router | Go + Rust FFI | Standalone routing service |
-| prism-admin | Go | Admin dashboard API |
-| State store | Redis (optional) | Real-time QPS / latency / error rate |
-| Monitoring | Prometheus | Metrics collection |
+| prism-core | Rust | Routing engine, request analysis, plugin scoring |
+| prism-router | Rust (Axum + tonic + Pingora) | HTTP API, gRPC service, reverse proxy |
+| Monitoring | Prometheus | Metrics collection (6-dimension) |
+| State (optional) | Redis | Real-time QPS / latency / error rate |
+| Logs (optional) | PostgreSQL | Audit logging & cost analysis |
 
-## 📖 Documentation
+## Documentation
 
-- [Full Technical Design Document](./DESIGN.md) — Architecture, strategy engine, object model, deployment modes
+- [Full Technical Design Document](./DESIGN.md) — Architecture, 5-layer strategy engine, object model, deployment modes
 - [Configuration Example](./configs/prism.example.yaml)
 - [Protobuf Definitions](./proto/prism/router/v1/router.proto)
-
----
-
-<div align="center">
-
-# 🔺 Prism 棱镜
-
-**高性能大模型智能路由引擎**
-
-*一束请求进来，根据策略折射到最优模型。*
-
-</div>
-
----
-
-## 🤔 为什么需要 Prism？
-
-当你同时使用 GPT-4o、Claude、DeepSeek 等多个模型时：
-
-- 💸 简单问题用 GPT-4o 太贵，复杂问题用 mini 效果差
-- 🔄 Provider 限流了，手动切换很痛苦
-- 💰 不同团队需要走不同的计费账号
-- 🧪 想 A/B 测试对比模型效果，但缺基础设施
-
-**Prism 自动解决这些问题**：分析请求内容判断复杂度，结合你的策略偏好，在 **8 微秒**内选出最优的模型和 Provider。
-
-### 核心特性
-
-- 🧠 **智能路由** — 分析请求内容（代码/推理/翻译/闲聊），自动匹配模型
-- ⚡ **极致性能** — Rust 核心引擎，路由决策 8μs，P99 < 5ms
-- 🎯 **多策略** — Balanced / SLO / CostFirst / QualityFirst，请求级切换
-- 🔌 **即插即用** — OpenAI 兼容 API，改一行 base_url 就能接入
-- 📊 **可观测** — Prometheus 指标、请求追踪、成本分析
-- 🔄 **反馈闭环** — 根据实际效果动态调整路由权重
-- 🧪 **A/B 测试** — 配置化实验，流量分流对比
-- 🏗️ **灵活部署** — FFI 内嵌 / 独立 HTTP 服务 / Envoy ext_proc
-- 🔧 **可扩展** — 规则引擎 / YAML 配置 / Webhook / WASM 插件
-
-### 五层调度引擎
-
-| 层 | 职责 | 示例 |
-|:---:|---|---|
-| **L1** | 模型选择 | *"这是代码问题 → 选 GPT-4o"* |
-| **L2** | Provider 选择 | *"用户在 us-east → 选最近的节点"* |
-| **L3** | Account 选择 | *"team-a 的请求 → 走 team-a 的计费账号"* |
-| **L4** | Variant 选择 | *"10% 流量给 canary 版本"* |
-| **L5** | 容错 | *"Provider 超时 → 自动重试/降级"* |
-
-### 快速开始
-
-```bash
-# 构建（需要 Rust 1.82+ 和 Go 1.22+）
-make build
-
-# 配置
-cp configs/prism.example.yaml configs/prism.yaml
-# 编辑填入 API key
-
-# 运行
-./bin/prism --config configs/prism.yaml
-
-# 使用（和 OpenAI API 完全一样）
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"auto","messages":[{"role":"user","content":"你好！"}]}'
-```
-
-详细文档请参考上方英文部分和 [DESIGN.md](./DESIGN.md)。
-
----
 
 ## License
 

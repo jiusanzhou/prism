@@ -1,59 +1,41 @@
-.PHONY: all build build-core build-gateway test test-core test-gateway test-ffi test-e2e test-all clean fmt lint
-
-GO := PATH="/usr/local/go/bin:$(PATH)" go
+.PHONY: all build test bench fmt lint clean docker-up docker-down dev-deps
 
 all: build
 
 # --- Build ---
-build: build-core build-gateway
-
-build-core:
+build:
 	cargo build --release
 
-build-gateway: build-core
-	cd prism-gateway && $(GO) build -o bin/prism ./cmd/prism
+build-debug:
+	cargo build
 
 # --- Test ---
-test: test-core test-gateway
-
-test-core:
+test:
 	cargo test
 
-test-gateway:
-	cd prism-gateway && $(GO) test ./...
-
-test-ffi: build-core
-ifeq ($(shell uname),Darwin)
-	cd prism-gateway && DYLD_LIBRARY_PATH=$(CURDIR)/target/release CGO_ENABLED=1 $(GO) test -tags ffi -v ./internal/router/...
-else
-	cd prism-gateway && LD_LIBRARY_PATH=$(CURDIR)/target/release CGO_ENABLED=1 $(GO) test -tags ffi -v ./internal/router/...
-endif
-
-test-e2e:
-	cd prism-gateway && $(GO) test -tags e2e -v ./tests/e2e/...
-
-test-all: test-core test-e2e test-ffi
+test-verbose:
+	cargo test -- --nocapture
 
 # --- Bench ---
 bench:
-	cd prism-core && cargo bench
+	cargo bench -p prism-core
 
 # --- Format ---
 fmt:
-	cd prism-core && cargo fmt
-	cd prism-gateway && gofmt -w .
+	cargo fmt --all
 
 # --- Lint ---
 lint:
-	cargo clippy -- -D warnings
-	cd prism-gateway && $(GO) vet ./...
+	cargo clippy --all-targets -- -D warnings
 
 # --- Clean ---
 clean:
 	cargo clean
-	cd prism-gateway && rm -rf bin/
 
 # --- Docker ---
+docker-build:
+	docker compose build
+
 docker-up:
 	docker compose up -d
 
@@ -63,3 +45,17 @@ docker-down:
 # --- Dev helpers ---
 dev-deps:
 	docker compose up -d redis postgres
+
+# --- Run ---
+run:
+	cargo run --release -p prism-router -- --config configs/prism.yaml
+
+run-debug:
+	RUST_LOG=prism_router=debug,prism_core=debug cargo run -p prism-router -- --config configs/prism.yaml
+
+# --- Feature variants ---
+build-minimal:
+	cargo build --release -p prism-router --no-default-features
+
+build-no-proxy:
+	cargo build --release -p prism-router --no-default-features --features grpc
