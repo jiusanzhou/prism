@@ -4,6 +4,8 @@ pub mod strategy;
 pub mod data;
 pub mod registry;
 pub mod selector;
+pub mod plugin;
+pub mod plugins;
 pub mod router;
 pub mod feedback;
 pub mod ffi;

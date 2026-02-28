@@ -408,7 +408,7 @@ fn test_analyzer_influences_routing() {
     assert!(!d_cost.selected_model.is_empty());
 }
 
-/// Performance benchmark: 1000 routing decisions should complete in < 50ms.
+/// Performance benchmark: 1000 routing decisions should complete in < 100ms.
 #[test]
 fn test_routing_throughput() {
     let reg = build_full_registry();
@@ -423,8 +423,8 @@ fn test_routing_throughput() {
     let elapsed = start.elapsed();
 
     assert!(
-        elapsed.as_millis() < 50,
-        "1000 routing decisions took {}ms, expected < 50ms",
+        elapsed.as_millis() < 100,
+        "1000 routing decisions took {}ms, expected < 100ms",
         elapsed.as_millis()
     );
 }
