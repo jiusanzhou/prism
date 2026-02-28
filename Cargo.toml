@@ -1,4 +1,4 @@
 [workspace]
-members = ["prism-core"]
+members = ["prism-core", "prism-router", "prism-proxy"]
 exclude = ["prism-wasm-analyzer"]
 resolver = "2"
