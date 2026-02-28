@@ -6,6 +6,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rand::Rng;
@@ -334,6 +335,77 @@ impl L2ProviderSelector for DefaultL2Selector {
     }
 }
 
+// ──────────────────────────────────────────────
+// LowestLatencyL2Selector
+// ──────────────────────────────────────────────
+
+/// L2: re-rank candidates by p50 latency ascending (lowest latency first).
+pub struct LowestLatencyL2Selector;
+
+impl L2ProviderSelector for LowestLatencyL2Selector {
+    fn rerank<'a>(
+        &self,
+        mut candidates: Vec<&'a ModelCandidate>,
+        _ctx: &RouteContext,
+    ) -> Vec<&'a ModelCandidate> {
+        candidates.sort_by_key(|c| c.variant.performance.p50_latency_ms);
+        candidates
+    }
+
+    fn name(&self) -> &str {
+        "LowestLatencyL2Selector"
+    }
+}
+
+// ──────────────────────────────────────────────
+// LowestCostL2Selector
+// ──────────────────────────────────────────────
+
+/// L2: re-rank candidates by effective pricing cost ascending (cheapest first).
+pub struct LowestCostL2Selector;
+
+impl L2ProviderSelector for LowestCostL2Selector {
+    fn rerank<'a>(
+        &self,
+        mut candidates: Vec<&'a ModelCandidate>,
+        _ctx: &RouteContext,
+    ) -> Vec<&'a ModelCandidate> {
+        candidates.sort_by(|a, b| {
+            a.effective_pricing
+                .cost_per_1m()
+                .partial_cmp(&b.effective_pricing.cost_per_1m())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        candidates
+    }
+
+    fn name(&self) -> &str {
+        "LowestCostL2Selector"
+    }
+}
+
+// ──────────────────────────────────────────────
+// PriorityL2Selector
+// ──────────────────────────────────────────────
+
+/// L2: re-rank candidates by endpoint priority ascending (lower number = higher priority).
+pub struct PriorityL2Selector;
+
+impl L2ProviderSelector for PriorityL2Selector {
+    fn rerank<'a>(
+        &self,
+        mut candidates: Vec<&'a ModelCandidate>,
+        _ctx: &RouteContext,
+    ) -> Vec<&'a ModelCandidate> {
+        candidates.sort_by_key(|c| c.endpoint.priority);
+        candidates
+    }
+
+    fn name(&self) -> &str {
+        "PriorityL2Selector"
+    }
+}
+
 // ════════════════════════════════════════════════
 // L3 — Account Selector
 // ════════════════════════════════════════════════
@@ -431,6 +503,76 @@ impl L3AccountSelector for AffinityL3Selector {
 
     fn name(&self) -> &str {
         "AffinityL3Selector"
+    }
+}
+
+// ──────────────────────────────────────────────
+// RoundRobinL3Selector
+// ──────────────────────────────────────────────
+
+/// L3: round-robin selection using an atomic counter. Thread-safe.
+pub struct RoundRobinL3Selector {
+    counter: AtomicUsize,
+}
+
+impl RoundRobinL3Selector {
+    pub fn new() -> Self {
+        Self {
+            counter: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl L3AccountSelector for RoundRobinL3Selector {
+    fn select(
+        &self,
+        candidates: &[&ModelCandidate],
+        _ctx: &RouteContext,
+    ) -> Result<usize, RouterError> {
+        if candidates.is_empty() {
+            return Err(RouterError::NoCandidates);
+        }
+        let idx = self.counter.fetch_add(1, Ordering::Relaxed);
+        Ok(idx % candidates.len())
+    }
+
+    fn name(&self) -> &str {
+        "RoundRobinL3Selector"
+    }
+}
+
+// ──────────────────────────────────────────────
+// LeastLoadL3Selector
+// ──────────────────────────────────────────────
+
+/// L3: select the candidate with the lowest current_qps.
+pub struct LeastLoadL3Selector;
+
+impl L3AccountSelector for LeastLoadL3Selector {
+    fn select(
+        &self,
+        candidates: &[&ModelCandidate],
+        _ctx: &RouteContext,
+    ) -> Result<usize, RouterError> {
+        if candidates.is_empty() {
+            return Err(RouterError::NoCandidates);
+        }
+        let (min_idx, _) = candidates
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                a.variant
+                    .performance
+                    .current_qps
+                    .partial_cmp(&b.variant.performance.current_qps)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .unwrap(); // safe: candidates is non-empty
+        Ok(min_idx)
+    }
+
+    fn name(&self) -> &str {
+        "LeastLoadL3Selector"
     }
 }
 
@@ -817,5 +959,89 @@ impl L5ResiliencePolicy for DefaultL5Policy {
 
     fn name(&self) -> &str {
         "DefaultL5Policy"
+    }
+}
+
+// ════════════════════════════════════════════════
+// Selector Configuration
+// ════════════════════════════════════════════════
+
+/// Configuration for which selector implementation to use at each routing layer.
+///
+/// All fields have defaults, so an empty/missing `SelectorConfig` is fully backward-compatible.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SelectorConfig {
+    #[serde(default = "default_l1")]
+    pub l1: String,
+    #[serde(default = "default_l2")]
+    pub l2: String,
+    #[serde(default = "default_l3")]
+    pub l3: String,
+    #[serde(default = "default_l4")]
+    pub l4: String,
+}
+
+impl Default for SelectorConfig {
+    fn default() -> Self {
+        Self {
+            l1: default_l1(),
+            l2: default_l2(),
+            l3: default_l3(),
+            l4: default_l4(),
+        }
+    }
+}
+
+fn default_l1() -> String { "scored".into() }
+fn default_l2() -> String { "default".into() }
+fn default_l3() -> String { "affinity".into() }
+fn default_l4() -> String { "best".into() }
+
+// ════════════════════════════════════════════════
+// Selector Factory
+// ════════════════════════════════════════════════
+
+/// Create an L1 selector from a configuration name.
+///
+/// Currently only `ScoredL1Selector` exists. The factory always returns it
+/// regardless of the name, since L1 strategy switching (Auto/Pinned/Cascade)
+/// is handled at the request level inside `ScoredL1Selector`.
+pub fn create_l1_selector(_name: &str, feedback: Arc<FeedbackCollector>) -> Box<dyn L1ModelSelector> {
+    Box::new(ScoredL1Selector::new(feedback))
+}
+
+/// Create an L2 selector from a configuration name.
+///
+/// Supported names: `"default"`, `"lowest_latency"`, `"lowest_cost"`, `"priority"`.
+/// Unknown names fall back to `DefaultL2Selector`.
+pub fn create_l2_selector(name: &str) -> Box<dyn L2ProviderSelector> {
+    match name {
+        "lowest_latency" => Box::new(LowestLatencyL2Selector),
+        "lowest_cost" => Box::new(LowestCostL2Selector),
+        "priority" => Box::new(PriorityL2Selector),
+        _ => Box::new(DefaultL2Selector), // "default" or unknown
+    }
+}
+
+/// Create an L3 selector from a configuration name.
+///
+/// Supported names: `"affinity"`, `"round_robin"`, `"least_load"`.
+/// Unknown names fall back to `AffinityL3Selector`.
+pub fn create_l3_selector(name: &str) -> Box<dyn L3AccountSelector> {
+    match name {
+        "round_robin" => Box::new(RoundRobinL3Selector::new()),
+        "least_load" => Box::new(LeastLoadL3Selector),
+        _ => Box::new(AffinityL3Selector), // "affinity" or unknown
+    }
+}
+
+/// Create an L4 selector from a configuration name.
+///
+/// Supported names: `"best"`, `"weighted"`.
+/// Unknown names fall back to `BestL4Selector`.
+pub fn create_l4_selector(name: &str) -> Box<dyn L4VariantSelector> {
+    match name {
+        "weighted" => Box::new(WeightedL4Selector),
+        _ => Box::new(BestL4Selector), // "best" or unknown
     }
 }

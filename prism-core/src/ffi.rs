@@ -6,6 +6,7 @@ use crate::analyzer::ChatMessage;
 use crate::feedback::OutcomeReport;
 use crate::registry::{InMemoryRegistry, ModelRegistryTrait};
 use crate::router::{PrismRouter, RouteMetadata, RouteRequest, Router};
+use crate::selector::{SelectorConfig, create_l2_selector, create_l3_selector, create_l4_selector};
 use crate::strategy::ModelSelectionStrategy;
 use crate::types::*;
 
@@ -72,11 +73,13 @@ struct InitConfig {
     #[serde(default)]
     pools: Vec<ModelPool>,
     default_strategy: Option<ModelSelectionStrategy>,
+    selector: Option<SelectorConfig>,
 }
 
 #[derive(serde::Deserialize)]
 struct StatsUpdate {
     variant_id: String,
+    #[serde(flatten)]
     performance: ModelPerformance,
 }
 
@@ -163,6 +166,14 @@ pub extern "C" fn prism_init(config_json: *const c_char) -> i32 {
     let mut router = PrismRouter::new(registry);
     if let Some(strategy) = config.default_strategy {
         router = router.with_strategy(strategy);
+    }
+
+    // Apply selector configuration
+    if let Some(ref sel_cfg) = config.selector {
+        router = router
+            .with_l2(create_l2_selector(&sel_cfg.l2))
+            .with_l3(create_l3_selector(&sel_cfg.l3))
+            .with_l4(create_l4_selector(&sel_cfg.l4));
     }
 
     // Store globally (OnceLock — first call wins)
@@ -255,7 +266,9 @@ pub extern "C" fn prism_route(request: *const PrismRouteRequest) -> *mut PrismRo
 
 /// Update real-time model performance statistics.
 ///
-/// Expects JSON: `{"variant_id": "xxx", "performance": {...}}`
+/// Accepts JSON in two formats:
+/// - Array: `[{"variant_id": "xxx", "current_qps": ..., ...}, ...]`
+/// - Single object: `{"variant_id": "xxx", "current_qps": ..., ...}`
 ///
 /// Returns 0 on success, -1 on parse error, -2 if router not initialised.
 #[no_mangle]
@@ -270,14 +283,20 @@ pub extern "C" fn prism_update_model_stats(stats_json: *const c_char) -> i32 {
         None => return -1,
     };
 
-    let update: StatsUpdate = match serde_json::from_str(json_str) {
-        Ok(u) => u,
-        Err(_) => return -1,
+    // Try array first, then single object (backward compatible).
+    let updates: Vec<StatsUpdate> = match serde_json::from_str(json_str) {
+        Ok(arr) => arr,
+        Err(_) => match serde_json::from_str::<StatsUpdate>(json_str) {
+            Ok(single) => vec![single],
+            Err(_) => return -1,
+        },
     };
 
-    router
-        .registry
-        .update_performance(&update.variant_id, update.performance);
+    for update in updates {
+        router
+            .registry
+            .update_performance(&update.variant_id, update.performance);
+    }
 
     0
 }

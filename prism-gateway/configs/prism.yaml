@@ -94,6 +94,10 @@ pools:
 # ─── Routing ──────────────────────────────────────────────
 routing:
   default_strategy: balanced
+  selector:
+    l2: default
+    l3: affinity
+    l4: best
   balanced:
     cost_weight: 0.3
     quality_weight: 0.5

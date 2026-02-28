@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use crate::data::{DataLayer, MetricKind, MetricValue, PerformanceDataSource};
 use crate::types::*;
 
 /// Trait for managing all scheduling objects and their runtime state.
@@ -83,10 +85,16 @@ pub struct InMemoryRegistry {
     pub models: HashMap<String, Model>,
     pub variants: HashMap<String, ModelVariant>,
     pub pools: HashMap<String, ModelPool>,
+    /// Unified data layer for all runtime metrics.
+    data_layer: Arc<DataLayer>,
 }
 
 impl InMemoryRegistry {
     pub fn new() -> Self {
+        let data_layer = Arc::new(DataLayer::new());
+        // Register the default in-memory performance data source.
+        data_layer.register(Arc::new(PerformanceDataSource::new()));
+
         Self {
             providers: HashMap::new(),
             endpoints: HashMap::new(),
@@ -94,7 +102,26 @@ impl InMemoryRegistry {
             models: HashMap::new(),
             variants: HashMap::new(),
             pools: HashMap::new(),
+            data_layer,
         }
+    }
+
+    /// Create a registry with a custom [`DataLayer`].
+    pub fn with_data_layer(data_layer: Arc<DataLayer>) -> Self {
+        Self {
+            providers: HashMap::new(),
+            endpoints: HashMap::new(),
+            accounts: HashMap::new(),
+            models: HashMap::new(),
+            variants: HashMap::new(),
+            pools: HashMap::new(),
+            data_layer,
+        }
+    }
+
+    /// Get a reference to the data layer.
+    pub fn data_layer(&self) -> &Arc<DataLayer> {
+        &self.data_layer
     }
 
     pub fn add_provider(&mut self, p: Provider) {
@@ -133,13 +160,29 @@ impl InMemoryRegistry {
             .unwrap_or(&variant.endpoint_id);
         let account = self.accounts.get(account_id)?;
 
-        let effective_pricing = variant
-            .pricing_override
-            .clone()
-            .unwrap_or_else(|| model.pricing.clone());
+        // Overlay real-time performance data from the data layer (if available).
+        let mut variant_clone = variant.clone();
+        if let Some(MetricValue::Performance(perf)) =
+            self.data_layer.query(MetricKind::Performance, &variant.id)
+        {
+            variant_clone.performance = perf;
+        }
+
+        // Overlay dynamic pricing from the data layer (if available).
+        let effective_pricing =
+            if let Some(MetricValue::Pricing(p)) =
+                self.data_layer.query(MetricKind::Pricing, &variant.id)
+            {
+                p
+            } else {
+                variant
+                    .pricing_override
+                    .clone()
+                    .unwrap_or_else(|| model.pricing.clone())
+            };
 
         Some(ModelCandidate {
-            variant: variant.clone(),
+            variant: variant_clone,
             model: model.clone(),
             account: account.clone(),
             endpoint: endpoint.clone(),
@@ -203,9 +246,12 @@ impl ModelRegistryTrait for InMemoryRegistry {
         self.variants.get(variant_id).cloned()
     }
 
-    fn update_performance(&self, _variant_id: &str, _perf: ModelPerformance) {
-        // In a real implementation this would be atomic / lock-free.
-        // For the in-memory stub we skip mutation (fields are not interior-mutable).
+    fn update_performance(&self, variant_id: &str, perf: ModelPerformance) {
+        self.data_layer.update(
+            MetricKind::Performance,
+            variant_id,
+            MetricValue::Performance(perf),
+        );
     }
 
     fn get_candidates_for_model(&self, model_id: &str) -> Vec<ModelCandidate> {

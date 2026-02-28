@@ -25,6 +25,15 @@ type RoutingConfig struct {
 	DefaultStrategy string          `yaml:"default_strategy"`
 	DefaultPools    []string        `yaml:"default_pools"`
 	Balanced        *BalancedConfig `yaml:"balanced,omitempty"`
+	Selector        SelectorConfig  `yaml:"selector"`
+}
+
+// SelectorConfig selects which implementation to use at each routing layer.
+type SelectorConfig struct {
+	L1 string `yaml:"l1"` // "scored"
+	L2 string `yaml:"l2"` // "default", "lowest_latency", "lowest_cost", "priority"
+	L3 string `yaml:"l3"` // "affinity", "round_robin", "least_load"
+	L4 string `yaml:"l4"` // "best", "weighted"
 }
 
 type BalancedConfig struct {

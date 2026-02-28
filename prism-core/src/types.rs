@@ -234,13 +234,21 @@ impl Default for VariantStatus {
 /// Real-time performance snapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelPerformance {
+    #[serde(default)]
     pub p50_latency_ms: u32,
+    #[serde(default)]
     pub p95_latency_ms: u32,
+    #[serde(default)]
     pub p99_latency_ms: u32,
+    #[serde(default)]
     pub ttft_p50_ms: u32,
+    #[serde(default)]
     pub throughput_tps: f32,
+    #[serde(default)]
     pub error_rate: f32,
+    #[serde(default)]
     pub current_qps: f32,
+    #[serde(default)]
     pub queue_depth: u32,
     /// Timestamp of last metrics update (serialisation-unfriendly, so skip)
     #[serde(skip)]

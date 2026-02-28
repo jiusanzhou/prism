@@ -96,6 +96,13 @@ func toRouterConfigJSON(cfg *Config) (string, error) {
 		Models    []rustModel    `json:"models"`
 		Variants  []rustVariant  `json:"variants"`
 		Pools     []rustPool     `json:"pools"`
+		Selector  *rustSelector  `json:"selector,omitempty"`
+	}
+	type rustSelector struct {
+		L1 string `json:"l1,omitempty"`
+		L2 string `json:"l2,omitempty"`
+		L3 string `json:"l3,omitempty"`
+		L4 string `json:"l4,omitempty"`
 	}
 
 	rc := rustConfig{}
@@ -141,6 +148,17 @@ func toRouterConfigJSON(cfg *Config) (string, error) {
 
 	for _, p := range cfg.Pools {
 		rc.Pools = append(rc.Pools, rustPool{ID: p.ID, Name: p.Name, Variants: p.Variants})
+	}
+
+	// Pass selector config if any field is set
+	sel := cfg.Routing.Selector
+	if sel.L1 != "" || sel.L2 != "" || sel.L3 != "" || sel.L4 != "" {
+		rc.Selector = &rustSelector{
+			L1: sel.L1,
+			L2: sel.L2,
+			L3: sel.L3,
+			L4: sel.L4,
+		}
 	}
 
 	data, err := json.Marshal(rc)
