@@ -5,7 +5,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/aspect-build/prism-gateway/pkg/api"
+	"go.zoe.im/prism-gateway/pkg/api"
 )
 
 // Provider abstracts an LLM service provider (OpenAI, Anthropic, etc.).

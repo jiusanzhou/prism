@@ -8,12 +8,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/aspect-build/prism-gateway/internal/abtesting"
-	"github.com/aspect-build/prism-gateway/internal/metrics"
-	"github.com/aspect-build/prism-gateway/internal/provider"
-	"github.com/aspect-build/prism-gateway/internal/router"
-	"github.com/aspect-build/prism-gateway/internal/state"
-	"github.com/aspect-build/prism-gateway/pkg/api"
+	"go.zoe.im/prism-gateway/internal/abtesting"
+	"go.zoe.im/prism-gateway/internal/metrics"
+	"go.zoe.im/prism-gateway/internal/provider"
+	"go.zoe.im/prism-gateway/internal/router"
+	"go.zoe.im/prism-gateway/internal/state"
+	"go.zoe.im/prism-gateway/pkg/api"
 )
 
 // Handler handles incoming OpenAI-compatible API requests.

@@ -1,4 +1,4 @@
-module github.com/aspect-build/prism-admin
+module go.zoe.im/prism-admin
 
 go 1.24.2
 

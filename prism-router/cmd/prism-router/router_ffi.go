@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"log"
 
-	"github.com/aspect-build/prism-router/internal/ffi"
+	"go.zoe.im/prism-router/internal/ffi"
 )
 
 // createRouter creates an FFI-backed Router using the Rust prism-core library.

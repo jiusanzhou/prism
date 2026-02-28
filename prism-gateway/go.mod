@@ -1,4 +1,4 @@
-module github.com/aspect-build/prism-gateway
+module go.zoe.im/prism-gateway
 
 go 1.23.0
 

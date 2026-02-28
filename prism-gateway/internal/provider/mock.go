@@ -6,7 +6,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/aspect-build/prism-gateway/pkg/api"
+	"go.zoe.im/prism-gateway/pkg/api"
 )
 
 // MockProvider implements Provider for testing.

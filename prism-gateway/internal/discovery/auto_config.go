@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/aspect-build/prism-gateway/internal/catalog"
-	"github.com/aspect-build/prism-gateway/internal/config"
+	"go.zoe.im/prism-gateway/internal/catalog"
+	"go.zoe.im/prism-gateway/internal/config"
 )
 
 // AutoConfig generates a complete routing config from minimal user input.

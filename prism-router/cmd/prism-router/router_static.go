@@ -5,7 +5,7 @@ package main
 import (
 	"log"
 
-	"github.com/aspect-build/prism-router/internal/ffi"
+	"go.zoe.im/prism-router/internal/ffi"
 )
 
 // createRouter creates a static fallback Router when the FFI build tag is not set.

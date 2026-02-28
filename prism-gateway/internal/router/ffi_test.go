@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/aspect-build/prism-gateway/pkg/api"
+	"go.zoe.im/prism-gateway/pkg/api"
 )
 
 const testConfigJSON = `{

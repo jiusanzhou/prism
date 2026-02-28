@@ -5,8 +5,8 @@ package main
 import (
 	"log"
 
-	"github.com/aspect-build/prism-gateway/internal/config"
-	"github.com/aspect-build/prism-gateway/internal/router"
+	"go.zoe.im/prism-gateway/internal/config"
+	"go.zoe.im/prism-gateway/internal/router"
 )
 
 // createRouter creates an FFIRouter backed by the Rust prism-core library.

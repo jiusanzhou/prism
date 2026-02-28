@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/aspect-build/prism-admin/internal/config"
-	"github.com/aspect-build/prism-admin/internal/dashboard"
+	"go.zoe.im/prism-admin/internal/config"
+	"go.zoe.im/prism-admin/internal/dashboard"
 )
 
 // Server is the admin HTTP server.

@@ -1,4 +1,4 @@
-module github.com/aspect-build/prism-router
+module go.zoe.im/prism-router
 
 go 1.24.2
 

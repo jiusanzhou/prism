@@ -15,11 +15,11 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/aspect-build/prism-gateway/internal/abtesting"
-	"github.com/aspect-build/prism-gateway/internal/gateway"
-	"github.com/aspect-build/prism-gateway/internal/provider"
-	"github.com/aspect-build/prism-gateway/internal/router"
-	"github.com/aspect-build/prism-gateway/pkg/api"
+	"go.zoe.im/prism-gateway/internal/abtesting"
+	"go.zoe.im/prism-gateway/internal/gateway"
+	"go.zoe.im/prism-gateway/internal/provider"
+	"go.zoe.im/prism-gateway/internal/router"
+	"go.zoe.im/prism-gateway/pkg/api"
 )
 
 // ──────────────────────────────────────────────

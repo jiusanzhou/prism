@@ -22,7 +22,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aspect-build/prism-router/internal/server"
+	"go.zoe.im/prism-router/internal/server"
 )
 
 func main() {

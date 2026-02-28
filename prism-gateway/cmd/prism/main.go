@@ -9,9 +9,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/aspect-build/prism-gateway/internal/config"
-	"github.com/aspect-build/prism-gateway/internal/gateway"
-	"github.com/aspect-build/prism-gateway/internal/provider"
+	"go.zoe.im/prism-gateway/internal/config"
+	"go.zoe.im/prism-gateway/internal/gateway"
+	"go.zoe.im/prism-gateway/internal/provider"
 )
 
 func main() {

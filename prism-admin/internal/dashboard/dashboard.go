@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/aspect-build/prism-admin/internal/config"
+	"go.zoe.im/prism-admin/internal/config"
 )
 
 // Service aggregates dashboard data from the prism config and (future) metrics sources.

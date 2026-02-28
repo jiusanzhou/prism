@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aspect-build/prism-gateway/pkg/api"
+	"go.zoe.im/prism-gateway/pkg/api"
 )
 
 // newTestServer creates a test HTTP server and returns it along with a configured OpenAIProvider.

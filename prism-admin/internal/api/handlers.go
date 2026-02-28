@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/aspect-build/prism-admin/internal/config"
+	"go.zoe.im/prism-admin/internal/config"
 )
 
 // ---------- JSON response helpers ----------

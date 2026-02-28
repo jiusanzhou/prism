@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/aspect-build/prism-admin/internal/api"
-	"github.com/aspect-build/prism-admin/internal/config"
+	"go.zoe.im/prism-admin/internal/api"
+	"go.zoe.im/prism-admin/internal/config"
 )
 
 // testConfig returns a sample prism config for testing.

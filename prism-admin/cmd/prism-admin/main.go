@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aspect-build/prism-admin/internal/api"
-	"github.com/aspect-build/prism-admin/internal/config"
+	"go.zoe.im/prism-admin/internal/api"
+	"go.zoe.im/prism-admin/internal/config"
 )
 
 func main() {

@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/aspect-build/prism-gateway/internal/abtesting"
+	"go.zoe.im/prism-gateway/internal/abtesting"
 	"gopkg.in/yaml.v3"
 )
 

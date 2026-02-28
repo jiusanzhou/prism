@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aspect-build/prism-router/internal/ffi"
+	"go.zoe.im/prism-router/internal/ffi"
 )
 
 // helper: create a Server backed by a StaticRouter

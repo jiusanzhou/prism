@@ -9,12 +9,12 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/aspect-build/prism-gateway/internal/config"
-	"github.com/aspect-build/prism-gateway/internal/abtesting"
-	"github.com/aspect-build/prism-gateway/internal/metrics"
-	"github.com/aspect-build/prism-gateway/internal/provider"
-	"github.com/aspect-build/prism-gateway/internal/router"
-	"github.com/aspect-build/prism-gateway/internal/state"
+	"go.zoe.im/prism-gateway/internal/config"
+	"go.zoe.im/prism-gateway/internal/abtesting"
+	"go.zoe.im/prism-gateway/internal/metrics"
+	"go.zoe.im/prism-gateway/internal/provider"
+	"go.zoe.im/prism-gateway/internal/router"
+	"go.zoe.im/prism-gateway/internal/state"
 )
 
 // Server is the main Prism gateway HTTP server.

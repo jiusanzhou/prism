@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aspect-build/prism-gateway/pkg/api"
+	"go.zoe.im/prism-gateway/pkg/api"
 )
 
 func newAnthropicTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *AnthropicProvider) {

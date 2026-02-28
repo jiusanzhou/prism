@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aspect-build/prism-router/internal/ffi"
+	"go.zoe.im/prism-router/internal/ffi"
 )
 
 // Server is the Mode B routing HTTP server.

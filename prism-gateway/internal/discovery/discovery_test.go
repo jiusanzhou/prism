@@ -3,8 +3,8 @@ package discovery
 import (
 	"testing"
 
-	"github.com/aspect-build/prism-gateway/internal/catalog"
-	"github.com/aspect-build/prism-gateway/internal/config"
+	"go.zoe.im/prism-gateway/internal/catalog"
+	"go.zoe.im/prism-gateway/internal/config"
 )
 
 func TestCatalogLookup(t *testing.T) {

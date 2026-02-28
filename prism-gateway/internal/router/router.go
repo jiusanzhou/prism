@@ -2,7 +2,7 @@
 package router
 
 import (
-	"github.com/aspect-build/prism-gateway/pkg/api"
+	"go.zoe.im/prism-gateway/pkg/api"
 )
 
 // RouteRequest is the input to the router.

@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aspect-build/prism-gateway/internal/catalog"
+	"go.zoe.im/prism-gateway/internal/catalog"
 )
 
 // ProviderDiscovery auto-discovers models and capabilities from provider APIs.

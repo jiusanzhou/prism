@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/aspect-build/prism-gateway/internal/metrics"
-	"github.com/aspect-build/prism-gateway/internal/provider"
-	"github.com/aspect-build/prism-gateway/internal/router"
-	"github.com/aspect-build/prism-gateway/pkg/api"
+	"go.zoe.im/prism-gateway/internal/metrics"
+	"go.zoe.im/prism-gateway/internal/provider"
+	"go.zoe.im/prism-gateway/internal/router"
+	"go.zoe.im/prism-gateway/pkg/api"
 )
 
 // AnthropicMessages handles POST /v1/messages (Anthropic Messages API).
