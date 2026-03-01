@@ -7,6 +7,7 @@ edition = "2021"
 default = ["grpc", "proxy"]
 grpc = ["tonic", "prost", "prost-types"]
 proxy = ["pingora", "async-trait", "bytes"]
+wasm = ["wasmtime"]
 
 [dependencies]
 prism-core = { path = "../prism-core" }
@@ -31,6 +32,9 @@ prost-types = { version = "0.13", optional = true }
 pingora = { version = "0.7", features = ["lb", "proxy"], optional = true }
 async-trait = { version = "0.1", optional = true }
 bytes = { version = "1", optional = true }
+
+# wasm feature deps
+wasmtime = { version = "42", optional = true }
 
 [build-dependencies]
 tonic-build = "0.12"

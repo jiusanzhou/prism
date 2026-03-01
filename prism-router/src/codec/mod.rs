@@ -7,6 +7,8 @@
 
 pub mod chain;
 pub mod registry;
+#[cfg(feature = "wasm")]
+pub mod wasm_host;
 
 use std::collections::HashMap;
 
