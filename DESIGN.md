@@ -1259,11 +1259,25 @@ prism-router/
     ├── proxy.rs                 # Pingora 反向代理 (OpenAI 兼容)
     ├── protocol.rs              # 协议检测 (completions / embeddings / ...)
     ├── metrics.rs               # MetricsCollector — 6 维度 Prometheus 指标
-    │                            #   UsHistogram, LabeledCounter, LabeledGauge,
-    │                            #   ProviderStatsMap, DataLayerMetrics,
-    │                            #   format_prometheus()
-    ├── config.rs                # YAML 配置加载 → Registry 构建
-    └── state.rs                 # AppState (共享 Router + Metrics)
+    ├── config/                  # 配置源插件化
+    │   ├── mod.rs               #   ConfigSource trait, CompositeSource
+    │   ├── types.rs             #   PrismConfig 完整类型定义
+    │   ├── file_source.rs       #   FileSource — YAML/JSON/TOML 文件加载
+    │   ├── env_source.rs        #   EnvSource — 环境变量加载
+    │   ├── wasm_source.rs       #   WasmConfigSource (feature-gated)
+    │   └── registry.rs          #   build_registry() — PrismConfig → ModelRegistry
+    ├── state.rs                 # AppState (共享 Router + Metrics)
+    ├── ratelimit.rs             # 限流系统 (滑动窗口 + header-based key)
+    ├── unified_plugin.rs        # 统一插件注册框架
+    │                            #   PluginRegistry, PluginDescriptor, PluginPhase,
+    │                            #   PluginSource, 自动能力检测, load_all()
+    ├── plugin_loader.rs         # 插件加载器 (File/URL/OCI/Builtin + 缓存 + SHA-256)
+    ├── plugin_manager.rs        # 插件管理器 (load/unload/reload + 事件回调)
+    └── codec/                   # Proxy 插件链 (协议翻译)
+        ├── mod.rs               #   ProxyPlugin trait + ProxyContext
+        ├── chain.rs             #   ProxyPluginChain
+        ├── registry.rs          #   CodecRegistry
+        └── wasm_host.rs         #   wasmtime 宿主层 (feature-gated)
 ```
 
 #### 3.2.2 HTTP API
@@ -1332,13 +1346,48 @@ MetricsCollector 提供完整的 Prometheus 指标输出：
 
 ## 4. 配置设计
 
+### 4.1 PrismConfig 完整结构
+
+```rust
+pub struct PrismConfig {
+    pub server: ServerConfig,                       // HTTP/gRPC/Proxy 端口
+    pub providers: HashMap<String, ProviderConfig>, // 供应商定义
+    pub models: Vec<ModelConfig>,                   // 模型元信息
+    pub variants: Vec<VariantConfig>,               // 模型变体
+    pub pools: Vec<PoolConfig>,                     // 模型池
+    pub routing: RoutingConfig,                     // 路由策略
+    pub rate_limits: Vec<RateLimitConfig>,           // 限流规则
+    pub plugins: Vec<PluginConfig>,                 // 插件描述符 (WASM/Builtin)
+    pub discoveries: Vec<DiscoveryConfig>,          // 外部发现源
+    pub codec: CodecConfig,                         // Codec/协议转换配置
+}
+```
+
+### 4.2 VariantConfig 字段
+
+```rust
+pub struct VariantConfig {
+    pub id: String,
+    pub model_id: String,
+    pub provider_id: String,
+    pub weight: Option<f32>,
+    pub account_id: Option<String>,
+    pub base_url: Option<String>,               // 自部署 URL 覆盖
+    pub deployment_name: Option<String>,        // Azure/GCP 部署名
+    pub upstream_model_name: Option<String>,    // 上游模型名映射
+    pub pricing_override: Option<ModelPricing>, // 覆盖定价
+}
+```
+
+### 4.3 完整 YAML 配置示例
+
 ```yaml
 # prism.yaml
 
 server:
   http_port: 8080
   grpc_port: 9090
-  admin_port: 8081
+  proxy_port: 8081
 
 # 模型池定义
 model_pools:
@@ -1399,6 +1448,48 @@ model_pools:
       pricing:
         input: 0.07
         output: 0.3
+
+# 限流规则
+rate_limits:
+  - name: per-model-limit
+    key_headers: ["x-model"]
+    window_secs: 60
+    max_requests: 100
+    overrides:
+      - match_headers: { "x-model": "gpt-4o" }
+        max_requests: 30
+      - match_headers: { "x-model": "gpt-4o", "x-team": "vip" }
+        max_requests: 80
+
+# 插件配置
+plugins:
+  - name: openai-compat
+    source:
+      wasm: ./plugins/openai-compat.wasm
+    phases: [proxy]
+    enabled: true
+    priority: 100
+  - name: custom-scorer
+    source:
+      url: https://cdn.example.com/plugins/scorer-v1.0.wasm
+      sha256: abc123...
+    phases:
+      - route:
+          weight: 1.5
+          stages: [filter, score]
+    priority: 200
+
+# 外部发现源
+discoveries:
+  - name: k8s-discovery
+    type:
+      wasm:
+        path: ./plugins/k8s-discovery.wasm
+    enabled: true
+
+# Codec 配置
+codec:
+  default_chain: []
 
 # 默认路由策略
 routing:
@@ -1709,9 +1800,252 @@ pub struct DiscoveryResult {
 | 实现 | 说明 |
 |------|------|
 | `StaticDiscovery` | 从内存中的配置结构体加载，默认实现 |
-| `WasmDiscovery` | 通过 WASM 模块动态发现候选（`wasm` feature-gated，预留） |
+| `WasmDiscovery` | 通过 WASM 模块动态发现候选（`wasm` feature-gated，**已实现**） |
 
-自定义 Discovery 实现（如从 Consul/etcd/Kubernetes API 发现）只需实现 `Discovery` trait。
+### WasmDiscovery 实现
+
+`WasmDiscovery` 基于 wasmtime 运行时加载 WASM 模块，在沙箱中执行发现逻辑。WASM 模块通过导出函数和宿主回调完成双向通信。
+
+**WASM 模块 ABI 契约：**
+
+| 导出函数 | 签名 | 说明 |
+|---|---|---|
+| `memory` | — | WASM 线性内存 |
+| `proxy_on_memory_allocate` | `(size: i32) -> i32` | 内存分配（bump allocator） |
+| `prism_discovery_init` | `(config_ptr: i32, config_len: i32) -> i32` | 初始化，0 = 成功 |
+| `prism_discovery_discover` | `() -> i32` | 执行发现，0 = 成功 |
+
+**宿主函数（WASM 模块导入）：**
+
+| 宿主函数 | 签名 | 说明 |
+|---|---|---|
+| `env.proxy_log` | `(level: i32, msg_ptr: i32, msg_len: i32) -> i32` | 日志输出 |
+| `env.prism_discovery_set_result` | `(json_ptr: i32, json_len: i32) -> i32` | 将 JSON 编码的 `DiscoveryResult` 回传给宿主 |
+
+WASM 模块在 `prism_discovery_discover` 执行过程中调用 `prism_discovery_set_result`，将发现到的调度对象（JSON 格式）传回宿主，宿主反序列化后构建 `DiscoveryResult`。
+
+自定义 Discovery 实现（如从 Consul/etcd/Kubernetes API 发现）只需实现 `Discovery` trait，或编写 WASM 模块实现上述 ABI。
+
+## 6.5 统一插件注册框架
+
+Prism 的插件系统是**五维**的：一个 WASM 模块可以同时参与多个阶段的处理。统一插件注册框架（`unified_plugin.rs`）提供单一入口管理所有插件的注册、加载和分发。
+
+### PluginDescriptor — 插件描述符
+
+```rust
+pub struct PluginDescriptor {
+    pub name: String,           // 唯一标识
+    pub source: PluginSource,   // 代码来源
+    pub phases: Vec<PluginPhase>, // 参与的阶段
+    pub config: serde_json::Value, // 插件配置
+    pub enabled: bool,          // 是否启用
+    pub priority: u32,          // 执行优先级（越小越先）
+}
+```
+
+### PluginPhase — 五维插件阶段
+
+```rust
+pub enum PluginPhase {
+    /// Proxy 层 — 拦截/变换 HTTP 请求响应，使用 proxy-wasm ABI
+    Proxy,
+    /// 路由层 — 过滤/评分模型候选，使用 Prism routing ABI
+    Route {
+        weight: f32,                // Score 权重
+        stages: Vec<RouteStage>,    // 参与的子阶段 (PreFilter/Filter/PostFilter/Score/Reserve)
+    },
+    /// 分析层 — 提取请求特征，使用 Prism analyzer ABI
+    Analyze,
+}
+```
+
+### PluginSource — 代码来源
+
+```rust
+pub enum PluginSource {
+    Wasm(String),       // WASM 文件路径
+    Builtin(String),    // 内置 Rust 插件（按名称引用）
+}
+```
+
+### 五维 WASM 插件体系
+
+| 维度 | 阶段 | ABI | 核心导出函数 | 说明 |
+|:---:|---|---|---|---|
+| **1** | Config | Prism Config ABI | `prism_config_init`, `prism_config_load` | 配置源插件 |
+| **2** | Discovery | Prism Discovery ABI | `prism_discovery_init`, `prism_discovery_discover` | 候选发现 |
+| **3** | Route | Prism Routing ABI | `prism_route_filter`, `prism_route_score` | 路由过滤/评分 |
+| **4** | Proxy | proxy-wasm ABI | `proxy_on_request_headers/body`, `proxy_on_response_headers/body` | 协议翻译 |
+| **5** | Analyze | Prism Analyzer ABI | `analyze` | 请求特征提取 |
+
+### 自动能力检测
+
+框架会检查 WASM 模块的导出函数，自动检测支持哪些阶段：
+
+```rust
+pub fn detect_capabilities(module_exports: &[String]) -> DetectedCapabilities {
+    DetectedCapabilities {
+        has_proxy: has("proxy_on_request_headers"),
+        has_route: has("prism_route_filter") || has("prism_route_score"),
+        has_analyze: has("analyze"),
+    }
+}
+```
+
+如果声明了某阶段但模块未导出对应函数，框架会报告不匹配而非静默失败。
+
+### PluginRegistry — 统一注册表
+
+`PluginRegistry` 管理所有插件的描述符和加载状态：
+
+```rust
+pub struct PluginRegistry {
+    descriptors: Vec<PluginDescriptor>,
+    loaded: Vec<LoadedPlugin>,
+}
+```
+
+- `register()` — 注册插件描述符（不立即加载）
+- `load_all()` — 加载所有已启用的插件，返回按阶段分组的 `LoadResult`
+- `set_enabled()` — 运行时启用/禁用插件
+- `enabled_descriptors()` — 按 priority 排序返回已启用的描述符
+
+## 6.6 配置源插件化
+
+配置系统从单文件 `config.rs` 拆分为 `config/` 模块目录，实现了可插拔的配置源架构。
+
+### ConfigSource Trait
+
+```rust
+pub trait ConfigSource: Send + Sync {
+    fn name(&self) -> &str;
+    fn load(&self) -> Result<PrismConfig, ConfigError>;
+    fn supports_watch(&self) -> bool { false }
+    fn watch(&self, callback: Box<dyn Fn(ConfigEvent) + Send + Sync>) -> Result<(), ConfigError>;
+}
+```
+
+### 内置实现
+
+| 实现 | 说明 |
+|------|------|
+| `FileSource` | 从本地 YAML/JSON/TOML 文件加载，支持格式自动检测 |
+| `EnvSource` | 从环境变量加载（`PRISM_` 前缀），覆盖文件配置 |
+| `WasmConfigSource` | 通过 WASM 模块从任意来源加载配置（`wasm` feature-gated） |
+| `CompositeSource` | 组合多个配置源，按优先级合并 |
+
+### 配置合并优先级
+
+```rust
+pub enum ConfigPriority {
+    Base = 0,           // 基础配置（被所有其他源覆盖）
+    File = 10,          // 文件配置
+    Remote = 20,        // 远程配置中心
+    Environment = 30,   // 环境变量
+    Override = 40,      // 显式覆盖
+}
+```
+
+`CompositeSource` 按优先级排序所有配置源，后加载的高优先级源覆盖低优先级源。
+
+### ConfigEvent
+
+```rust
+pub enum ConfigEvent {
+    FullReload(PrismConfig),   // 完整配置重载
+    DiscoveryChanged,          // 发现源变更
+    RoutingChanged(RoutingConfig), // 路由策略变更
+    RateLimitChanged,          // 限流规则变更
+    PluginChanged,             // 插件配置变更
+}
+```
+
+### 模块目录结构
+
+```
+prism-router/src/config/
+├── mod.rs            # ConfigSource trait, ConfigError, ConfigEvent, CompositeSource
+├── types.rs          # PrismConfig 完整类型定义
+├── file_source.rs    # FileSource — 文件加载
+├── env_source.rs     # EnvSource — 环境变量加载
+├── wasm_source.rs    # WasmConfigSource — WASM 配置源
+└── registry.rs       # build_registry() — 从 PrismConfig 构建 ModelRegistry
+```
+
+## 6.7 插件加载器 (PluginLoader)
+
+`PluginLoader`（`plugin_loader.rs`）负责将插件源描述解析为可执行的 WASM 字节码，支持四种来源：
+
+### 四种来源
+
+| 来源 | 配置格式 | 说明 |
+|------|----------|------|
+| **File** | `{ wasm: "./path.wasm" }` | 本地文件路径 |
+| **URL** | `{ url: "https://...", sha256: "abc..." }` | HTTP/HTTPS 远程下载 |
+| **OCI** | `{ oci: "registry/name:tag", digest: "..." }` | OCI 容器镜像仓库 |
+| **Builtin** | `{ builtin: "plugin-name" }` | 内置 Rust 插件（无 WASM 字节码） |
+
+### 缓存策略
+
+```rust
+pub struct PluginLoader {
+    cache_dir: PathBuf,                       // 磁盘缓存目录 (~/.prism/plugins/cache/)
+    memory_cache: RwLock<HashMap<String, Vec<u8>>>,  // 内存缓存 (sha256 → bytes)
+}
+```
+
+- **磁盘缓存**：下载的 WASM 模块按 SHA-256 哈希命名存储，避免重复下载
+- **内存缓存**：已加载的字节码缓存在内存中，同一模块多次引用不重复读取
+
+### SHA-256 校验
+
+URL 和 OCI 来源支持可选的 SHA-256 校验：
+
+```rust
+pub struct ResolvedPlugin {
+    pub name: String,
+    pub wasm_bytes: Vec<u8>,
+    pub source_info: String,
+    pub sha256: String,      // 自动计算并与声明值比对
+}
+```
+
+如果配置了 `sha256` 或 `digest`，加载器会在下载后验证，不匹配则返回 `ChecksumMismatch` 错误。
+
+## 6.8 插件管理器 (PluginManager)
+
+`PluginManager`（`plugin_manager.rs`）管理插件的运行时生命周期，提供 load / unload / reload 操作。
+
+### 运行时操作
+
+```rust
+pub struct PluginManager {
+    loader: PluginLoader,
+    plugins: RwLock<HashMap<String, PluginInfo>>,
+    listeners: RwLock<Vec<Box<dyn Fn(PluginEvent) + Send + Sync>>>,
+}
+```
+
+| 操作 | 说明 |
+|------|------|
+| `load(config)` | 从配置解析 → PluginLoader 加载 → 注册到对应阶段 |
+| `unload(name)` | 从所有阶段移除 → 释放资源 |
+| `reload(config)` | 原子替换：加载新版本 → 交换 → 卸载旧版本 |
+| `list()` | 查询所有已加载插件的状态 |
+| `load_all(configs)` | 批量加载，返回成功/失败统计 |
+
+### 事件回调
+
+```rust
+pub enum PluginEvent {
+    Loaded { name: String, sha256: String },
+    Unloaded { name: String },
+    Reloaded { name: String, old_sha256: String, new_sha256: String },
+    LoadFailed { name: String, error: String },
+}
+```
+
+通过 `on_event()` 注册监听器，可用于日志记录、指标上报等。
 
 ## 6.5 Proxy 插件链 (Codec)
 
@@ -1880,9 +2214,18 @@ prism/
 │       ├── proxy.rs             # Pingora 反向代理 + upstream_model_name 改写
 │       ├── protocol.rs          # 协议检测
 │       ├── metrics.rs           # MetricsCollector — 6 维度 Prometheus 指标
-│       ├── config.rs            # YAML 配置加载 → Registry 构建
+│       ├── config/              # 配置源插件化
+│       │   ├── mod.rs               # ConfigSource trait, CompositeSource
+│       │   ├── types.rs             # PrismConfig 完整类型定义
+│       │   ├── file_source.rs       # FileSource — YAML/JSON/TOML 文件加载
+│       │   ├── env_source.rs        # EnvSource — 环境变量加载
+│       │   ├── wasm_source.rs       # WasmConfigSource — WASM 配置源 (feature-gated)
+│       │   └── registry.rs          # build_registry() — PrismConfig → ModelRegistry
 │       ├── state.rs             # AppState (共享 Router + Metrics)
 │       ├── ratelimit.rs         # 限流系统 (滑动窗口 + header-based key + override)
+│       ├── unified_plugin.rs    # 统一插件注册框架 (PluginRegistry + PluginDescriptor)
+│       ├── plugin_loader.rs     # 插件加载器 (File/URL/OCI/Builtin + 缓存 + SHA-256)
+│       ├── plugin_manager.rs    # 插件管理器 (load/unload/reload + 事件回调)
 │       ├── codec/               # Proxy 插件链 (协议翻译)
 │       │   ├── mod.rs               # ProxyPlugin trait + ProxyContext
 │       │   ├── chain.rs             # ProxyPluginChain (请求正序, 响应逆序)
@@ -1924,8 +2267,9 @@ prism/
 - [x] Makefile
 
 ### Phase 2 — 生产就绪 ✅ (已完成)
-- [x] 352 个单元测试通过（含 wasm feature ~375 个）
-- [x] Discovery 抽象层 — 插件化候选发现 (StaticDiscovery + WASM 预留)
+- [x] 307 个单元测试通过（含 wasm feature 365 个）
+- [x] Discovery 抽象层 — 插件化候选发现 (StaticDiscovery + WasmDiscovery)
+- [x] WASM Discovery 实现 — wasmtime 宿主层完整实现
 - [x] 推理引擎调度 — PrefixAffinityPlugin + InferenceLoadPlugin (18 个内置插件)
 - [x] 多维标签监控指标 — 6 维标签下钻
 - [x] Proxy 插件链框架 — ProxyPlugin trait + chain + registry，hook 对齐 proxy-wasm ABI
@@ -1934,6 +2278,12 @@ prism/
 - [x] 示例 WASM 插件 — OpenAI compat E2E
 - [x] 限流系统 — header-based key + 滑动窗口 + 差异化 override（最具体匹配优先）
 - [x] upstream_model_name — variant 级模型名映射，proxy body 自动改写
+- [x] 统一插件注册框架 — PluginRegistry + PluginDescriptor + 五维 WASM 插件体系
+- [x] WASM Route + Analyze 适配器 — 完整四阶段 WASM 插件 (Config/Discovery/Route/Proxy/Analyze)
+- [x] 配置源插件化 — ConfigSource trait + FileSource + EnvSource + WasmConfigSource + CompositeSource
+- [x] 配置类型补全 — rate_limits / plugins / discoveries / codec
+- [x] 插件加载器 — File/URL/OCI/Builtin 来源 + 磁盘/内存缓存 + SHA-256 校验
+- [x] 插件管理器 — load/unload/reload + 事件回调
 - [x] Legacy 清理 — 移除旧 Go 代码
 - [ ] 配置热更新 (runtime reload)
 - [ ] Redis 实时状态存储
@@ -1976,7 +2326,7 @@ prism/
 | 路由决策 | **8μs** |
 | P99 延迟 | < 5ms |
 | 内存占用 | ~30MB |
-| 测试覆盖 | 352 个测试通过（含 wasm feature ~375 个） |
+| 测试覆盖 | 307 个测试通过（含 wasm feature 365 个） |
 
 ---
 

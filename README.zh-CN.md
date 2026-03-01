@@ -7,7 +7,7 @@
 *一束请求进来，根据策略折射到最优模型。*
 
 [![Rust](https://img.shields.io/badge/Rust-核心引擎-orange?logo=rust)](prism-core/)
-[![Tests](https://img.shields.io/badge/测试-352_通过-brightgreen)]()
+[![Tests](https://img.shields.io/badge/测试-307_通过-brightgreen)]()
 [![License](https://img.shields.io/badge/License-MIT-blue)]()
 
 [English](./README.md) · [中文](./README.zh-CN.md)
@@ -40,6 +40,8 @@
 | 🧪 | **A/B 测试** | 配置化实验，流量分流对比 |
 | 🏗️ | **灵活部署** | HTTP + gRPC + 反向代理 (Pingora) 三种接口 |
 | 🔧 | **插件系统** | 可扩展的 Filter/Scorer 插件，自定义路由逻辑 |
+| 🧩 | **五维 WASM 插件** | Config / Discovery / Route / Proxy / Analyze — 全部支持 WASM 扩展 |
+| ⚙️ | **配置源插件化** | ConfigSource trait，支持文件、环境变量、WASM、组合源 |
 
 ## 架构
 
@@ -59,6 +61,10 @@ Prism 是一个 Rust workspace，包含两个 crate：
                           │                 ├─ Discovery 层      │
                           │                 ├─ DataLayer         │
                           │                 └─ 反馈闭环          │
+                          │                                      │
+                          │  ConfigSource (文件/环境变量/WASM)    │
+                          │  PluginLoader (文件/URL/OCI)         │
+                          │  PluginManager (加载/卸载/重载)       │
                           │                                      │
                           │  Proxy 层：                          │
                           │  ├─ Codec 插件链 (WASM/Native)       │
@@ -350,6 +356,77 @@ make test-wasm
 </details>
 
 <details>
+<summary><b>五维 WASM 插件系统</b> — 单模块多阶段</summary>
+
+一个 WASM 模块可以同时参与多个阶段的处理。统一插件框架会自动检测模块导出函数来确定支持的能力：
+
+| 维度 | 阶段 | ABI | 核心导出函数 | 说明 |
+|:---:|---|---|---|---|
+| **1** | Config | Prism Config ABI | `prism_config_init`, `prism_config_load` | 配置源插件 |
+| **2** | Discovery | Prism Discovery ABI | `prism_discovery_init`, `prism_discovery_discover` | 候选发现 |
+| **3** | Route | Prism Routing ABI | `prism_route_filter`, `prism_route_score` | 路由过滤/评分 |
+| **4** | Proxy | proxy-wasm ABI | `proxy_on_request_headers/body`, `proxy_on_response_headers/body` | 协议翻译 |
+| **5** | Analyze | Prism Analyzer ABI | `analyze` | 请求特征提取 |
+
+```yaml
+plugins:
+  - name: my-plugin
+    source:
+      wasm: ./plugins/my-plugin.wasm
+    phases: [proxy, route, analyze]  # 同时参与多个阶段
+    enabled: true
+    priority: 100
+```
+
+</details>
+
+<details>
+<summary><b>配置源插件化</b> — ConfigSource trait + 多源合并</summary>
+
+prism-router 通过 `ConfigSource` trait 支持可插拔的配置源：
+
+| 配置源 | 说明 |
+|---|---|
+| `FileSource` | 从本地 YAML/JSON/TOML 文件加载 |
+| `EnvSource` | 从环境变量覆盖（`PRISM_` 前缀） |
+| `WasmConfigSource` | 通过 WASM 模块从任意来源加载配置（feature-gated） |
+| `CompositeSource` | 按优先级合并多个配置源 |
+
+**优先级顺序**（高覆盖低）：`Base(0) < File(10) < Remote(20) < Environment(30) < Override(40)`
+
+</details>
+
+<details>
+<summary><b>插件加载器</b> — 多来源插件解析</summary>
+
+`PluginLoader` 将插件源描述解析为 WASM 字节码，支持缓存和完整性校验：
+
+| 来源 | 配置格式 | 说明 |
+|---|---|---|
+| **File** | `{ wasm: "./path.wasm" }` | 本地文件系统 |
+| **URL** | `{ url: "https://...", sha256: "..." }` | HTTP/HTTPS 远程下载 + 可选 SHA-256 校验 |
+| **OCI** | `{ oci: "registry/name:tag" }` | OCI 容器镜像仓库 |
+| **Builtin** | `{ builtin: "name" }` | 内置 Rust 插件（无 WASM 字节码） |
+
+下载的插件缓存在本地（`~/.prism/plugins/cache/`），基于 SHA-256 哈希去重。
+
+</details>
+
+<details>
+<summary><b>插件管理器</b> — 运行时生命周期管理</summary>
+
+`PluginManager` 提供运行时插件生命周期操作：
+
+- **Load**：解析来源 → 编译 WASM → 注册到对应阶段
+- **Unload**：从所有阶段移除 → 释放资源
+- **Reload**：原子替换（加载新版本 → 交换 → 卸载旧版本）
+- **List**：查询已加载插件的状态和元信息
+
+事件回调（`Loaded`、`Unloaded`、`Reloaded`、`LoadFailed`）用于监控和日志。
+
+</details>
+
+<details>
 <summary><b>限流系统</b> — 可配置的 Header 维度限流</summary>
 
 prism-router 内置灵活的限流系统，支持基于 Header 的 key 提取：
@@ -445,9 +522,18 @@ prism/
 │   │   ├── proxy.rs             # Pingora 反向代理 + upstream_model_name 改写
 │   │   ├── protocol.rs          # 协议检测（completions、embeddings 等）
 │   │   ├── metrics.rs           # MetricsCollector — 6 维度 Prometheus 指标
-│   │   ├── config.rs            # YAML 配置加载 → Registry 构建
+│   │   ├── config/              # 配置源插件化
+│   │   │   ├── mod.rs               # ConfigSource trait、CompositeSource
+│   │   │   ├── types.rs             # PrismConfig 完整类型定义
+│   │   │   ├── file_source.rs       # FileSource — YAML/JSON/TOML 文件加载
+│   │   │   ├── env_source.rs        # EnvSource — 环境变量加载
+│   │   │   ├── wasm_source.rs       # WasmConfigSource（feature-gated）
+│   │   │   └── registry.rs          # build_registry() — PrismConfig → ModelRegistry
 │   │   ├── state.rs             # AppState（共享 Router + Metrics）
 │   │   ├── ratelimit.rs         # 限流系统（滑动窗口 + header-based key）
+│   │   ├── unified_plugin.rs    # 统一插件注册框架（PluginRegistry + PluginDescriptor）
+│   │   ├── plugin_loader.rs     # 插件加载器（File/URL/OCI/Builtin + 缓存 + SHA-256）
+│   │   ├── plugin_manager.rs    # 插件管理器（load/unload/reload + 事件回调）
 │   │   └── codec/               # Proxy 插件链（协议翻译）
 │   │       ├── mod.rs               # ProxyPlugin trait + ProxyContext
 │   │       ├── chain.rs             # ProxyPluginChain
@@ -474,7 +560,7 @@ prism/
 
 ```bash
 cargo build --release        # 构建
-cargo test                   # 运行测试（352 个通过）
+cargo test                   # 运行测试（307 个通过）
 cargo bench                  # 性能基准测试（prism-core）
 cargo fmt --all              # 格式化代码
 cargo clippy -- -D warnings  # 代码检查

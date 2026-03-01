@@ -7,7 +7,7 @@
 *Route every request to the optimal model — automatically.*
 
 [![Rust](https://img.shields.io/badge/Rust-Core_Engine-orange?logo=rust)](prism-core/)
-[![Tests](https://img.shields.io/badge/Tests-352_passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-307_passing-brightgreen)]()
 [![License](https://img.shields.io/badge/License-MIT-blue)]()
 
 [English](./README.md) · [中文](./README.zh-CN.md)
@@ -40,6 +40,8 @@ When you use multiple LLMs (GPT-4o, Claude, DeepSeek, etc.) simultaneously, you 
 | 🧪 | **A/B Testing** | Config-driven experiments with traffic splitting |
 | 🏗️ | **Flexible Deploy** | Standalone HTTP + gRPC + Reverse Proxy (Pingora) |
 | 🔧 | **Plugin System** | Extensible filter/scorer plugins for custom routing logic |
+| 🧩 | **5-Dimension WASM** | Config / Discovery / Route / Proxy / Analyze — all extensible via WASM |
+| ⚙️ | **Pluggable Config** | ConfigSource trait with file, env, WASM, and composite sources |
 
 ## Architecture
 
@@ -59,6 +61,10 @@ Prism is a Rust workspace with two crates:
                           │                 ├─ Discovery Layer   │
                           │                 ├─ DataLayer         │
                           │                 └─ Feedback Loop     │
+                          │                                      │
+                          │  ConfigSource (File/Env/WASM)        │
+                          │  PluginLoader (File/URL/OCI)         │
+                          │  PluginManager (load/unload/reload)  │
                           │                                      │
                           │  Proxy Layer:                        │
                           │  ├─ Codec Plugin Chain (WASM/Native) │
@@ -350,6 +356,77 @@ Enable with feature flag: `cargo build -p prism-router --features wasm`
 </details>
 
 <details>
+<summary><b>5-Dimension WASM Plugin System</b> — one module, multiple phases</summary>
+
+A single WASM module can participate in multiple phases simultaneously. The unified plugin framework auto-detects capabilities from module exports:
+
+| Dimension | Phase | ABI | Key Exports | Purpose |
+|:---:|---|---|---|---|
+| **1** | Config | Prism Config ABI | `prism_config_init`, `prism_config_load` | Configuration source plugin |
+| **2** | Discovery | Prism Discovery ABI | `prism_discovery_init`, `prism_discovery_discover` | Candidate discovery |
+| **3** | Route | Prism Routing ABI | `prism_route_filter`, `prism_route_score` | Routing filter/scorer |
+| **4** | Proxy | proxy-wasm ABI | `proxy_on_request_headers/body`, `proxy_on_response_headers/body` | Protocol translation |
+| **5** | Analyze | Prism Analyzer ABI | `analyze` | Request feature extraction |
+
+```yaml
+plugins:
+  - name: my-plugin
+    source:
+      wasm: ./plugins/my-plugin.wasm
+    phases: [proxy, route, analyze]  # Participate in multiple phases
+    enabled: true
+    priority: 100
+```
+
+</details>
+
+<details>
+<summary><b>Pluggable Configuration</b> — ConfigSource trait + multi-source merging</summary>
+
+prism-router supports pluggable configuration sources via the `ConfigSource` trait:
+
+| Source | Description |
+|---|---|
+| `FileSource` | Load from local YAML/JSON/TOML files |
+| `EnvSource` | Override from environment variables (`PRISM_` prefix) |
+| `WasmConfigSource` | Load config from any source via WASM module (feature-gated) |
+| `CompositeSource` | Merge multiple sources by priority |
+
+**Priority order** (higher overrides lower): `Base(0) < File(10) < Remote(20) < Environment(30) < Override(40)`
+
+</details>
+
+<details>
+<summary><b>Plugin Loader</b> — multi-source plugin resolution</summary>
+
+The `PluginLoader` resolves plugin sources to WASM bytes with caching and integrity verification:
+
+| Source | Config | Description |
+|---|---|---|
+| **File** | `{ wasm: "./path.wasm" }` | Local filesystem |
+| **URL** | `{ url: "https://...", sha256: "..." }` | HTTP/HTTPS with optional SHA-256 checksum |
+| **OCI** | `{ oci: "registry/name:tag" }` | OCI container registry |
+| **Builtin** | `{ builtin: "name" }` | Built-in Rust plugin (no WASM bytes) |
+
+Downloaded plugins are cached locally (`~/.prism/plugins/cache/`) with SHA-256 based deduplication.
+
+</details>
+
+<details>
+<summary><b>Plugin Manager</b> — runtime lifecycle management</summary>
+
+The `PluginManager` provides runtime plugin lifecycle operations:
+
+- **Load**: resolve source → compile WASM → register to phases
+- **Unload**: remove from all phases → release resources
+- **Reload**: atomic replace (load new → swap → unload old)
+- **List**: query loaded plugin status and metadata
+
+Events (`Loaded`, `Unloaded`, `Reloaded`, `LoadFailed`) are emitted for monitoring and logging.
+
+</details>
+
+<details>
 <summary><b>Rate Limiting</b> — configurable, header-based rate limiting</summary>
 
 prism-router includes a built-in rate limiting system with flexible key extraction:
@@ -445,9 +522,18 @@ prism/
 │   │   ├── proxy.rs             # Pingora reverse proxy + upstream_model_name rewrite
 │   │   ├── protocol.rs          # Protocol detection (completions, embeddings, etc.)
 │   │   ├── metrics.rs           # MetricsCollector — 6-dimension Prometheus metrics
-│   │   ├── config.rs            # YAML config loading → Registry construction
+│   │   ├── config/              # Pluggable configuration sources
+│   │   │   ├── mod.rs               # ConfigSource trait, CompositeSource
+│   │   │   ├── types.rs             # PrismConfig full type definitions
+│   │   │   ├── file_source.rs       # FileSource — YAML/JSON/TOML loading
+│   │   │   ├── env_source.rs        # EnvSource — environment variable loading
+│   │   │   ├── wasm_source.rs       # WasmConfigSource (feature-gated)
+│   │   │   └── registry.rs          # build_registry() — PrismConfig → ModelRegistry
 │   │   ├── state.rs             # AppState (shared Router + Metrics)
 │   │   ├── ratelimit.rs         # Rate limiting (sliding window + header-based keys)
+│   │   ├── unified_plugin.rs    # Unified plugin framework (PluginRegistry + PluginDescriptor)
+│   │   ├── plugin_loader.rs     # Plugin loader (File/URL/OCI/Builtin + cache + SHA-256)
+│   │   ├── plugin_manager.rs    # Plugin manager (load/unload/reload + event callbacks)
 │   │   └── codec/               # Proxy plugin chain (protocol translation)
 │   │       ├── mod.rs               # ProxyPlugin trait + ProxyContext
 │   │       ├── chain.rs             # ProxyPluginChain
@@ -474,7 +560,7 @@ prism/
 
 ```bash
 cargo build --release        # Build everything
-cargo test                   # Run all tests (352 passing)
+cargo test                   # Run all tests (307 passing)
 cargo bench                  # Benchmarks (prism-core)
 cargo fmt --all              # Format code
 cargo clippy -- -D warnings  # Lint check
@@ -487,6 +573,7 @@ cargo clippy -- -D warnings  # Lint check
 | `grpc` | ✅ | Enable gRPC RouterService (tonic) |
 | `proxy` | ✅ | Enable Pingora reverse proxy |
 | `wasm` | ❌ | Enable WASM proxy plugin support (wasmtime) in prism-router |
+| `wasm` (prism-core) | ❌ | Enable WASM discovery plugin support |
 
 ## Performance
 
@@ -495,7 +582,7 @@ cargo clippy -- -D warnings  # Lint check
 | Routing decision | **8μs** | < 500μs |
 | P99 latency | < 5ms | < 5ms |
 | Memory footprint | ~30MB | < 100MB |
-| Tests | 352 (default) / ~375 (with wasm) | — |
+| Tests | 307 (default) / 365 (with wasm) | — |
 
 ## Tech Stack
 
