@@ -82,6 +82,16 @@ pub struct ProxyContext {
     pub request_headers_snapshot: Vec<(String, String)>,
     /// Whether this request used the reqwest fallback path.
     pub reqwest_fallback: bool,
+    /// Response flags — short error/termination codes (RL, NR, UF, UC, UT, DC).
+    pub response_flags: Vec<String>,
+    /// Downstream client remote address (ip:port).
+    pub downstream_remote_address: Option<String>,
+    /// Time when request body was fully received.
+    pub request_body_received_at: Option<Instant>,
+    /// Time to first byte from upstream (TTFB).
+    pub upstream_first_byte_at: Option<Instant>,
+    /// Number of upstream request attempts.
+    pub upstream_request_attempt_count: u32,
 }
 
 impl Default for ProxyContext {
@@ -113,6 +123,11 @@ impl Default for ProxyContext {
             error_message: None,
             request_headers_snapshot: Vec::new(),
             reqwest_fallback: false,
+            response_flags: Vec::new(),
+            downstream_remote_address: None,
+            request_body_received_at: None,
+            upstream_first_byte_at: None,
+            upstream_request_attempt_count: 1,
         }
     }
 }
@@ -257,6 +272,8 @@ impl PrismProxy {
         let decision = match router.route(&request) {
             Ok(d) => d,
             Err(e) => {
+                ctx.response_flags.push("NR".to_string());
+                ctx.error_message = Some(format!("routing error: {}", e));
                 error!(error = %e, "Routing failed");
                 let header = pingora::http::ResponseHeader::build(503, None).unwrap();
                 let body = serde_json::json!({"error": e.to_string()});
@@ -531,6 +548,17 @@ impl PrismProxy {
                 route_candidates: None,
                 upstream_response_time_ms: None,
                 reqwest_fallback: true,
+                response_flags: if ctx.response_flags.is_empty() {
+                    None
+                } else {
+                    Some(ctx.response_flags.join(","))
+                },
+                downstream_remote_address: ctx.downstream_remote_address.clone(),
+                request_duration_ms: ctx.request_body_received_at
+                    .map(|t| t.duration_since(ctx.request_start).as_millis() as u64),
+                response_duration_ms: ctx.upstream_first_byte_at
+                    .map(|t| t.duration_since(ctx.request_start).as_millis() as u64),
+                upstream_request_attempt_count: Some(ctx.upstream_request_attempt_count),
             };
             logger.log(&data);
         }
@@ -559,6 +587,11 @@ impl ProxyHttp for PrismProxy {
         ctx.request_start = Instant::now();
         ctx.request_method = method;
         ctx.request_path = path.clone();
+
+        // Capture downstream client address
+        if let Some(addr) = session.client_addr() {
+            ctx.downstream_remote_address = Some(addr.to_string());
+        }
 
         // Snapshot request headers for access log
         ctx.request_headers_snapshot = session
@@ -592,6 +625,7 @@ impl ProxyHttp for PrismProxy {
                 warn!(rule = %denied.rule_name, "Rate limit exceeded");
                 ctx.ratelimit_matched = true;
                 ctx.ratelimit_rule = Some(denied.rule_name.clone());
+                ctx.response_flags.push("RL".to_string());
 
                 let mut header =
                     pingora::http::ResponseHeader::build(denied.status_code, None).unwrap();
@@ -773,6 +807,8 @@ impl ProxyHttp for PrismProxy {
                 Ok(Box::new(peer))
             }
             Err(e) => {
+                ctx.response_flags.push("NR".to_string());
+                ctx.error_message = Some(format!("routing error: {}", e));
                 error!(error = %e, "Routing failed");
                 Err(pingora::Error::explain(
                     pingora::ErrorType::ConnectProxyFailure,
@@ -1197,6 +1233,20 @@ impl ProxyHttp for PrismProxy {
         // Log Pingora-level errors for debugging 502s
         if let Some(e) = _e {
             ctx.error_message = Some(format!("{}: {:?}", e, e.etype()));
+            // Set response flags based on error type
+            let flag = match e.etype() {
+                &pingora::ErrorType::ConnectTimedout => "UT",
+                &pingora::ErrorType::ConnectRefused => "UF",
+                &pingora::ErrorType::ConnectProxyFailure => "UF",
+                &pingora::ErrorType::ReadTimedout => "UT",
+                &pingora::ErrorType::WriteTimedout => "UT",
+                &pingora::ErrorType::ReadError => "UC",
+                &pingora::ErrorType::WriteError => "UC",
+                _ => "UF",
+            };
+            if !ctx.response_flags.contains(&flag.to_string()) {
+                ctx.response_flags.push(flag.to_string());
+            }
             error!(
                 error = %e,
                 error_type = ?e.etype(),
@@ -1271,6 +1321,17 @@ impl ProxyHttp for PrismProxy {
                 route_candidates: None,
                 upstream_response_time_ms: None, // TODO: capture TTFB
                 reqwest_fallback: ctx.reqwest_fallback,
+                response_flags: if ctx.response_flags.is_empty() {
+                    None
+                } else {
+                    Some(ctx.response_flags.join(","))
+                },
+                downstream_remote_address: ctx.downstream_remote_address.clone(),
+                request_duration_ms: ctx.request_body_received_at
+                    .map(|t| t.duration_since(ctx.request_start).as_millis() as u64),
+                response_duration_ms: ctx.upstream_first_byte_at
+                    .map(|t| t.duration_since(ctx.request_start).as_millis() as u64),
+                upstream_request_attempt_count: Some(ctx.upstream_request_attempt_count),
             };
             logger.log(&data);
         }

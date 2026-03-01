@@ -74,6 +74,16 @@ pub enum CommandOperator {
     UpstreamResponseTimeMs,
     /// Whether the request used the reqwest fallback path
     ReqwestFallback,
+    /// Response flags — short codes for error/termination reasons (e.g. RL, NR, UF, UC, UT)
+    ResponseFlags,
+    /// Downstream (client) remote address (ip:port)
+    DownstreamRemoteAddress,
+    /// Time to receive the complete request body (ms)
+    RequestDurationMs,
+    /// Time to first byte from upstream (ms)
+    ResponseDurationMs,
+    /// Number of upstream request attempts (retries)
+    UpstreamRequestAttemptCount,
 }
 
 impl CommandOperator {
@@ -108,6 +118,11 @@ impl CommandOperator {
             Self::RouteCandidates => "route_candidates".into(),
             Self::UpstreamResponseTimeMs => "upstream_response_time_ms".into(),
             Self::ReqwestFallback => "reqwest_fallback".into(),
+            Self::ResponseFlags => "response_flags".into(),
+            Self::DownstreamRemoteAddress => "downstream_remote_address".into(),
+            Self::RequestDurationMs => "request_duration_ms".into(),
+            Self::ResponseDurationMs => "response_duration_ms".into(),
+            Self::UpstreamRequestAttemptCount => "upstream_request_attempt_count".into(),
         }
     }
 
@@ -131,6 +146,11 @@ impl CommandOperator {
             Self::RouteCandidates,
             Self::UpstreamResponseTimeMs,
             Self::ReqwestFallback,
+            Self::ResponseFlags,
+            Self::DownstreamRemoteAddress,
+            Self::RequestDurationMs,
+            Self::ResponseDurationMs,
+            Self::UpstreamRequestAttemptCount,
             Self::InputTokens,
             Self::OutputTokens,
             Self::RatelimitMatched,
@@ -274,6 +294,11 @@ fn parse_operator(token: &str) -> Option<CommandOperator> {
         "ROUTE_CANDIDATES" => Some(CommandOperator::RouteCandidates),
         "UPSTREAM_RESPONSE_TIME_MS" => Some(CommandOperator::UpstreamResponseTimeMs),
         "REQWEST_FALLBACK" => Some(CommandOperator::ReqwestFallback),
+        "RESPONSE_FLAGS" => Some(CommandOperator::ResponseFlags),
+        "DOWNSTREAM_REMOTE_ADDRESS" => Some(CommandOperator::DownstreamRemoteAddress),
+        "REQUEST_DURATION_MS" => Some(CommandOperator::RequestDurationMs),
+        "RESPONSE_DURATION_MS" => Some(CommandOperator::ResponseDurationMs),
+        "UPSTREAM_REQUEST_ATTEMPT_COUNT" => Some(CommandOperator::UpstreamRequestAttemptCount),
         _ => None,
     }
 }
@@ -322,6 +347,18 @@ pub struct AccessLogData {
     pub route_candidates: Option<u32>,
     pub upstream_response_time_ms: Option<u64>,
     pub reqwest_fallback: bool,
+    /// Response flags — short codes like RL (rate limited), NR (no route),
+    /// UF (upstream failure), UC (upstream connection termination),
+    /// UT (upstream timeout), DC (downstream disconnect).
+    pub response_flags: Option<String>,
+    /// Downstream client address (ip:port).
+    pub downstream_remote_address: Option<String>,
+    /// Time to receive the complete request from downstream (ms).
+    pub request_duration_ms: Option<u64>,
+    /// Time to first byte from upstream — TTFB (ms).
+    pub response_duration_ms: Option<u64>,
+    /// Number of upstream request attempts (1 = no retry).
+    pub upstream_request_attempt_count: Option<u32>,
 }
 
 impl Default for AccessLogData {
@@ -355,6 +392,11 @@ impl Default for AccessLogData {
             route_candidates: None,
             upstream_response_time_ms: None,
             reqwest_fallback: false,
+            response_flags: None,
+            downstream_remote_address: None,
+            request_duration_ms: None,
+            response_duration_ms: None,
+            upstream_request_attempt_count: None,
         }
     }
 }
@@ -408,6 +450,13 @@ fn resolve_text(op: &CommandOperator, data: &AccessLogData) -> Option<String> {
             data.upstream_response_time_ms.map(|v| v.to_string())
         }
         CommandOperator::ReqwestFallback => Some(data.reqwest_fallback.to_string()),
+        CommandOperator::ResponseFlags => data.response_flags.clone(),
+        CommandOperator::DownstreamRemoteAddress => data.downstream_remote_address.clone(),
+        CommandOperator::RequestDurationMs => data.request_duration_ms.map(|v| v.to_string()),
+        CommandOperator::ResponseDurationMs => data.response_duration_ms.map(|v| v.to_string()),
+        CommandOperator::UpstreamRequestAttemptCount => {
+            data.upstream_request_attempt_count.map(|v| v.to_string())
+        }
     }
 }
 
@@ -505,6 +554,26 @@ fn resolve_json(op: &CommandOperator, data: &AccessLogData) -> Value {
             None => Value::Null,
         },
         CommandOperator::ReqwestFallback => Value::Bool(data.reqwest_fallback),
+        CommandOperator::ResponseFlags => match &data.response_flags {
+            Some(v) => Value::String(v.clone()),
+            None => Value::Null,
+        },
+        CommandOperator::DownstreamRemoteAddress => match &data.downstream_remote_address {
+            Some(v) => Value::String(v.clone()),
+            None => Value::Null,
+        },
+        CommandOperator::RequestDurationMs => match data.request_duration_ms {
+            Some(v) => Value::Number(v.into()),
+            None => Value::Null,
+        },
+        CommandOperator::ResponseDurationMs => match data.response_duration_ms {
+            Some(v) => Value::Number(v.into()),
+            None => Value::Null,
+        },
+        CommandOperator::UpstreamRequestAttemptCount => match data.upstream_request_attempt_count {
+            Some(v) => Value::Number(v.into()),
+            None => Value::Null,
+        },
     }
 }
 
@@ -695,6 +764,11 @@ mod tests {
             route_candidates: Some(5),
             upstream_response_time_ms: Some(1100),
             reqwest_fallback: false,
+            response_flags: None,
+            downstream_remote_address: Some("10.0.1.5:52431".into()),
+            request_duration_ms: Some(12),
+            response_duration_ms: Some(850),
+            upstream_request_attempt_count: Some(1),
         }
     }
 
@@ -780,6 +854,9 @@ mod tests {
             "INPUT_TOKENS", "OUTPUT_TOKENS", "RATELIMIT_MATCHED",
             "RATELIMIT_RULE", "ERROR", "ROUTE_STRATEGY", "ROUTE_SCORE",
             "ROUTE_CANDIDATES", "UPSTREAM_RESPONSE_TIME_MS", "REQWEST_FALLBACK",
+            "RESPONSE_FLAGS", "DOWNSTREAM_REMOTE_ADDRESS",
+            "REQUEST_DURATION_MS", "RESPONSE_DURATION_MS",
+            "UPSTREAM_REQUEST_ATTEMPT_COUNT",
         ];
         for op_name in ops {
             let s = format!("%{}%", op_name);
@@ -1228,5 +1305,133 @@ mod tests {
         assert!(text.contains("upstream_ms=1100"));
         assert!(text.contains("stream=true"));
         assert!(text.contains("err=-"));
+    }
+
+    // ── New fields: response_flags, downstream, request/response duration, attempt count ──
+
+    #[test]
+    fn test_format_text_response_flags() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Text,
+            text_format: "flags=%RESPONSE_FLAGS% client=%DOWNSTREAM_REMOTE_ADDRESS%".into(),
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let mut data = sample_data();
+        data.response_flags = Some("RL,UT".into());
+        let text = logger.format_text(&data);
+        assert_eq!(text, "flags=RL,UT client=10.0.1.5:52431");
+    }
+
+    #[test]
+    fn test_format_text_response_flags_missing() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Text,
+            text_format: "flags=%RESPONSE_FLAGS%".into(),
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let data = sample_data(); // response_flags is None
+        let text = logger.format_text(&data);
+        assert_eq!(text, "flags=-");
+    }
+
+    #[test]
+    fn test_format_text_duration_fields() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Text,
+            text_format: "req=%REQUEST_DURATION_MS%ms ttfb=%RESPONSE_DURATION_MS%ms attempts=%UPSTREAM_REQUEST_ATTEMPT_COUNT%".into(),
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let data = sample_data();
+        let text = logger.format_text(&data);
+        assert_eq!(text, "req=12ms ttfb=850ms attempts=1");
+    }
+
+    #[test]
+    fn test_format_json_new_fields() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Json,
+            fields: vec![
+                "%RESPONSE_FLAGS%".into(),
+                "%DOWNSTREAM_REMOTE_ADDRESS%".into(),
+                "%REQUEST_DURATION_MS%".into(),
+                "%RESPONSE_DURATION_MS%".into(),
+                "%UPSTREAM_REQUEST_ATTEMPT_COUNT%".into(),
+            ],
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let mut data = sample_data();
+        data.response_flags = Some("UF".into());
+        let json_str = logger.format_json(&data);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(parsed["response_flags"], "UF");
+        assert_eq!(parsed["downstream_remote_address"], "10.0.1.5:52431");
+        assert_eq!(parsed["request_duration_ms"], 12);
+        assert_eq!(parsed["response_duration_ms"], 850);
+        assert_eq!(parsed["upstream_request_attempt_count"], 1);
+    }
+
+    #[test]
+    fn test_format_json_new_fields_null() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Json,
+            fields: vec![
+                "%RESPONSE_FLAGS%".into(),
+                "%DOWNSTREAM_REMOTE_ADDRESS%".into(),
+                "%REQUEST_DURATION_MS%".into(),
+                "%RESPONSE_DURATION_MS%".into(),
+                "%UPSTREAM_REQUEST_ATTEMPT_COUNT%".into(),
+            ],
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let mut data = sample_data();
+        data.response_flags = None;
+        data.downstream_remote_address = None;
+        data.request_duration_ms = None;
+        data.response_duration_ms = None;
+        data.upstream_request_attempt_count = None;
+        let json_str = logger.format_json(&data);
+        let parsed: BTreeMap<String, Value> = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(parsed["response_flags"], Value::Null);
+        assert_eq!(parsed["downstream_remote_address"], Value::Null);
+        assert_eq!(parsed["request_duration_ms"], Value::Null);
+        assert_eq!(parsed["response_duration_ms"], Value::Null);
+        assert_eq!(parsed["upstream_request_attempt_count"], Value::Null);
+    }
+
+    #[test]
+    fn test_full_envoy_style_with_new_fields() {
+        let fmt = "[%START_TIME%] \"%METHOD% %PATH%\" %RESPONSE_CODE% %RESPONSE_FLAGS% %BYTES_RECEIVED% %BYTES_SENT% %DURATION_MS% %RESPONSE_DURATION_MS% %REQUEST_DURATION_MS% \"%DOWNSTREAM_REMOTE_ADDRESS%\" variant=%VARIANT% attempts=%UPSTREAM_REQUEST_ATTEMPT_COUNT%";
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Text,
+            text_format: fmt.into(),
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let mut data = sample_data();
+        data.response_flags = Some("UF".into());
+        let text = logger.format_text(&data);
+        assert!(text.contains("200 UF 512 2048 1250 850 12"));
+        assert!(text.contains("\"10.0.1.5:52431\""));
+        assert!(text.contains("variant=gpt4-fast"));
+        assert!(text.contains("attempts=1"));
     }
 }
