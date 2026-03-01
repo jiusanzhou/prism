@@ -2285,11 +2285,11 @@ prism/
 - [x] 插件加载器 — File/URL/OCI/Builtin 来源 + 磁盘/内存缓存 + SHA-256 校验
 - [x] 插件管理器 — load/unload/reload + 事件回调
 - [x] Legacy 清理 — 移除旧 Go 代码
-- [ ] 配置热更新 (runtime reload)
+- [x] 配置热更新 (arc-swap 原子替换 + notify 文件监听 + /admin/reload API)
 - [ ] Redis 实时状态存储
 - [ ] 实际 Provider 请求转发验证 (OpenAI / Anthropic / DeepSeek)
 - [ ] 流式转发 (SSE) 完整验证
-- [ ] Docker 部署验证
+- [x] Docker 部署配置更新 (纯 Rust Dockerfile + CI)
 - [ ] 文档完善 (docs/)
 
 ### Phase 3 — 智能化 & 集成
@@ -2326,7 +2326,7 @@ prism/
 | 路由决策 | **8μs** |
 | P99 延迟 | < 5ms |
 | 内存占用 | ~30MB |
-| 测试覆盖 | 307 个测试通过（含 wasm feature 365 个） |
+| 测试覆盖 | 374 个测试通过（含 wasm）+ 24 个 E2E |
 
 ---
 
