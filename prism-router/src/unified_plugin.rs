@@ -501,7 +501,7 @@ impl PluginRegistry {
     /// Phase 1 implementation:
     /// - Proxy phase: fully supported via WasmProxyPlugin
     /// - Route phase: TODO (needs host function ABI definition)
-    /// - Analyze phase: TODO (can integrate with prism-wasm-analyzer)
+    /// - Analyze phase: TODO (can integrate with examples/wasm-plugins/analyzer)
     pub fn load_all(&mut self) -> LoadResult {
         let mut result = LoadResult {
             proxy_plugins: Vec::new(),

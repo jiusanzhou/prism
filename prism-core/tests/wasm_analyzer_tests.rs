@@ -2,7 +2,7 @@
 //!
 //! These tests require `--features wasm` to compile.
 //! The test fixture `fixtures/prism_wasm_analyzer.wasm` is built from
-//! `prism-wasm-analyzer/` (a simple keyword-based classifier).
+//! `examples/wasm-plugins/analyzer/` (a simple keyword-based classifier).
 
 #![cfg(feature = "wasm")]
 
