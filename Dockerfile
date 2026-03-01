@@ -1,46 +1,48 @@
-# ─── Stage 1: Build Rust library ─────────────────────────
-FROM rust:1.82 AS rust-builder
+# ─── Stage 1: Build ──────────────────────────────────────
+FROM rust:1.82-bookworm AS builder
+
+# Install protoc for gRPC codegen
+RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /build
+
+# Cache dependencies — copy manifests first
 COPY Cargo.toml Cargo.lock ./
+COPY prism-core/Cargo.toml prism-core/Cargo.toml
+COPY prism-router/Cargo.toml prism-router/Cargo.toml
+
+# Create stub lib.rs for dependency caching
+RUN mkdir -p prism-core/src prism-router/src && \
+    echo "pub fn stub(){}" > prism-core/src/lib.rs && \
+    echo "fn main(){}" > prism-router/src/main.rs && \
+    cargo build --release -p prism-router 2>/dev/null || true
+
+# Copy actual source
 COPY prism-core/ prism-core/
-RUN cargo build --release -p prism-core
+COPY prism-router/ prism-router/
 
-# ─── Stage 2: Build Go binary ────────────────────────────
-FROM golang:1.22 AS go-builder
-WORKDIR /build
+# Touch source files to invalidate stubs
+RUN touch prism-core/src/lib.rs prism-router/src/main.rs
 
-# Copy the entire Rust target/release directory so the CGO LDFLAGS
-# path (${SRCDIR}/../../../target/release) resolves correctly.
-# prism-gateway/internal/router/ffi.go uses: -L${SRCDIR}/../../../target/release
-# SRCDIR = /build/prism-gateway/internal/router
-# So ../../../target/release = /build/target/release
-COPY --from=rust-builder /build/target/release/libprism_core.so /build/target/release/libprism_core.so
-COPY --from=rust-builder /build/target/release/libprism_core.a  /build/target/release/libprism_core.a
+# Build the real binary (default features: grpc + proxy)
+RUN cargo build --release -p prism-router
 
-# Also put libs in standard path for the linker at runtime
-COPY --from=rust-builder /build/target/release/libprism_core.so /usr/local/lib/
-COPY --from=rust-builder /build/target/release/libprism_core.a  /usr/local/lib/
-RUN ldconfig
-
-# Copy Go source
-COPY prism-gateway/ prism-gateway/
-
-WORKDIR /build/prism-gateway
-RUN CGO_ENABLED=1 go build -tags ffi -o /build/bin/prism ./cmd/prism/
-
-# ─── Stage 3: Runtime ────────────────────────────────────
+# ─── Stage 2: Runtime ────────────────────────────────────
 FROM debian:bookworm-slim
+
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=rust-builder /build/target/release/libprism_core.so /usr/local/lib/
-COPY --from=go-builder /build/bin/prism /usr/local/bin/prism
+COPY --from=builder /build/target/release/prism-router /usr/local/bin/prism-router
 COPY configs/prism.example.yaml /etc/prism/prism.yaml
-RUN ldconfig
 
-ENV LD_LIBRARY_PATH=/usr/local/lib
-
+# HTTP API + Admin
 EXPOSE 8080
-ENTRYPOINT ["prism"]
+# Proxy (Pingora reverse proxy)
+EXPOSE 8000
+# gRPC
+EXPOSE 9090
+
+ENTRYPOINT ["prism-router"]
 CMD ["--config", "/etc/prism/prism.yaml"]

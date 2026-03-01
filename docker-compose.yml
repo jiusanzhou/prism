@@ -1,59 +1,22 @@
-version: "3.9"
-
 services:
   prism:
     build: .
     ports:
-      - "8080:8080"
+      - "8080:8080"   # HTTP API + Admin
+      - "8000:8000"   # Proxy (Pingora reverse proxy)
+      - "9090:9090"   # gRPC
     volumes:
       - ./configs:/etc/prism
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
-    depends_on:
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-
-  postgres:
-    image: postgres:16-alpine
-    ports:
-      - "5432:5432"
-    environment:
-      POSTGRES_USER: prism
-      POSTGRES_PASSWORD: prism
-      POSTGRES_DB: prism
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U prism"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
     restart: unless-stopped
 
   prometheus:
     image: prom/prometheus:latest
     ports:
-      - "9090:9090"
+      - "9091:9090"
     volumes:
       - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml
     restart: unless-stopped
-
-volumes:
-  redis_data:
-  pg_data:
