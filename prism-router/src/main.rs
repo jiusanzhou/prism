@@ -1,4 +1,5 @@
 mod api;
+pub mod codec;
 mod config;
 pub mod metrics;
 mod state;
