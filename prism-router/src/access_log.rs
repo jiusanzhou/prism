@@ -84,6 +84,32 @@ pub enum CommandOperator {
     ResponseDurationMs,
     /// Number of upstream request attempts (retries)
     UpstreamRequestAttemptCount,
+    /// Request start time in local timezone
+    StartTimeLocal(Option<String>),
+    /// Time when log entry is emitted
+    EmitTime(Option<String>),
+    /// Request headers total bytes (uncompressed)
+    RequestHeadersBytes,
+    /// Response headers total bytes (uncompressed)
+    ResponseHeadersBytes,
+    /// Duration from TTFB to last byte sent downstream (ms)
+    ResponseTxDurationMs,
+    /// Upstream protocol (outbound_protocol)
+    UpstreamProtocol,
+    /// Prism listening address (downstream local address)
+    DownstreamLocalAddress,
+    /// TLS/connection failure reason for upstream
+    UpstreamTransportFailureReason,
+    /// Connection termination details
+    ConnectionTerminationDetails,
+    /// Response code details — who set it and why
+    ResponseCodeDetails,
+    /// Pool name (virtual cluster equivalent)
+    PoolName,
+    /// Request unique ID (from x-request-id header or generated)
+    RequestId,
+    /// Downstream TLS version (TLSv1.2, TLSv1.3, etc.)
+    DownstreamTlsVersion,
 }
 
 impl CommandOperator {
@@ -123,6 +149,19 @@ impl CommandOperator {
             Self::RequestDurationMs => "request_duration_ms".into(),
             Self::ResponseDurationMs => "response_duration_ms".into(),
             Self::UpstreamRequestAttemptCount => "upstream_request_attempt_count".into(),
+            Self::StartTimeLocal(_) => "start_time_local".into(),
+            Self::EmitTime(_) => "emit_time".into(),
+            Self::RequestHeadersBytes => "request_headers_bytes".into(),
+            Self::ResponseHeadersBytes => "response_headers_bytes".into(),
+            Self::ResponseTxDurationMs => "response_tx_duration_ms".into(),
+            Self::UpstreamProtocol => "upstream_protocol".into(),
+            Self::DownstreamLocalAddress => "downstream_local_address".into(),
+            Self::UpstreamTransportFailureReason => "upstream_transport_failure_reason".into(),
+            Self::ConnectionTerminationDetails => "connection_termination_details".into(),
+            Self::ResponseCodeDetails => "response_code_details".into(),
+            Self::PoolName => "pool_name".into(),
+            Self::RequestId => "request_id".into(),
+            Self::DownstreamTlsVersion => "downstream_tls_version".into(),
         }
     }
 
@@ -151,6 +190,15 @@ impl CommandOperator {
             Self::RequestDurationMs,
             Self::ResponseDurationMs,
             Self::UpstreamRequestAttemptCount,
+            Self::RequestHeadersBytes,
+            Self::ResponseHeadersBytes,
+            Self::ResponseTxDurationMs,
+            Self::UpstreamProtocol,
+            Self::DownstreamLocalAddress,
+            Self::DownstreamTlsVersion,
+            Self::ResponseCodeDetails,
+            Self::PoolName,
+            Self::RequestId,
             Self::InputTokens,
             Self::OutputTokens,
             Self::RatelimitMatched,
@@ -238,13 +286,15 @@ pub fn parse_format_string(s: &str) -> Vec<FormatSegment> {
 
 /// Check if a name is a parameterized operator (has a `(param)` form).
 fn is_parameterized_operator(name: &str) -> bool {
-    matches!(name, "START_TIME" | "REQUEST_HEADER" | "RESPONSE_HEADER")
+    matches!(name, "START_TIME" | "START_TIME_LOCAL" | "EMIT_TIME" | "REQUEST_HEADER" | "RESPONSE_HEADER")
 }
 
 /// Parse a parameterized operator with its parameter value.
 fn parse_operator_with_param(name: &str, param: &str) -> Option<CommandOperator> {
     match name {
         "START_TIME" => Some(CommandOperator::StartTime(Some(param.to_string()))),
+        "START_TIME_LOCAL" => Some(CommandOperator::StartTimeLocal(Some(param.to_string()))),
+        "EMIT_TIME" => Some(CommandOperator::EmitTime(Some(param.to_string()))),
         "REQUEST_HEADER" => Some(CommandOperator::RequestHeader(param.to_lowercase())),
         "RESPONSE_HEADER" => Some(CommandOperator::ResponseHeader(param.to_lowercase())),
         _ => None,
@@ -299,6 +349,19 @@ fn parse_operator(token: &str) -> Option<CommandOperator> {
         "REQUEST_DURATION_MS" => Some(CommandOperator::RequestDurationMs),
         "RESPONSE_DURATION_MS" => Some(CommandOperator::ResponseDurationMs),
         "UPSTREAM_REQUEST_ATTEMPT_COUNT" => Some(CommandOperator::UpstreamRequestAttemptCount),
+        "START_TIME_LOCAL" => Some(CommandOperator::StartTimeLocal(None)),
+        "EMIT_TIME" => Some(CommandOperator::EmitTime(None)),
+        "REQUEST_HEADERS_BYTES" => Some(CommandOperator::RequestHeadersBytes),
+        "RESPONSE_HEADERS_BYTES" => Some(CommandOperator::ResponseHeadersBytes),
+        "RESPONSE_TX_DURATION_MS" => Some(CommandOperator::ResponseTxDurationMs),
+        "UPSTREAM_PROTOCOL" => Some(CommandOperator::UpstreamProtocol),
+        "DOWNSTREAM_LOCAL_ADDRESS" => Some(CommandOperator::DownstreamLocalAddress),
+        "UPSTREAM_TRANSPORT_FAILURE_REASON" => Some(CommandOperator::UpstreamTransportFailureReason),
+        "CONNECTION_TERMINATION_DETAILS" => Some(CommandOperator::ConnectionTerminationDetails),
+        "RESPONSE_CODE_DETAILS" => Some(CommandOperator::ResponseCodeDetails),
+        "POOL_NAME" => Some(CommandOperator::PoolName),
+        "REQUEST_ID" => Some(CommandOperator::RequestId),
+        "DOWNSTREAM_TLS_VERSION" => Some(CommandOperator::DownstreamTlsVersion),
         _ => None,
     }
 }
@@ -359,6 +422,30 @@ pub struct AccessLogData {
     pub response_duration_ms: Option<u64>,
     /// Number of upstream request attempts (1 = no retry).
     pub upstream_request_attempt_count: Option<u32>,
+    /// Emit time (when log entry is written, not request start).
+    pub emit_time: DateTime<Utc>,
+    /// Request headers total bytes.
+    pub request_headers_bytes: Option<u64>,
+    /// Response headers total bytes.
+    pub response_headers_bytes: Option<u64>,
+    /// Duration from TTFB to last byte sent downstream (ms).
+    pub response_tx_duration_ms: Option<u64>,
+    /// Upstream/outbound protocol.
+    pub upstream_protocol: Option<String>,
+    /// Prism listening address (downstream local).
+    pub downstream_local_address: Option<String>,
+    /// Upstream TLS/transport failure reason.
+    pub upstream_transport_failure_reason: Option<String>,
+    /// Connection termination details.
+    pub connection_termination_details: Option<String>,
+    /// Response code details — who set it (prism/upstream) and why.
+    pub response_code_details: Option<String>,
+    /// Pool name (virtual cluster).
+    pub pool_name: Option<String>,
+    /// Request unique ID.
+    pub request_id: Option<String>,
+    /// Downstream TLS version.
+    pub downstream_tls_version: Option<String>,
 }
 
 impl Default for AccessLogData {
@@ -397,6 +484,18 @@ impl Default for AccessLogData {
             request_duration_ms: None,
             response_duration_ms: None,
             upstream_request_attempt_count: None,
+            emit_time: Utc::now(),
+            request_headers_bytes: None,
+            response_headers_bytes: None,
+            response_tx_duration_ms: None,
+            upstream_protocol: None,
+            downstream_local_address: None,
+            upstream_transport_failure_reason: None,
+            connection_termination_details: None,
+            response_code_details: None,
+            pool_name: None,
+            request_id: None,
+            downstream_tls_version: None,
         }
     }
 }
@@ -457,6 +556,26 @@ fn resolve_text(op: &CommandOperator, data: &AccessLogData) -> Option<String> {
         CommandOperator::UpstreamRequestAttemptCount => {
             data.upstream_request_attempt_count.map(|v| v.to_string())
         }
+        CommandOperator::StartTimeLocal(fmt) => {
+            let local = data.start_time.with_timezone(&chrono::Local);
+            let format_str = fmt.as_deref().unwrap_or("%Y-%m-%dT%H:%M:%S%.3f%z");
+            Some(local.format(format_str).to_string())
+        }
+        CommandOperator::EmitTime(fmt) => {
+            let format_str = fmt.as_deref().unwrap_or("%Y-%m-%dT%H:%M:%S%.3fZ");
+            Some(data.emit_time.format(format_str).to_string())
+        }
+        CommandOperator::RequestHeadersBytes => data.request_headers_bytes.map(|v| v.to_string()),
+        CommandOperator::ResponseHeadersBytes => data.response_headers_bytes.map(|v| v.to_string()),
+        CommandOperator::ResponseTxDurationMs => data.response_tx_duration_ms.map(|v| v.to_string()),
+        CommandOperator::UpstreamProtocol => data.upstream_protocol.clone(),
+        CommandOperator::DownstreamLocalAddress => data.downstream_local_address.clone(),
+        CommandOperator::UpstreamTransportFailureReason => data.upstream_transport_failure_reason.clone(),
+        CommandOperator::ConnectionTerminationDetails => data.connection_termination_details.clone(),
+        CommandOperator::ResponseCodeDetails => data.response_code_details.clone(),
+        CommandOperator::PoolName => data.pool_name.clone(),
+        CommandOperator::RequestId => data.request_id.clone(),
+        CommandOperator::DownstreamTlsVersion => data.downstream_tls_version.clone(),
     }
 }
 
@@ -572,6 +691,59 @@ fn resolve_json(op: &CommandOperator, data: &AccessLogData) -> Value {
         },
         CommandOperator::UpstreamRequestAttemptCount => match data.upstream_request_attempt_count {
             Some(v) => Value::Number(v.into()),
+            None => Value::Null,
+        },
+        CommandOperator::StartTimeLocal(fmt) => {
+            let local = data.start_time.with_timezone(&chrono::Local);
+            let format_str = fmt.as_deref().unwrap_or("%Y-%m-%dT%H:%M:%S%.3f%z");
+            Value::String(local.format(format_str).to_string())
+        }
+        CommandOperator::EmitTime(fmt) => {
+            let format_str = fmt.as_deref().unwrap_or("%Y-%m-%dT%H:%M:%S%.3fZ");
+            Value::String(data.emit_time.format(format_str).to_string())
+        }
+        CommandOperator::RequestHeadersBytes => match data.request_headers_bytes {
+            Some(v) => Value::Number(v.into()),
+            None => Value::Null,
+        },
+        CommandOperator::ResponseHeadersBytes => match data.response_headers_bytes {
+            Some(v) => Value::Number(v.into()),
+            None => Value::Null,
+        },
+        CommandOperator::ResponseTxDurationMs => match data.response_tx_duration_ms {
+            Some(v) => Value::Number(v.into()),
+            None => Value::Null,
+        },
+        CommandOperator::UpstreamProtocol => match &data.upstream_protocol {
+            Some(v) => Value::String(v.clone()),
+            None => Value::Null,
+        },
+        CommandOperator::DownstreamLocalAddress => match &data.downstream_local_address {
+            Some(v) => Value::String(v.clone()),
+            None => Value::Null,
+        },
+        CommandOperator::UpstreamTransportFailureReason => match &data.upstream_transport_failure_reason {
+            Some(v) => Value::String(v.clone()),
+            None => Value::Null,
+        },
+        CommandOperator::ConnectionTerminationDetails => match &data.connection_termination_details {
+            Some(v) => Value::String(v.clone()),
+            None => Value::Null,
+        },
+        CommandOperator::ResponseCodeDetails => match &data.response_code_details {
+            Some(v) => Value::String(v.clone()),
+            None => Value::Null,
+        },
+        CommandOperator::PoolName => match &data.pool_name {
+            Some(v) => Value::String(v.clone()),
+            None => Value::Null,
+        },
+        CommandOperator::RequestId => match &data.request_id {
+            Some(v) => Value::String(v.clone()),
+            None => Value::Null,
+        },
+        CommandOperator::DownstreamTlsVersion => match &data.downstream_tls_version {
+            Some(v) => Value::String(v.clone()),
             None => Value::Null,
         },
     }
@@ -769,6 +941,20 @@ mod tests {
             request_duration_ms: Some(12),
             response_duration_ms: Some(850),
             upstream_request_attempt_count: Some(1),
+            emit_time: DateTime::parse_from_rfc3339("2026-03-01T12:00:01.373Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            request_headers_bytes: Some(256),
+            response_headers_bytes: Some(128),
+            response_tx_duration_ms: Some(400),
+            upstream_protocol: Some("openai_chat".into()),
+            downstream_local_address: Some("0.0.0.0:8000".into()),
+            upstream_transport_failure_reason: None,
+            connection_termination_details: None,
+            response_code_details: Some("via_upstream".into()),
+            pool_name: Some("default-pool".into()),
+            request_id: Some("req-uuid-001".into()),
+            downstream_tls_version: Some("TLSv1.3".into()),
         }
     }
 
@@ -857,6 +1043,12 @@ mod tests {
             "RESPONSE_FLAGS", "DOWNSTREAM_REMOTE_ADDRESS",
             "REQUEST_DURATION_MS", "RESPONSE_DURATION_MS",
             "UPSTREAM_REQUEST_ATTEMPT_COUNT",
+            "START_TIME_LOCAL", "EMIT_TIME",
+            "REQUEST_HEADERS_BYTES", "RESPONSE_HEADERS_BYTES",
+            "RESPONSE_TX_DURATION_MS", "UPSTREAM_PROTOCOL",
+            "DOWNSTREAM_LOCAL_ADDRESS", "UPSTREAM_TRANSPORT_FAILURE_REASON",
+            "CONNECTION_TERMINATION_DETAILS", "RESPONSE_CODE_DETAILS",
+            "POOL_NAME", "REQUEST_ID", "DOWNSTREAM_TLS_VERSION",
         ];
         for op_name in ops {
             let s = format!("%{}%", op_name);
@@ -1384,7 +1576,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_json_new_fields_null() {
+    fn test_format_json_envoy_fields_null() {
         let config = AccessLogConfig {
             enabled: true,
             format: AccessLogFormat::Json,
@@ -1433,5 +1625,294 @@ mod tests {
         assert!(text.contains("\"10.0.1.5:52431\""));
         assert!(text.contains("variant=gpt4-fast"));
         assert!(text.contains("attempts=1"));
+    }
+
+    // ── New Envoy-style operators (14 additional) ──
+
+    #[test]
+    fn test_format_text_start_time_local() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Text,
+            text_format: "%START_TIME_LOCAL%".into(),
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let data = sample_data();
+        let text = logger.format_text(&data);
+        // Should produce a non-empty local time string
+        assert!(!text.is_empty());
+        assert_ne!(text, "-");
+    }
+
+    #[test]
+    fn test_format_text_start_time_local_custom_format() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Text,
+            text_format: "%START_TIME_LOCAL(%H:%M:%S)%".into(),
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let data = sample_data();
+        let text = logger.format_text(&data);
+        // Should match HH:MM:SS pattern
+        assert_eq!(text.len(), 8);
+        assert!(text.contains(':'));
+    }
+
+    #[test]
+    fn test_format_text_emit_time() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Text,
+            text_format: "%EMIT_TIME%".into(),
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let data = sample_data();
+        let text = logger.format_text(&data);
+        assert!(text.contains("2026-03-01T12:00:01.373Z"));
+    }
+
+    #[test]
+    fn test_format_text_emit_time_custom_format() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Text,
+            text_format: "%EMIT_TIME(%s)%".into(),
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let data = sample_data();
+        let text = logger.format_text(&data);
+        // Unix timestamp
+        assert!(text.parse::<i64>().is_ok());
+    }
+
+    #[test]
+    fn test_format_text_header_bytes() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Text,
+            text_format: "req_hdr=%REQUEST_HEADERS_BYTES% resp_hdr=%RESPONSE_HEADERS_BYTES%".into(),
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let data = sample_data();
+        let text = logger.format_text(&data);
+        assert_eq!(text, "req_hdr=256 resp_hdr=128");
+    }
+
+    #[test]
+    fn test_format_text_response_tx_duration() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Text,
+            text_format: "tx=%RESPONSE_TX_DURATION_MS%ms".into(),
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let data = sample_data();
+        let text = logger.format_text(&data);
+        assert_eq!(text, "tx=400ms");
+    }
+
+    #[test]
+    fn test_format_text_upstream_protocol() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Text,
+            text_format: "up_proto=%UPSTREAM_PROTOCOL%".into(),
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let data = sample_data();
+        let text = logger.format_text(&data);
+        assert_eq!(text, "up_proto=openai_chat");
+    }
+
+    #[test]
+    fn test_format_text_downstream_local_address() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Text,
+            text_format: "listen=%DOWNSTREAM_LOCAL_ADDRESS%".into(),
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let data = sample_data();
+        let text = logger.format_text(&data);
+        assert_eq!(text, "listen=0.0.0.0:8000");
+    }
+
+    #[test]
+    fn test_format_text_response_code_details() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Text,
+            text_format: "%RESPONSE_CODE% %RESPONSE_CODE_DETAILS%".into(),
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let data = sample_data();
+        let text = logger.format_text(&data);
+        assert_eq!(text, "200 via_upstream");
+    }
+
+    #[test]
+    fn test_format_text_pool_and_request_id() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Text,
+            text_format: "pool=%POOL_NAME% rid=%REQUEST_ID%".into(),
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let data = sample_data();
+        let text = logger.format_text(&data);
+        assert_eq!(text, "pool=default-pool rid=req-uuid-001");
+    }
+
+    #[test]
+    fn test_format_text_tls_version() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Text,
+            text_format: "tls=%DOWNSTREAM_TLS_VERSION%".into(),
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let data = sample_data();
+        let text = logger.format_text(&data);
+        assert_eq!(text, "tls=TLSv1.3");
+    }
+
+    #[test]
+    fn test_format_text_transport_failure() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Text,
+            text_format: "fail=%UPSTREAM_TRANSPORT_FAILURE_REASON% term=%CONNECTION_TERMINATION_DETAILS%".into(),
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let mut data = sample_data();
+        data.upstream_transport_failure_reason = Some("TLS_handshake_failed".into());
+        data.connection_termination_details = Some("remote_reset".into());
+        let text = logger.format_text(&data);
+        assert_eq!(text, "fail=TLS_handshake_failed term=remote_reset");
+    }
+
+    #[test]
+    fn test_format_json_new_envoy_fields() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Json,
+            fields: vec![
+                "%EMIT_TIME%".into(),
+                "%REQUEST_HEADERS_BYTES%".into(),
+                "%RESPONSE_HEADERS_BYTES%".into(),
+                "%RESPONSE_TX_DURATION_MS%".into(),
+                "%UPSTREAM_PROTOCOL%".into(),
+                "%DOWNSTREAM_LOCAL_ADDRESS%".into(),
+                "%RESPONSE_CODE_DETAILS%".into(),
+                "%POOL_NAME%".into(),
+                "%REQUEST_ID%".into(),
+                "%DOWNSTREAM_TLS_VERSION%".into(),
+            ],
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let data = sample_data();
+        let json_str = logger.format_json(&data);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        assert!(parsed["emit_time"].is_string());
+        assert_eq!(parsed["request_headers_bytes"], 256);
+        assert_eq!(parsed["response_headers_bytes"], 128);
+        assert_eq!(parsed["response_tx_duration_ms"], 400);
+        assert_eq!(parsed["upstream_protocol"], "openai_chat");
+        assert_eq!(parsed["downstream_local_address"], "0.0.0.0:8000");
+        assert_eq!(parsed["response_code_details"], "via_upstream");
+        assert_eq!(parsed["pool_name"], "default-pool");
+        assert_eq!(parsed["request_id"], "req-uuid-001");
+        assert_eq!(parsed["downstream_tls_version"], "TLSv1.3");
+    }
+
+    #[test]
+    fn test_format_json_envoy_extended_fields_null() {
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Json,
+            fields: vec![
+                "%UPSTREAM_TRANSPORT_FAILURE_REASON%".into(),
+                "%CONNECTION_TERMINATION_DETAILS%".into(),
+                "%RESPONSE_CODE_DETAILS%".into(),
+                "%POOL_NAME%".into(),
+                "%REQUEST_ID%".into(),
+                "%DOWNSTREAM_TLS_VERSION%".into(),
+            ],
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let mut data = sample_data();
+        data.upstream_transport_failure_reason = None;
+        data.connection_termination_details = None;
+        data.response_code_details = None;
+        data.pool_name = None;
+        data.request_id = None;
+        data.downstream_tls_version = None;
+        let json_str = logger.format_json(&data);
+        let parsed: BTreeMap<String, Value> = serde_json::from_str(&json_str).unwrap();
+
+        for (_, v) in &parsed {
+            assert_eq!(*v, Value::Null);
+        }
+    }
+
+    #[test]
+    fn test_full_envoy_default_format() {
+        // Mimics Envoy's default format adapted for Prism
+        let fmt = "[%START_TIME%] \"%METHOD% %PATH%\" %RESPONSE_CODE% %RESPONSE_FLAGS% %BYTES_RECEIVED% %BYTES_SENT% %DURATION_MS% %RESPONSE_DURATION_MS% %REQUEST_DURATION_MS% \"%DOWNSTREAM_REMOTE_ADDRESS%\" \"%REQUEST_HEADER(x-api-key)%\" \"%REQUEST_ID%\" variant=%VARIANT% provider=%PROVIDER% model=%MODEL% pool=%POOL_NAME% upstream=%UPSTREAM_HOST% up_proto=%UPSTREAM_PROTOCOL% tls=%DOWNSTREAM_TLS_VERSION% listen=%DOWNSTREAM_LOCAL_ADDRESS% attempts=%UPSTREAM_REQUEST_ATTEMPT_COUNT% req_hdr=%REQUEST_HEADERS_BYTES% resp_hdr=%RESPONSE_HEADERS_BYTES% tx=%RESPONSE_TX_DURATION_MS% details=%RESPONSE_CODE_DETAILS%";
+        let config = AccessLogConfig {
+            enabled: true,
+            format: AccessLogFormat::Text,
+            text_format: fmt.into(),
+            output: AccessLogOutput::Stdout,
+            ..Default::default()
+        };
+        let logger = AccessLogger::new(config).unwrap();
+        let data = sample_data();
+        let text = logger.format_text(&data);
+
+        assert!(text.starts_with("[2026-03-01T12:00:00.123Z] \"POST /v1/chat/completions\" 200 -"));
+        assert!(text.contains("\"10.0.1.5:52431\""));
+        assert!(text.contains("\"sk-test-123\""));
+        assert!(text.contains("\"req-uuid-001\""));
+        assert!(text.contains("variant=gpt4-fast"));
+        assert!(text.contains("pool=default-pool"));
+        assert!(text.contains("up_proto=openai_chat"));
+        assert!(text.contains("tls=TLSv1.3"));
+        assert!(text.contains("listen=0.0.0.0:8000"));
+        assert!(text.contains("attempts=1"));
+        assert!(text.contains("req_hdr=256"));
+        assert!(text.contains("resp_hdr=128"));
+        assert!(text.contains("tx=400"));
+        assert!(text.contains("details=via_upstream"));
     }
 }

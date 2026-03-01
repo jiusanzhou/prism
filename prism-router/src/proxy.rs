@@ -90,6 +90,16 @@ pub struct ProxyContext {
     pub request_body_received_at: Option<Instant>,
     /// Time to first byte from upstream (TTFB).
     pub upstream_first_byte_at: Option<Instant>,
+    /// Request headers total bytes.
+    pub request_headers_bytes: Option<u64>,
+    /// Response headers total bytes.
+    pub response_headers_bytes: Option<u64>,
+    /// Response code details — who set it (prism vs upstream) and why.
+    pub response_code_details: Option<String>,
+    /// Upstream transport failure reason (TLS error, etc).
+    pub upstream_transport_failure_reason: Option<String>,
+    /// Connection termination details.
+    pub connection_termination_details: Option<String>,
     /// Number of upstream request attempts.
     pub upstream_request_attempt_count: u32,
 }
@@ -127,6 +137,11 @@ impl Default for ProxyContext {
             downstream_remote_address: None,
             request_body_received_at: None,
             upstream_first_byte_at: None,
+            request_headers_bytes: None,
+            response_headers_bytes: None,
+            response_code_details: None,
+            upstream_transport_failure_reason: None,
+            connection_termination_details: None,
             upstream_request_attempt_count: 1,
         }
     }
@@ -559,6 +574,20 @@ impl PrismProxy {
                 response_duration_ms: ctx.upstream_first_byte_at
                     .map(|t| t.duration_since(ctx.request_start).as_millis() as u64),
                 upstream_request_attempt_count: Some(ctx.upstream_request_attempt_count),
+                emit_time: Utc::now(),
+                request_headers_bytes: None, // TODO: capture
+                response_headers_bytes: None,
+                response_tx_duration_ms: None,
+                upstream_protocol: ctx.outbound_protocol.clone(),
+                downstream_local_address: None, // reqwest path doesn't have listener info
+                upstream_transport_failure_reason: None,
+                connection_termination_details: None,
+                response_code_details: ctx.response_code_details.clone(),
+                pool_name: None, // TODO: expose from router
+                request_id: ctx.request_headers_snapshot.iter()
+                    .find(|(k, _)| k == "x-request-id")
+                    .map(|(_, v)| v.clone()),
+                downstream_tls_version: None,
             };
             logger.log(&data);
         }
@@ -594,12 +623,18 @@ impl ProxyHttp for PrismProxy {
         }
 
         // Snapshot request headers for access log
-        ctx.request_headers_snapshot = session
+        let headers: Vec<(String, String)> = session
             .req_header()
             .headers
             .iter()
             .map(|(k, v)| (k.as_str().to_lowercase(), v.to_str().unwrap_or("").to_string()))
             .collect();
+
+        // Capture request headers bytes
+        ctx.request_headers_bytes = Some(
+            headers.iter().map(|(k, v)| k.len() as u64 + v.len() as u64 + 4).sum()
+        );
+        ctx.request_headers_snapshot = headers;
 
         debug!(
             path = %path,
@@ -1332,6 +1367,25 @@ impl ProxyHttp for PrismProxy {
                 response_duration_ms: ctx.upstream_first_byte_at
                     .map(|t| t.duration_since(ctx.request_start).as_millis() as u64),
                 upstream_request_attempt_count: Some(ctx.upstream_request_attempt_count),
+                emit_time: Utc::now(),
+                request_headers_bytes: ctx.request_headers_bytes,
+                response_headers_bytes: ctx.response_headers_bytes,
+                response_tx_duration_ms: ctx.upstream_first_byte_at.map(|ttfb| {
+                    let total = elapsed.as_millis() as u64;
+                    let ttfb_ms = ttfb.duration_since(ctx.request_start).as_millis() as u64;
+                    total.saturating_sub(ttfb_ms)
+                }),
+                upstream_protocol: ctx.outbound_protocol.clone(),
+                downstream_local_address: session.server_addr()
+                    .map(|a| a.to_string()),
+                upstream_transport_failure_reason: ctx.upstream_transport_failure_reason.clone(),
+                connection_termination_details: ctx.connection_termination_details.clone(),
+                response_code_details: ctx.response_code_details.clone(),
+                pool_name: None, // TODO: expose from router
+                request_id: ctx.request_headers_snapshot.iter()
+                    .find(|(k, _)| k == "x-request-id")
+                    .map(|(_, v)| v.clone()),
+                downstream_tls_version: None, // TODO: expose from Pingora TLS info
             };
             logger.log(&data);
         }
