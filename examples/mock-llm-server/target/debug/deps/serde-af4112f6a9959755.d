@@ -1,0 +1,14 @@
+/Users/zoe/projects/labs.zoe.im/prism/examples/mock-llm-server/target/debug/deps/serde-af4112f6a9959755.d: /Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/zoe/projects/labs.zoe.im/prism/examples/mock-llm-server/target/debug/build/serde-1d84d94038952bdb/out/private.rs
+
+/Users/zoe/projects/labs.zoe.im/prism/examples/mock-llm-server/target/debug/deps/libserde-af4112f6a9959755.rlib: /Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/zoe/projects/labs.zoe.im/prism/examples/mock-llm-server/target/debug/build/serde-1d84d94038952bdb/out/private.rs
+
+/Users/zoe/projects/labs.zoe.im/prism/examples/mock-llm-server/target/debug/deps/libserde-af4112f6a9959755.rmeta: /Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/zoe/projects/labs.zoe.im/prism/examples/mock-llm-server/target/debug/build/serde-1d84d94038952bdb/out/private.rs
+
+/Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/Users/zoe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/Users/zoe/projects/labs.zoe.im/prism/examples/mock-llm-server/target/debug/build/serde-1d84d94038952bdb/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/zoe/projects/labs.zoe.im/prism/examples/mock-llm-server/target/debug/build/serde-1d84d94038952bdb/out
