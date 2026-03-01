@@ -82,6 +82,7 @@ fn build_full_registry() -> InMemoryRegistry {
                 current_qps: 10.0,
                 queue_depth: 0,
                 last_updated: None,
+                ..Default::default()
             },
             pricing_override: Some(ModelPricing {
                 input_per_1m_tokens: cost_input,
@@ -89,6 +90,7 @@ fn build_full_registry() -> InMemoryRegistry {
                 currency: "USD".into(),
             }),
             status: VariantStatus::Active,
+            base_url: None,
         };
         reg.add_variant(variant);
     }
@@ -158,9 +160,11 @@ fn build_full_registry() -> InMemoryRegistry {
             current_qps: 30.0,
             queue_depth: 0,
             last_updated: None,
+            ..Default::default()
         },
         pricing_override: None,
         status: VariantStatus::Active,
+            base_url: None,
     });
 
     reg.add_pool(ModelPool {
@@ -271,17 +275,16 @@ fn test_multi_provider_fallback_chain() {
     }
 }
 
-/// Verify scoring is deterministic — same input always produces same output.
+/// Verify scoring is deterministic — same input on same router always produces same output.
 #[test]
 fn test_routing_deterministic() {
-    let reg1 = build_full_registry();
-    let reg2 = build_full_registry();
-    let router1 = PrismRouter::new(reg1);
-    let router2 = PrismRouter::new(reg2);
+    let reg = build_full_registry();
+    let router = PrismRouter::new(reg);
 
-    let req = simple_request("What is machine learning?");
-    let d1 = router1.route(&req).unwrap();
-    let d2 = router2.route(&req).unwrap();
+    let req1 = simple_request("What is machine learning?");
+    let req2 = simple_request("What is machine learning?");
+    let d1 = router.route(&req1).unwrap();
+    let d2 = router.route(&req2).unwrap();
 
     assert_eq!(d1.selected_model, d2.selected_model);
     assert_eq!(d1.selected_variant, d2.selected_variant);

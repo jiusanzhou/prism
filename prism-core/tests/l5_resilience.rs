@@ -140,9 +140,11 @@ fn build_resilience_registry() -> InMemoryRegistry {
             current_qps: 20.0,
             queue_depth: 0,
             last_updated: None,
+            ..Default::default()
         },
         pricing_override: None,
         status: VariantStatus::Active,
+            base_url: None,
     });
 
     reg.add_variant(ModelVariant {
@@ -162,9 +164,11 @@ fn build_resilience_registry() -> InMemoryRegistry {
             current_qps: 10.0,
             queue_depth: 0,
             last_updated: None,
+            ..Default::default()
         },
         pricing_override: None,
         status: VariantStatus::Active,
+            base_url: None,
     });
 
     reg.add_pool(ModelPool {

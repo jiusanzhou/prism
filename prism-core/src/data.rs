@@ -339,6 +339,7 @@ mod tests {
             current_qps: 5.0,
             queue_depth: 0,
             last_updated: None,
+            ..Default::default()
         };
 
         src.update(

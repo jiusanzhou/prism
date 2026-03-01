@@ -64,6 +64,7 @@ impl RouterService for GrpcRouterService {
             tenant_id: req.tenant_id,
             region: None,
             analyze_context: None,
+            ..Default::default()
         };
 
         let core_request = CoreRouteRequest {
@@ -429,6 +430,7 @@ mod tests {
             performance: ModelPerformance::default(),
             pricing_override: None,
             status: VariantStatus::Active,
+            base_url: None,
         };
         registry.add_variant(variant);
 

@@ -130,6 +130,7 @@ impl VariantWindow {
             current_qps,
             queue_depth: 0,
             last_updated: Some(now),
+            ..Default::default()
         }
     }
 }

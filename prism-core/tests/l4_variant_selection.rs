@@ -82,9 +82,11 @@ fn build_variant_registry() -> InMemoryRegistry {
             current_qps: 30.0,
             queue_depth: 0,
             last_updated: None,
+            ..Default::default()
         },
         pricing_override: None,
         status: VariantStatus::Active,
+            base_url: None,
     });
 
     // Variant B: faster but higher error rate (canary)
@@ -105,9 +107,11 @@ fn build_variant_registry() -> InMemoryRegistry {
             current_qps: 5.0,
             queue_depth: 0,
             last_updated: None,
+            ..Default::default()
         },
         pricing_override: None,
         status: VariantStatus::Active,
+            base_url: None,
     });
 
     // Variant C: high weight (preferred)
@@ -128,9 +132,11 @@ fn build_variant_registry() -> InMemoryRegistry {
             current_qps: 40.0,
             queue_depth: 0,
             last_updated: None,
+            ..Default::default()
         },
         pricing_override: None,
         status: VariantStatus::Active,
+            base_url: None,
     });
 
     reg.add_pool(ModelPool {

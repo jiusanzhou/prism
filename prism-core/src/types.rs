@@ -253,6 +253,32 @@ pub struct ModelPerformance {
     /// Timestamp of last metrics update (serialisation-unfriendly, so skip)
     #[serde(skip)]
     pub last_updated: Option<Instant>,
+
+    // ── Inference engine metrics ──
+
+    /// GPU utilization (0.0 - 1.0)
+    #[serde(default)]
+    pub gpu_utilization: f32,
+
+    /// KV cache utilization (0.0 - 1.0), 1.0 means full
+    #[serde(default)]
+    pub kv_cache_usage: f32,
+
+    /// Number of requests currently being processed (running batch)
+    #[serde(default)]
+    pub running_requests: u32,
+
+    /// Number of requests waiting in queue
+    #[serde(default)]
+    pub waiting_requests: u32,
+
+    /// Prefix cache hit rate (0.0 - 1.0)
+    #[serde(default)]
+    pub prefix_cache_hit_rate: f32,
+
+    /// Number of cached prefix token blocks
+    #[serde(default)]
+    pub prefix_cache_blocks: u32,
 }
 
 impl Default for ModelPerformance {
@@ -267,6 +293,12 @@ impl Default for ModelPerformance {
             current_qps: 0.0,
             queue_depth: 0,
             last_updated: None,
+            gpu_utilization: 0.0,
+            kv_cache_usage: 0.0,
+            running_requests: 0,
+            waiting_requests: 0,
+            prefix_cache_hit_rate: 0.0,
+            prefix_cache_blocks: 0,
         }
     }
 }
@@ -286,6 +318,10 @@ pub struct ModelVariant {
     pub pricing_override: Option<ModelPricing>,
     #[serde(default)]
     pub status: VariantStatus,
+    /// Direct connection URL for this variant (e.g. Pod IP:Port for self-hosted).
+    /// When set, overrides the provider/endpoint base_url.
+    #[serde(default)]
+    pub base_url: Option<String>,
 }
 
 // ──────────────────────────────────────────────

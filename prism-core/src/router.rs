@@ -11,9 +11,11 @@ use crate::plugins::cost_scorer::CostScorerPlugin;
 use crate::plugins::geo_proximity::GeoProximityPlugin;
 use crate::plugins::feedback_scorer::FeedbackScorerPlugin;
 use crate::plugins::health_filter::HealthFilterPlugin;
+use crate::plugins::inference_load::InferenceLoadPlugin;
 use crate::plugins::strategy_scorer::StrategyScorerPlugin;
 use crate::plugins::latency_scorer::LatencyScorerPlugin;
 use crate::plugins::pinned_model::PinnedModelPlugin;
+use crate::plugins::prefix_affinity::PrefixAffinityPlugin;
 use crate::plugins::protocol_filter::ProtocolFilterPlugin;
 use crate::plugins::quality_scorer::QualityScorerPlugin;
 use crate::plugins::quota_aware::QuotaAwarePlugin;
@@ -53,6 +55,10 @@ pub struct RouteMetadata {
     pub region: Option<String>,
     /// Analyze context passed through for metadata/tracing.
     pub analyze_context: Option<AnalyzeContext>,
+    /// Explicit prefix key for prefix-cache affinity routing.
+    /// When set, overrides automatic prefix extraction from messages.
+    #[serde(default)]
+    pub prefix_key: Option<String>,
 }
 
 /// Errors returned by the router.
@@ -109,6 +115,10 @@ pub fn default_plugin_profile(feedback: Arc<FeedbackCollector>) -> PluginRegistr
     registry.register(Arc::new(QuotaAwarePlugin), 1);
     registry.register(Arc::new(AffinityPlugin), 1);
     registry.register(Arc::new(FeedbackScorerPlugin::new(feedback)), 2);
+
+    // Inference-aware scheduling plugins
+    registry.register(Arc::new(PrefixAffinityPlugin::new()), 1);
+    registry.register(Arc::new(InferenceLoadPlugin::new()), 1);
 
     registry
 }
@@ -413,6 +423,9 @@ impl Router for PrismRouter {
             strategy.clone(),
             request.required_protocol.clone(),
         );
+
+        // Store messages for plugins that need raw content (e.g. PrefixAffinityPlugin)
+        state.set("request_messages", request.messages.clone());
 
         // Run the plugin framework
         let result = self.framework.run_routing(&mut state, &candidates)?;

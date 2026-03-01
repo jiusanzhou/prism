@@ -89,9 +89,11 @@ fn build_multi_account_registry() -> InMemoryRegistry {
                 current_qps: (i * 5) as f32,
                 queue_depth: 0,
                 last_updated: None,
+                ..Default::default()
             },
             pricing_override: None,
             status: VariantStatus::Active,
+            base_url: None,
         });
     }
 
@@ -122,6 +124,7 @@ fn request_with_session(content: &str, session_id: &str) -> RouteRequest {
             tenant_id: None,
             region: None,
             analyze_context: None,
+            ..Default::default()
         },
         analyze_context: None,
         required_protocol: None,
@@ -236,9 +239,11 @@ fn test_soft_affinity_migrates_on_overload() {
             current_qps: 1.6,
             queue_depth: 0,
             last_updated: None,
+            ..Default::default()
         },
         pricing_override: None,
         status: VariantStatus::Active,
+            base_url: None,
     });
 
     reg.add_variant(ModelVariant {
@@ -258,9 +263,11 @@ fn test_soft_affinity_migrates_on_overload() {
             current_qps: 0.5,
             queue_depth: 0,
             last_updated: None,
+            ..Default::default()
         },
         pricing_override: None,
         status: VariantStatus::Active,
+            base_url: None,
     });
 
     reg.add_pool(ModelPool {
@@ -362,9 +369,11 @@ fn test_hard_affinity_rejects_on_overload() {
                 current_qps: 1.5,
                 queue_depth: 0,
                 last_updated: None,
+                ..Default::default()
             },
             pricing_override: None,
             status: VariantStatus::Active,
+            base_url: None,
         });
     }
 
@@ -426,6 +435,7 @@ fn test_cost_isolation_tenant_routing() {
             affinity_key: None,
             region: None,
             analyze_context: None,
+            ..Default::default()
         },
         analyze_context: None,
         required_protocol: None,
@@ -445,6 +455,7 @@ fn test_cost_isolation_tenant_routing() {
             affinity_key: None,
             region: None,
             analyze_context: None,
+            ..Default::default()
         },
         analyze_context: None,
         required_protocol: None,
@@ -464,6 +475,7 @@ fn test_cost_isolation_tenant_routing() {
             affinity_key: None,
             region: None,
             analyze_context: None,
+            ..Default::default()
         },
         analyze_context: None,
         required_protocol: None,

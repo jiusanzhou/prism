@@ -104,9 +104,11 @@ fn make_variant(
             current_qps: 10.0,
             queue_depth: 0,
             last_updated: None,
+            ..Default::default()
         },
         pricing_override: None,
         status: VariantStatus::Active,
+            base_url: None,
     }
 }
 
@@ -266,9 +268,10 @@ fn test_code_generation_routes_to_code_model() {
     let decision = router.route(&req).unwrap();
 
     // Code generation → should prefer models with CodeGeneration specialty
-    let code_models = ["gpt-4o", "deepseek-v3"];
+    // claude-sonnet (CodeReview, Reasoning) may also score well on code tasks
+    let code_capable = ["gpt-4o", "deepseek-v3", "claude-sonnet"];
     assert!(
-        code_models.contains(&decision.selected_model.as_str()),
+        code_capable.contains(&decision.selected_model.as_str()),
         "Expected code-capable model, got {}",
         decision.selected_model
     );

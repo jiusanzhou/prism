@@ -112,9 +112,11 @@ fn build_two_variant_registry() -> InMemoryRegistry {
                 current_qps: 10.0,
                 queue_depth: 0,
                 last_updated: None,
+                ..Default::default()
             },
             pricing_override: None,
             status: VariantStatus::Active,
+            base_url: None,
         });
     }
 
@@ -212,6 +214,7 @@ fn test_assemble_candidate_uses_data_layer() {
             current_qps: 50.0,
             queue_depth: 3,
             last_updated: None,
+            ..Default::default()
         },
     );
 
@@ -255,6 +258,7 @@ fn test_routing_responds_to_performance_updates() {
             current_qps: 2.0,
             queue_depth: 50,
             last_updated: None,
+            ..Default::default()
         },
     );
     router.registry.update_performance(
@@ -269,6 +273,7 @@ fn test_routing_responds_to_performance_updates() {
             current_qps: 5.0,
             queue_depth: 0,
             last_updated: None,
+            ..Default::default()
         },
     );
 
@@ -372,6 +377,7 @@ fn test_custom_data_layer_integration() {
         },
         pricing_override: None,
         status: VariantStatus::Active,
+            base_url: None,
     });
 
     // Candidate should use the data layer value (77), not the static value (999)

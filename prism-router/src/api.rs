@@ -114,6 +114,7 @@ pub async fn route_handler(
             tenant_id: m.tenant_id.clone(),
             region: m.region.clone(),
             analyze_context: None,
+            ..Default::default()
         },
         None => RouteMetadata::default(),
     };
@@ -410,6 +411,7 @@ mod tests {
             performance: ModelPerformance::default(),
             pricing_override: None,
             status: VariantStatus::Active,
+            base_url: None,
         });
 
         registry.add_pool(ModelPool {

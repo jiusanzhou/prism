@@ -148,9 +148,11 @@ fn build_multi_provider_registry() -> InMemoryRegistry {
             current_qps: 20.0,
             queue_depth: 0,
             last_updated: None,
+            ..Default::default()
         },
         pricing_override: None,
         status: VariantStatus::Active,
+            base_url: None,
     });
 
     reg.add_variant(ModelVariant {
@@ -170,6 +172,7 @@ fn build_multi_provider_registry() -> InMemoryRegistry {
             current_qps: 5.0,
             queue_depth: 0,
             last_updated: None,
+            ..Default::default()
         },
         pricing_override: Some(ModelPricing {
             input_per_1m_tokens: 1.5,
@@ -177,6 +180,7 @@ fn build_multi_provider_registry() -> InMemoryRegistry {
             currency: "USD".into(),
         }),
         status: VariantStatus::Active,
+            base_url: None,
     });
 
     reg.add_variant(ModelVariant {
@@ -189,6 +193,7 @@ fn build_multi_provider_registry() -> InMemoryRegistry {
         performance: ModelPerformance::default(),
         pricing_override: None,
         status: VariantStatus::Disabled,
+            base_url: None,
     });
 
     reg.add_pool(ModelPool {
@@ -376,9 +381,11 @@ fn test_quota_aware_selection() {
             current_qps: 1.5,
             queue_depth: 0,
             last_updated: None,
+            ..Default::default()
         },
         pricing_override: None,
         status: VariantStatus::Active,
+            base_url: None,
     });
 
     // Cheap variant: current_qps = 0.08 (~5% of limit)
@@ -399,9 +406,11 @@ fn test_quota_aware_selection() {
             current_qps: 0.08,
             queue_depth: 0,
             last_updated: None,
+            ..Default::default()
         },
         pricing_override: None,
         status: VariantStatus::Active,
+            base_url: None,
     });
 
     reg.add_pool(ModelPool {
@@ -435,6 +444,7 @@ fn test_geo_proximity_selection() {
         metadata: RouteMetadata {
             region: Some("us-east-1".into()),
             ..Default::default()
+            
         },
         analyze_context: None,
         required_protocol: None,
@@ -452,6 +462,7 @@ fn test_geo_proximity_selection() {
         metadata: RouteMetadata {
             region: Some("eu-west-1".into()),
             ..Default::default()
+            
         },
         analyze_context: None,
         required_protocol: None,

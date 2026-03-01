@@ -222,6 +222,7 @@ mod tests {
             performance: ModelPerformance::default(),
             pricing_override: None,
             status: VariantStatus::Active,
+            base_url: None,
         }
     }
 

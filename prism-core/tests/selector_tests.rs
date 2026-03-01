@@ -143,9 +143,11 @@ fn make_variant(
             current_qps,
             queue_depth: 0,
             last_updated: None,
+            ..Default::default()
         },
         pricing_override: None,
         status: VariantStatus::Active,
+            base_url: None,
     }
 }
 
@@ -175,6 +177,7 @@ fn make_variant_with_pricing(
             current_qps: 10.0,
             queue_depth: 0,
             last_updated: None,
+            ..Default::default()
         },
         pricing_override: Some(ModelPricing {
             input_per_1m_tokens: input_per_1m,
@@ -182,6 +185,7 @@ fn make_variant_with_pricing(
             currency: "USD".into(),
         }),
         status: VariantStatus::Active,
+            base_url: None,
     }
 }
 
@@ -356,6 +360,7 @@ fn test_default_l2_geo() {
     let metadata = RouteMetadata {
         region: Some("eu-west-1".into()),
         ..Default::default()
+        
     };
     let strategy = ModelSelectionStrategy::default();
     let ctx = make_route_context(&profile, &metadata, &strategy);

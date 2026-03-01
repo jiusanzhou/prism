@@ -14,3 +14,5 @@ pub mod feedback_scorer;
 pub mod strategy_scorer;
 pub mod canary;
 pub mod weighted;
+pub mod prefix_affinity;
+pub mod inference_load;
