@@ -16,6 +16,286 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "wasm")]
 use crate::codec::ProxyPlugin;
 
+// ════════════════════════════════════════════════
+// WASM Routing Plugin adapter
+// ════════════════════════════════════════════════
+
+#[cfg(feature = "wasm")]
+mod wasm_route {
+    use super::RouteStage;
+    use prism_core::plugin::{PluginState, RoutingPlugin};
+    use prism_core::types::ModelCandidate;
+    use serde::Serialize;
+
+    /// Serializable subset of ModelCandidate for WASM consumption.
+    #[derive(Serialize)]
+    struct WasmCandidate {
+        variant_id: String,
+        model_id: String,
+        endpoint_id: String,
+        provider_id: String,
+        account_id: String,
+        current_qps: f32,
+        p50_latency_ms: u32,
+        p99_latency_ms: u32,
+        error_rate: f32,
+        input_price_per_1m: f64,
+        output_price_per_1m: f64,
+        region: Option<String>,
+    }
+
+    /// Serializable subset of PluginState for WASM consumption.
+    #[derive(Serialize)]
+    struct WasmRouteState {
+        complexity: f32,
+        task_type: String,
+        estimated_tokens: u32,
+        requires_reasoning: bool,
+        requires_vision: bool,
+    }
+
+    impl WasmCandidate {
+        fn from_candidate(c: &ModelCandidate) -> Self {
+            Self {
+                variant_id: c.variant.id.clone(),
+                model_id: c.model.id.clone(),
+                endpoint_id: c.endpoint.id.clone(),
+                provider_id: c.provider.id.clone(),
+                account_id: c.account.id.clone(),
+                current_qps: c.variant.performance.current_qps,
+                p50_latency_ms: c.variant.performance.p50_latency_ms,
+                p99_latency_ms: c.variant.performance.p99_latency_ms,
+                error_rate: c.variant.performance.error_rate,
+                input_price_per_1m: c.effective_pricing.input_per_1m_tokens,
+                output_price_per_1m: c.effective_pricing.output_per_1m_tokens,
+                region: c.endpoint.region.clone(),
+            }
+        }
+    }
+
+    impl WasmRouteState {
+        fn from_state(s: &PluginState) -> Self {
+            Self {
+                complexity: s.profile.complexity,
+                task_type: format!("{:?}", s.profile.task_type),
+                estimated_tokens: s.profile.estimated_tokens,
+                requires_reasoning: s.profile.requires_reasoning,
+                requires_vision: s.profile.requires_vision,
+            }
+        }
+    }
+
+    pub(super) struct WasmRoutingPlugin {
+        name: String,
+        engine: wasmtime::Engine,
+        module: wasmtime::Module,
+        stages: Vec<RouteStage>,
+    }
+
+    impl WasmRoutingPlugin {
+        pub fn new(
+            name: &str,
+            engine: wasmtime::Engine,
+            module: wasmtime::Module,
+            stages: Vec<RouteStage>,
+        ) -> Self {
+            Self {
+                name: name.to_string(),
+                engine,
+                module,
+                stages,
+            }
+        }
+
+        /// Helper: write bytes into WASM memory via alloc, return (ptr, len).
+        fn write_to_wasm(
+            store: &mut wasmtime::Store<()>,
+            instance: &wasmtime::Instance,
+            data: &[u8],
+        ) -> Result<(i32, i32), String> {
+            let alloc = instance
+                .get_typed_func::<i32, i32>(&mut *store, "proxy_on_memory_allocate")
+                .map_err(|e| format!("missing proxy_on_memory_allocate: {}", e))?;
+            let ptr = alloc
+                .call(&mut *store, data.len() as i32)
+                .map_err(|e| format!("alloc failed: {}", e))?;
+            let mem = instance
+                .get_memory(&mut *store, "memory")
+                .ok_or("no memory export")?;
+            mem.data_mut(&mut *store)[ptr as usize..ptr as usize + data.len()]
+                .copy_from_slice(data);
+            Ok((ptr, data.len() as i32))
+        }
+    }
+
+    impl RoutingPlugin for WasmRoutingPlugin {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn filter(&self, state: &PluginState, candidate: &ModelCandidate) -> bool {
+            if !self.stages.contains(&RouteStage::Filter) && !self.stages.is_empty() {
+                return true;
+            }
+
+            // Create fresh instance per call (Send+Sync safe)
+            let mut store = wasmtime::Store::new(&self.engine, ());
+            let instance = match wasmtime::Instance::new(&mut store, &self.module, &[]) {
+                Ok(i) => i,
+                Err(_) => return true, // fail-open
+            };
+
+            let candidate_json =
+                serde_json::to_vec(&WasmCandidate::from_candidate(candidate)).unwrap_or_default();
+            let state_json =
+                serde_json::to_vec(&WasmRouteState::from_state(state)).unwrap_or_default();
+
+            let (c_ptr, c_len) = match Self::write_to_wasm(&mut store, &instance, &candidate_json) {
+                Ok(v) => v,
+                Err(_) => return true,
+            };
+            let (s_ptr, s_len) = match Self::write_to_wasm(&mut store, &instance, &state_json) {
+                Ok(v) => v,
+                Err(_) => return true,
+            };
+
+            let filter_fn = match instance
+                .get_typed_func::<(i32, i32, i32, i32), i32>(&mut store, "prism_route_filter")
+            {
+                Ok(f) => f,
+                Err(_) => return true,
+            };
+
+            match filter_fn.call(&mut store, (c_ptr, c_len, s_ptr, s_len)) {
+                Ok(result) => result != 0, // 1=pass, 0=reject
+                Err(_) => true,
+            }
+        }
+
+        fn score(&self, state: &PluginState, candidate: &ModelCandidate) -> f32 {
+            if !self.stages.contains(&RouteStage::Score) && !self.stages.is_empty() {
+                return 0.0;
+            }
+
+            let mut store = wasmtime::Store::new(&self.engine, ());
+            let instance = match wasmtime::Instance::new(&mut store, &self.module, &[]) {
+                Ok(i) => i,
+                Err(_) => return 0.0,
+            };
+
+            let candidate_json =
+                serde_json::to_vec(&WasmCandidate::from_candidate(candidate)).unwrap_or_default();
+            let state_json =
+                serde_json::to_vec(&WasmRouteState::from_state(state)).unwrap_or_default();
+
+            let (c_ptr, c_len) = match Self::write_to_wasm(&mut store, &instance, &candidate_json) {
+                Ok(v) => v,
+                Err(_) => return 0.0,
+            };
+            let (s_ptr, s_len) = match Self::write_to_wasm(&mut store, &instance, &state_json) {
+                Ok(v) => v,
+                Err(_) => return 0.0,
+            };
+
+            let score_fn = match instance
+                .get_typed_func::<(i32, i32, i32, i32), f32>(&mut store, "prism_route_score")
+            {
+                Ok(f) => f,
+                Err(_) => return 0.0,
+            };
+
+            match score_fn.call(&mut store, (c_ptr, c_len, s_ptr, s_len)) {
+                Ok(score) => score.clamp(0.0, 1.0),
+                Err(_) => 0.0,
+            }
+        }
+    }
+}
+
+// ════════════════════════════════════════════════
+// WASM Analyzer Plugin adapter
+// ════════════════════════════════════════════════
+
+#[cfg(feature = "wasm")]
+mod wasm_analyze {
+    use super::AnalyzerPlugin;
+
+    pub(super) struct WasmAnalyzerPlugin {
+        name: String,
+        engine: wasmtime::Engine,
+        module: wasmtime::Module,
+    }
+
+    impl WasmAnalyzerPlugin {
+        pub fn new(name: &str, engine: wasmtime::Engine, module: wasmtime::Module) -> Self {
+            Self {
+                name: name.to_string(),
+                engine,
+                module,
+            }
+        }
+    }
+
+    impl AnalyzerPlugin for WasmAnalyzerPlugin {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn analyze(
+            &self,
+            messages: &[prism_core::analyzer::ChatMessage],
+        ) -> Option<prism_core::analyzer::RequestProfile> {
+            let mut store = wasmtime::Store::new(&self.engine, ());
+            let instance = wasmtime::Instance::new(&mut store, &self.module, &[]).ok()?;
+
+            // Serialize input
+            let input = serde_json::json!({ "messages": messages });
+            let input_bytes = serde_json::to_vec(&input).ok()?;
+
+            // Write input to WASM memory
+            let alloc = instance
+                .get_typed_func::<i32, i32>(&mut store, "alloc")
+                .ok()?;
+            let input_ptr = alloc.call(&mut store, input_bytes.len() as i32).ok()?;
+            let mem = instance.get_memory(&mut store, "memory")?;
+            mem.data_mut(&mut store)[input_ptr as usize..input_ptr as usize + input_bytes.len()]
+                .copy_from_slice(&input_bytes);
+
+            // Call analyze
+            let analyze_fn = instance
+                .get_typed_func::<(i32, i32), i32>(&mut store, "analyze")
+                .ok()?;
+            let result_ptr = analyze_fn
+                .call(&mut store, (input_ptr, input_bytes.len() as i32))
+                .ok()?;
+
+            // Read result: first 4 bytes = length (LE u32), then JSON
+            let mem_data = mem.data(&store);
+            if result_ptr as usize + 4 > mem_data.len() {
+                return None;
+            }
+            let result_len = u32::from_le_bytes([
+                mem_data[result_ptr as usize],
+                mem_data[result_ptr as usize + 1],
+                mem_data[result_ptr as usize + 2],
+                mem_data[result_ptr as usize + 3],
+            ]) as usize;
+
+            let start = result_ptr as usize + 4;
+            if start + result_len > mem_data.len() {
+                return None;
+            }
+
+            serde_json::from_slice(&mem_data[start..start + result_len]).ok()
+        }
+    }
+}
+
+#[cfg(feature = "wasm")]
+use wasm_route::WasmRoutingPlugin;
+#[cfg(feature = "wasm")]
+use wasm_analyze::WasmAnalyzerPlugin;
+
 /// Which phases a plugin participates in.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -349,23 +629,31 @@ impl PluginRegistry {
                             }
                         }
                     }
-                    PluginPhase::Route { .. } => {
-                        // TODO: Route phase WASM adapter requires defining host function ABI
-                        // for prism_route_filter / prism_route_score.
-                        // For now, record that this phase was requested but not loaded.
-                        result.errors.push((
+                    PluginPhase::Route { weight, ref stages } => {
+                        let route_plugin = WasmRoutingPlugin::new(
+                            &desc.name,
+                            engine.clone(),
+                            module.clone(),
+                            stages.clone(),
+                        );
+                        result.route_plugins.push((
                             desc.name.clone(),
-                            "Route phase WASM adapter not yet implemented".to_string(),
+                            *weight,
+                            Box::new(route_plugin),
                         ));
+                        registered_phases.push(phase.clone());
                     }
                     PluginPhase::Analyze => {
-                        // TODO: Integrate with prism-wasm-analyzer ABI.
-                        // The analyze export uses a custom ABI (alloc/analyze/dealloc)
-                        // which differs from proxy-wasm. Integration planned for Phase 2.
-                        result.errors.push((
+                        let analyzer = WasmAnalyzerPlugin::new(
+                            &desc.name,
+                            engine.clone(),
+                            module.clone(),
+                        );
+                        result.analyzers.push((
                             desc.name.clone(),
-                            "Analyze phase WASM adapter not yet implemented".to_string(),
+                            Box::new(analyzer),
                         ));
+                        registered_phases.push(phase.clone());
                     }
                 }
             }
@@ -1153,13 +1441,10 @@ mod tests {
             // Proxy should load successfully
             assert_eq!(result.proxy_plugins.len(), 1);
             assert_eq!(result.proxy_plugins[0].0, "multi-phase");
-            // Analyze phase not yet implemented, should be in errors
-            let analyze_errors: Vec<_> = result
-                .errors
-                .iter()
-                .filter(|(_, msg)| msg.contains("Analyze phase"))
-                .collect();
-            assert_eq!(analyze_errors.len(), 1);
+            // Analyze should also load successfully now
+            assert_eq!(result.analyzers.len(), 1);
+            assert_eq!(result.analyzers[0].0, "multi-phase");
+            assert!(result.errors.is_empty(), "Unexpected errors: {:?}", result.errors);
         }
 
         #[test]
@@ -1204,6 +1489,460 @@ mod tests {
             assert!(caps.has_proxy);
             assert!(!caps.has_route);
             assert!(caps.has_analyze);
+        }
+
+        // ── Route plugin direct tests ──
+
+        /// WAT for route plugin testing: filter=pass, score=0.8
+        const ROUTE_WAT: &str = r#"
+            (module
+                (memory (export "memory") 2)
+                (global $heap (mut i32) (i32.const 65536))
+
+                (func (export "proxy_on_memory_allocate") (param $size i32) (result i32)
+                    (local $ptr i32)
+                    (local.set $ptr (global.get $heap))
+                    (global.set $heap (i32.add (global.get $heap) (local.get $size)))
+                    (local.get $ptr))
+
+                (func (export "prism_route_filter") (param i32 i32 i32 i32) (result i32)
+                    (i32.const 1))
+
+                (func (export "prism_route_score") (param i32 i32 i32 i32) (result f32)
+                    (f32.const 0.8))
+            )
+        "#;
+
+        /// WAT for route plugin that rejects in filter
+        const ROUTE_REJECT_WAT: &str = r#"
+            (module
+                (memory (export "memory") 2)
+                (global $heap (mut i32) (i32.const 65536))
+
+                (func (export "proxy_on_memory_allocate") (param $size i32) (result i32)
+                    (local $ptr i32)
+                    (local.set $ptr (global.get $heap))
+                    (global.set $heap (i32.add (global.get $heap) (local.get $size)))
+                    (local.get $ptr))
+
+                (func (export "prism_route_filter") (param i32 i32 i32 i32) (result i32)
+                    (i32.const 0))
+
+                (func (export "prism_route_score") (param i32 i32 i32 i32) (result f32)
+                    (f32.const 0.5))
+            )
+        "#;
+
+        fn make_test_candidate() -> prism_core::types::ModelCandidate {
+            use prism_core::types::*;
+
+            let provider = Provider {
+                id: "prov-1".into(),
+                name: "TestProvider".into(),
+                auth: AuthConfig::default(),
+                base_url: "https://api.test.com".into(),
+                rate_limit: None,
+                status: HealthStatus::Healthy,
+                metadata: Default::default(),
+                protocols: vec![],
+            };
+
+            let endpoint = Endpoint {
+                id: "ep-1".into(),
+                provider_id: "prov-1".into(),
+                base_url: None,
+                region: Some("us-east-1".into()),
+                auth_override: None,
+                rate_limit: None,
+                priority: 0,
+                status: HealthStatus::Healthy,
+            };
+
+            let account = Account {
+                id: "acc-1".into(),
+                endpoint_id: "ep-1".into(),
+                auth: AuthConfig::default(),
+                project_id: None,
+                rate_limit: None,
+                billing_tag: None,
+                weight: 1.0,
+                status: HealthStatus::Healthy,
+                metadata: Default::default(),
+            };
+
+            let model = Model {
+                id: "model-1".into(),
+                display_name: "Test Model".into(),
+                quality_tier: QualityTier::A,
+                capabilities: ModelCapabilities::default(),
+                pricing: ModelPricing {
+                    input_per_1m_tokens: 1.0,
+                    output_per_1m_tokens: 2.0,
+                    currency: "USD".into(),
+                },
+                specialties: vec![],
+                limits: None,
+                status: ModelStatus::Available,
+            };
+
+            let variant = ModelVariant {
+                id: "var-1".into(),
+                model_id: "model-1".into(),
+                endpoint_id: "ep-1".into(),
+                account_id: Some("acc-1".into()),
+                deployment_name: None,
+                weight: 1.0,
+                performance: ModelPerformance::default(),
+                pricing_override: None,
+                status: VariantStatus::Active,
+                base_url: None,
+                upstream_model_name: None,
+            };
+
+            ModelCandidate {
+                variant,
+                model,
+                account,
+                endpoint,
+                provider,
+                effective_pricing: ModelPricing {
+                    input_per_1m_tokens: 1.0,
+                    output_per_1m_tokens: 2.0,
+                    currency: "USD".into(),
+                },
+            }
+        }
+
+        fn make_test_plugin_state() -> prism_core::plugin::PluginState {
+            use prism_core::analyzer::{ContextSize, Language, RequestProfile};
+            use prism_core::plugin::PluginState;
+            use prism_core::router::RouteMetadata;
+            use prism_core::strategy::ModelSelectionStrategy;
+            use prism_core::types::TaskType;
+
+            let profile = RequestProfile {
+                complexity: 0.5,
+                task_type: TaskType::SimpleQA,
+                estimated_tokens: 100,
+                requires_reasoning: false,
+                requires_vision: false,
+                language: Language::English,
+                is_multi_turn: false,
+                context_window_need: ContextSize::Small,
+            };
+
+            PluginState::new(
+                profile,
+                RouteMetadata::default(),
+                ModelSelectionStrategy::default(),
+                None,
+            )
+        }
+
+        #[test]
+        fn test_wasm_routing_plugin_filter() {
+            use prism_core::plugin::RoutingPlugin;
+
+            let engine = wasmtime::Engine::default();
+            let module = wasmtime::Module::new(&engine, ROUTE_WAT).unwrap();
+            let plugin = WasmRoutingPlugin::new(
+                "test-route",
+                engine,
+                module,
+                vec![RouteStage::Filter, RouteStage::Score],
+            );
+
+            let state = make_test_plugin_state();
+            let candidate = make_test_candidate();
+            assert!(plugin.filter(&state, &candidate));
+        }
+
+        #[test]
+        fn test_wasm_routing_plugin_score() {
+            use prism_core::plugin::RoutingPlugin;
+
+            let engine = wasmtime::Engine::default();
+            let module = wasmtime::Module::new(&engine, ROUTE_WAT).unwrap();
+            let plugin = WasmRoutingPlugin::new(
+                "test-route",
+                engine,
+                module,
+                vec![RouteStage::Filter, RouteStage::Score],
+            );
+
+            let state = make_test_plugin_state();
+            let candidate = make_test_candidate();
+            let score = plugin.score(&state, &candidate);
+            assert!((score - 0.8).abs() < 0.001);
+        }
+
+        #[test]
+        fn test_wasm_routing_plugin_filter_reject() {
+            use prism_core::plugin::RoutingPlugin;
+
+            let engine = wasmtime::Engine::default();
+            let module = wasmtime::Module::new(&engine, ROUTE_REJECT_WAT).unwrap();
+            let plugin = WasmRoutingPlugin::new(
+                "test-reject",
+                engine,
+                module,
+                vec![RouteStage::Filter],
+            );
+
+            let state = make_test_plugin_state();
+            let candidate = make_test_candidate();
+            assert!(!plugin.filter(&state, &candidate));
+        }
+
+        #[test]
+        fn test_wasm_routing_plugin_stages_skip() {
+            use prism_core::plugin::RoutingPlugin;
+
+            let engine = wasmtime::Engine::default();
+            let module = wasmtime::Module::new(&engine, ROUTE_WAT).unwrap();
+            // Only Score stage declared — filter should default to true
+            let plugin = WasmRoutingPlugin::new(
+                "test-skip",
+                engine,
+                module,
+                vec![RouteStage::Score],
+            );
+
+            let state = make_test_plugin_state();
+            let candidate = make_test_candidate();
+            assert!(plugin.filter(&state, &candidate)); // skipped, returns true
+            let score = plugin.score(&state, &candidate);
+            assert!((score - 0.8).abs() < 0.001); // Score stage is active
+        }
+
+        // ── Analyzer plugin direct tests ──
+
+        fn make_analyzer_wasm(profile: &prism_core::analyzer::RequestProfile) -> String {
+            let json = serde_json::to_vec(profile).unwrap();
+            let len_bytes = (json.len() as u32).to_le_bytes();
+
+            let mut data = Vec::new();
+            data.extend_from_slice(&len_bytes);
+            data.extend_from_slice(&json);
+
+            let escaped: String = data.iter().map(|b| format!("\\{:02x}", b)).collect();
+
+            format!(
+                r#"(module
+                    (memory (export "memory") 2)
+                    (global $heap (mut i32) (i32.const 4096))
+                    (data (i32.const 0) "{}")
+                    (func (export "alloc") (param $size i32) (result i32)
+                        (local $ptr i32)
+                        (local.set $ptr (global.get $heap))
+                        (global.set $heap (i32.add (global.get $heap) (local.get $size)))
+                        (local.get $ptr))
+                    (func (export "analyze") (param i32 i32) (result i32)
+                        (i32.const 0))
+                )"#,
+                escaped
+            )
+        }
+
+        #[test]
+        fn test_wasm_analyzer_plugin_basic() {
+            use prism_core::analyzer::{ChatMessage, ContextSize, Language, RequestProfile};
+            use prism_core::types::TaskType;
+
+            let expected = RequestProfile {
+                complexity: 0.5,
+                task_type: TaskType::SimpleQA,
+                estimated_tokens: 100,
+                requires_reasoning: false,
+                requires_vision: false,
+                language: Language::English,
+                is_multi_turn: false,
+                context_window_need: ContextSize::Small,
+            };
+
+            let analyzer_wat = make_analyzer_wasm(&expected);
+            let engine = wasmtime::Engine::default();
+            let module = wasmtime::Module::new(&engine, &analyzer_wat).unwrap();
+            let plugin = WasmAnalyzerPlugin::new("test-analyzer", engine, module);
+
+            let messages = vec![ChatMessage {
+                role: "user".into(),
+                content: "Hello world".into(),
+            }];
+
+            let result = plugin.analyze(&messages);
+            assert!(result.is_some());
+            let profile = result.unwrap();
+            assert!((profile.complexity - 0.5).abs() < 0.001);
+            assert_eq!(profile.task_type, TaskType::SimpleQA);
+            assert_eq!(profile.estimated_tokens, 100);
+            assert!(!profile.requires_reasoning);
+            assert!(!profile.requires_vision);
+            assert_eq!(profile.language, Language::English);
+        }
+
+        #[test]
+        fn test_wasm_analyzer_plugin_invalid_result() {
+            // WAT module where analyze returns pointer to garbage data
+            let wat = r#"
+                (module
+                    (memory (export "memory") 2)
+                    (global $heap (mut i32) (i32.const 4096))
+                    (data (i32.const 0) "\ff\ff\ff\ff")
+                    (func (export "alloc") (param $size i32) (result i32)
+                        (local $ptr i32)
+                        (local.set $ptr (global.get $heap))
+                        (global.set $heap (i32.add (global.get $heap) (local.get $size)))
+                        (local.get $ptr))
+                    (func (export "analyze") (param i32 i32) (result i32)
+                        (i32.const 0))
+                )
+            "#;
+
+            let engine = wasmtime::Engine::default();
+            let module = wasmtime::Module::new(&engine, wat).unwrap();
+            let plugin = WasmAnalyzerPlugin::new("test-invalid", engine, module);
+
+            let messages = vec![prism_core::analyzer::ChatMessage {
+                role: "user".into(),
+                content: "Hello".into(),
+            }];
+
+            let result = plugin.analyze(&messages);
+            assert!(result.is_none());
+        }
+
+        // ── Registry integration tests for route/analyze ──
+
+        #[test]
+        fn test_load_all_route_phase() {
+            let (_tmp, path) = write_wat_to_tempfile(ROUTE_WAT);
+
+            let mut registry = PluginRegistry::new();
+            registry.register(PluginDescriptor {
+                name: "route-plugin".into(),
+                source: PluginSource::Wasm(path),
+                phases: vec![PluginPhase::Route {
+                    weight: 2.0,
+                    stages: vec![RouteStage::Filter, RouteStage::Score],
+                }],
+                config: serde_json::Value::Null,
+                enabled: true,
+                priority: 100,
+            });
+
+            let result = registry.load_all();
+            assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+            assert_eq!(result.route_plugins.len(), 1);
+            assert_eq!(result.route_plugins[0].0, "route-plugin");
+            assert!((result.route_plugins[0].1 - 2.0).abs() < 0.001);
+        }
+
+        #[test]
+        fn test_load_all_analyze_phase() {
+            use prism_core::analyzer::{ContextSize, Language, RequestProfile};
+            use prism_core::types::TaskType;
+
+            let profile = RequestProfile {
+                complexity: 0.3,
+                task_type: TaskType::CodeGeneration,
+                estimated_tokens: 500,
+                requires_reasoning: true,
+                requires_vision: false,
+                language: Language::Chinese,
+                is_multi_turn: true,
+                context_window_need: ContextSize::Medium,
+            };
+            let analyzer_wat = make_analyzer_wasm(&profile);
+
+            let mut tmp = tempfile::NamedTempFile::new().unwrap();
+            tmp.write_all(analyzer_wat.as_bytes()).unwrap();
+            tmp.flush().unwrap();
+            let path = tmp.path().to_string_lossy().to_string();
+
+            let mut registry = PluginRegistry::new();
+            registry.register(PluginDescriptor {
+                name: "analyze-plugin".into(),
+                source: PluginSource::Wasm(path),
+                phases: vec![PluginPhase::Analyze],
+                config: serde_json::Value::Null,
+                enabled: true,
+                priority: 100,
+            });
+
+            let result = registry.load_all();
+            assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+            assert_eq!(result.analyzers.len(), 1);
+            assert_eq!(result.analyzers[0].0, "analyze-plugin");
+        }
+
+        #[test]
+        fn test_load_all_multi_phase() {
+            // A WAT with proxy + route + analyze exports
+            let multi_all_wat = r#"
+                (module
+                    (memory (export "memory") 2)
+                    (global $heap (mut i32) (i32.const 65536))
+
+                    ;; proxy-wasm exports
+                    (func (export "proxy_on_context_create") (param i32 i32))
+                    (func (export "proxy_on_configure") (param i32 i32) (result i32)
+                        (i32.const 1))
+                    (func (export "proxy_on_request_headers") (param i32 i32 i32) (result i32)
+                        (i32.const 0))
+                    (func (export "proxy_on_request_body") (param i32 i32 i32) (result i32)
+                        (i32.const 0))
+                    (func (export "proxy_on_response_headers") (param i32 i32 i32) (result i32)
+                        (i32.const 0))
+                    (func (export "proxy_on_response_body") (param i32 i32 i32) (result i32)
+                        (i32.const 0))
+                    (func (export "proxy_on_memory_allocate") (param $size i32) (result i32)
+                        (local $ptr i32)
+                        (local.set $ptr (global.get $heap))
+                        (global.set $heap (i32.add (global.get $heap) (local.get $size)))
+                        (local.get $ptr))
+
+                    ;; route exports
+                    (func (export "prism_route_filter") (param i32 i32 i32 i32) (result i32)
+                        (i32.const 1))
+                    (func (export "prism_route_score") (param i32 i32 i32 i32) (result f32)
+                        (f32.const 0.7))
+
+                    ;; analyze exports
+                    (func (export "alloc") (param i32) (result i32)
+                        (i32.const 0))
+                    (func (export "analyze") (param i32 i32) (result i32)
+                        (i32.const 0))
+                )
+            "#;
+
+            let (_tmp, path) = write_wat_to_tempfile(multi_all_wat);
+
+            let mut registry = PluginRegistry::new();
+            registry.register(PluginDescriptor {
+                name: "all-phases".into(),
+                source: PluginSource::Wasm(path),
+                phases: vec![
+                    PluginPhase::Proxy,
+                    PluginPhase::Route {
+                        weight: 1.5,
+                        stages: vec![RouteStage::Filter, RouteStage::Score],
+                    },
+                    PluginPhase::Analyze,
+                ],
+                config: serde_json::Value::Null,
+                enabled: true,
+                priority: 100,
+            });
+
+            let result = registry.load_all();
+            assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+            assert_eq!(result.proxy_plugins.len(), 1);
+            assert_eq!(result.route_plugins.len(), 1);
+            assert_eq!(result.analyzers.len(), 1);
+            assert_eq!(result.proxy_plugins[0].0, "all-phases");
+            assert_eq!(result.route_plugins[0].0, "all-phases");
+            assert_eq!(result.analyzers[0].0, "all-phases");
         }
     }
 }
