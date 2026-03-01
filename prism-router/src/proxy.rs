@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use pingora::prelude::*;
 use pingora::proxy::{ProxyHttp, Session};
 use pingora::upstreams::peer::HttpPeer;
@@ -10,6 +11,8 @@ use tracing::{debug, error, info, warn};
 use prism_core::analyzer::ChatMessage;
 use prism_core::router::{PrismRouter, RouteMetadata, RouteRequest, Router};
 
+use crate::codec;
+use crate::codec::registry::CodecRegistry;
 use crate::metrics::{MetricsCollector, RequestRecord};
 use crate::protocol::LlmProtocol;
 
@@ -31,6 +34,20 @@ pub struct ProxyContext {
     pub request_start: Instant,
     /// HTTP status from upstream response
     pub response_status: Option<u16>,
+
+    // ── Codec plugin chain integration ──
+
+    /// Codec plugin chain context (if protocol conversion is needed).
+    /// This is the `codec::ProxyContext`, distinct from this Pingora `ProxyContext`.
+    pub codec_ctx: Option<codec::ProxyContext>,
+    /// Whether protocol conversion is active for this request.
+    pub needs_conversion: bool,
+    /// Buffer for accumulating request body chunks when conversion is needed.
+    pub request_body_buffer: Option<Vec<u8>>,
+    /// Buffer for accumulating response body chunks when conversion is needed (non-streaming).
+    pub response_body_buffer: Option<Vec<u8>>,
+    /// Outbound protocol string determined from provider config.
+    pub outbound_protocol: Option<String>,
 }
 
 impl Default for ProxyContext {
@@ -44,6 +61,11 @@ impl Default for ProxyContext {
             upstream_auth: None,
             request_start: Instant::now(),
             response_status: None,
+            codec_ctx: None,
+            needs_conversion: false,
+            request_body_buffer: None,
+            response_body_buffer: None,
+            outbound_protocol: None,
         }
     }
 }
@@ -52,11 +74,28 @@ impl Default for ProxyContext {
 pub struct PrismProxy {
     pub router: Arc<PrismRouter>,
     pub metrics: Arc<MetricsCollector>,
+    pub codec_registry: Arc<CodecRegistry>,
 }
 
 impl PrismProxy {
     pub fn new(router: Arc<PrismRouter>, metrics: Arc<MetricsCollector>) -> Self {
-        Self { router, metrics }
+        Self {
+            router,
+            metrics,
+            codec_registry: Arc::new(CodecRegistry::new()),
+        }
+    }
+
+    pub fn with_codec_registry(
+        router: Arc<PrismRouter>,
+        metrics: Arc<MetricsCollector>,
+        codec_registry: Arc<CodecRegistry>,
+    ) -> Self {
+        Self {
+            router,
+            metrics,
+            codec_registry,
+        }
     }
 
     /// Parse a base URL into (host, port, use_tls).
@@ -80,6 +119,45 @@ impl PrismProxy {
         };
 
         Ok((host, port, use_tls))
+    }
+
+    /// Initialize the codec context from the proxy context after routing is decided.
+    /// Called internally when `needs_conversion` is detected.
+    fn init_codec_ctx(proxy_ctx: &mut ProxyContext) {
+        let mut codec_ctx = codec::ProxyContext::new();
+        codec_ctx.inbound_protocol = proxy_ctx.protocol.as_str().to_string();
+        codec_ctx.outbound_protocol = proxy_ctx
+            .outbound_protocol
+            .clone()
+            .unwrap_or_default();
+        codec_ctx.selected_provider = proxy_ctx
+            .selected_provider
+            .clone()
+            .unwrap_or_default();
+        codec_ctx.selected_model = proxy_ctx
+            .selected_model
+            .clone()
+            .unwrap_or_default();
+        codec_ctx.selected_variant = proxy_ctx
+            .selected_variant
+            .clone()
+            .unwrap_or_default();
+        if let Some(ref base_url) = proxy_ctx.upstream_base_url {
+            let host = base_url
+                .trim_start_matches("https://")
+                .trim_start_matches("http://")
+                .split('/')
+                .next()
+                .unwrap_or("localhost");
+            codec_ctx.upstream_host = host.to_string();
+        }
+        if let Some(ref auth) = proxy_ctx.upstream_auth {
+            codec_ctx.upstream_auth = Some(auth.clone());
+        }
+
+        proxy_ctx.codec_ctx = Some(codec_ctx);
+        proxy_ctx.request_body_buffer = Some(Vec::new());
+        proxy_ctx.response_body_buffer = Some(Vec::new());
     }
 }
 
@@ -117,8 +195,6 @@ impl ProxyHttp for PrismProxy {
         ctx: &mut Self::CTX,
     ) -> Result<Box<HttpPeer>, Box<pingora::Error>> {
         // Build a minimal route request from path + headers
-        // NOTE: Reading the request body in this phase is complex with Pingora,
-        // so we route based on path (protocol) and use a generic message.
         let path = session.req_header().uri.path().to_string();
         let protocol_str = ctx.protocol.as_str();
 
@@ -145,7 +221,7 @@ impl ProxyHttp for PrismProxy {
                 ctx.selected_provider = Some(decision.selected_provider.clone());
                 ctx.selected_model = Some(decision.selected_model.clone());
 
-                // Look up the provider's base_url
+                // Look up the provider's base_url and protocols
                 let provider = self
                     .router
                     .registry
@@ -165,6 +241,33 @@ impl ProxyHttp for PrismProxy {
 
                 ctx.upstream_base_url = Some(base_url.to_string());
 
+                // ── Codec: determine outbound protocol and check if conversion is needed ──
+                let outbound_protocol = provider
+                    .and_then(|p| p.protocols.first())
+                    .cloned()
+                    .unwrap_or_else(|| protocol_str.to_string());
+
+                let inbound = protocol_str;
+                let provider_id = &decision.selected_provider;
+
+                if inbound != outbound_protocol
+                    && inbound != "unknown"
+                    && self.codec_registry.needs_conversion(
+                        provider_id,
+                        inbound,
+                        &outbound_protocol,
+                    )
+                {
+                    ctx.needs_conversion = true;
+                    ctx.outbound_protocol = Some(outbound_protocol.clone());
+                    debug!(
+                        inbound = %inbound,
+                        outbound = %outbound_protocol,
+                        provider = %provider_id,
+                        "Protocol conversion enabled via codec plugin chain"
+                    );
+                }
+
                 let (host, port, use_tls) =
                     Self::parse_upstream(base_url).map_err(|e| {
                         error!(
@@ -181,6 +284,7 @@ impl ProxyHttp for PrismProxy {
                     host = %host,
                     port = %port,
                     tls = %use_tls,
+                    conversion = %ctx.needs_conversion,
                     "Routing to upstream"
                 );
 
@@ -204,7 +308,7 @@ impl ProxyHttp for PrismProxy {
     /// Phase 3: Modify the upstream request headers.
     async fn upstream_request_filter(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         upstream_request: &mut pingora::http::RequestHeader,
         ctx: &mut Self::CTX,
     ) -> Result<(), Box<pingora::Error>> {
@@ -235,12 +339,297 @@ impl ProxyHttp for PrismProxy {
                 ))?;
         }
 
+        // ── Codec: process request headers through plugin chain ──
+        if ctx.needs_conversion {
+            // Initialize codec context now that we have full routing info
+            Self::init_codec_ctx(ctx);
+
+            if let Some(ref mut codec_ctx) = ctx.codec_ctx {
+                // Copy original request headers into codec context
+                let req_header = session.req_header();
+                codec_ctx.request_path = req_header.uri.path().to_string();
+                codec_ctx.request_method = req_header.method.as_str().to_string();
+                for (name, value) in req_header.headers.iter() {
+                    if let Ok(v) = value.to_str() {
+                        codec_ctx.request_headers
+                            .insert(name.as_str().to_string(), v.to_string());
+                    }
+                }
+
+                // Detect if streaming (best-effort from headers or content)
+                if let Some(accept) = codec_ctx.request_headers.get("accept") {
+                    if accept.contains("text/event-stream") {
+                        codec_ctx.is_streaming = true;
+                    }
+                }
+
+                let provider_id = ctx.selected_provider.as_deref().unwrap_or("");
+                let inbound = ctx.protocol.as_str();
+                let outbound = ctx.outbound_protocol.as_deref().unwrap_or("");
+
+                if let Some(chain) = self.codec_registry.get_chain(provider_id, inbound, outbound)
+                {
+                    let action = chain.process_request_headers(codec_ctx);
+
+                    if action == codec::Action::Continue {
+                        // Apply any headers that the plugin chain modified.
+                        // Clone to owned Strings since insert_header requires
+                        // 'static str or String for IntoCaseHeaderName.
+                        let modified_headers: Vec<(String, String)> = codec_ctx
+                            .request_headers
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        let modified_auth = codec_ctx.upstream_auth.clone();
+                        let modified_path = if !codec_ctx.upstream_path.is_empty() {
+                            Some(codec_ctx.upstream_path.clone())
+                        } else {
+                            None
+                        };
+
+                        // Update upstream path if changed by plugin
+                        if let Some(path) = modified_path {
+                            if let Ok(uri) = path.parse::<http::Uri>() {
+                                upstream_request.set_uri(uri);
+                            }
+                        }
+
+                        for (key, value) in modified_headers {
+                            let _ = upstream_request.insert_header(key, &value);
+                        }
+
+                        // Override auth if plugin changed it
+                        if let Some(auth) = modified_auth {
+                            let _ = upstream_request
+                                .insert_header("Authorization".to_string(), &auth);
+                        }
+
+                        debug!("Codec plugin chain processed request headers");
+                    } else {
+                        warn!("Codec plugin chain returned Stop on request headers");
+                    }
+                }
+            }
+        }
+
         debug!(
             variant = ?ctx.selected_variant,
             "Upstream request filter applied"
         );
 
         Ok(())
+    }
+
+    /// Phase 3b: Handle request body — buffer and transform if conversion is needed.
+    async fn request_body_filter(
+        &self,
+        _session: &mut Session,
+        body: &mut Option<Bytes>,
+        end_of_stream: bool,
+        ctx: &mut Self::CTX,
+    ) -> Result<(), Box<pingora::Error>> {
+        if !ctx.needs_conversion {
+            return Ok(());
+        }
+
+        // Buffer the body chunks
+        if let Some(ref chunk) = body {
+            if let Some(ref mut buf) = ctx.request_body_buffer {
+                buf.extend_from_slice(chunk);
+            }
+        }
+
+        // When we have the complete body, transform it through the plugin chain
+        if end_of_stream {
+            let full_body = ctx.request_body_buffer.take().unwrap_or_default();
+
+            if !full_body.is_empty() {
+                let provider_id = ctx.selected_provider.as_deref().unwrap_or("");
+                let inbound = ctx.protocol.as_str();
+                let outbound = ctx.outbound_protocol.as_deref().unwrap_or("");
+
+                if let Some(chain) =
+                    self.codec_registry.get_chain(provider_id, inbound, outbound)
+                {
+                    if let Some(ref mut codec_ctx) = ctx.codec_ctx {
+                        match chain.process_request_body(codec_ctx, full_body) {
+                            Ok(transformed) => {
+                                debug!(
+                                    original_len = transformed.len(),
+                                    "Codec plugin chain transformed request body"
+                                );
+                                *body = Some(Bytes::from(transformed));
+                            }
+                            Err(e) => {
+                                error!(error = %e, "Codec plugin chain failed to transform request body");
+                                return Err(pingora::Error::explain(
+                                    pingora::ErrorType::InternalError,
+                                    format!("codec request body error: {}", e),
+                                ));
+                            }
+                        }
+                    }
+                } else {
+                    // No chain found (shouldn't happen since needs_conversion was true),
+                    // pass through original body
+                    *body = Some(Bytes::from(full_body));
+                }
+            }
+        } else if ctx.needs_conversion {
+            // We're buffering — suppress sending partial chunks upstream.
+            // Clear the chunk so Pingora doesn't send it yet.
+            *body = None;
+        }
+
+        Ok(())
+    }
+
+    /// Phase 4: Modify response headers from upstream (after cache).
+    async fn response_filter(
+        &self,
+        _session: &mut Session,
+        upstream_response: &mut pingora::http::ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<(), Box<pingora::Error>> {
+        if !ctx.needs_conversion {
+            return Ok(());
+        }
+
+        let provider_id = ctx.selected_provider.as_deref().unwrap_or("");
+        let inbound = ctx.protocol.as_str();
+        let outbound = ctx.outbound_protocol.as_deref().unwrap_or("");
+
+        if let Some(chain) = self.codec_registry.get_chain(provider_id, inbound, outbound) {
+            if let Some(ref mut codec_ctx) = ctx.codec_ctx {
+                // Copy upstream response headers into codec context
+                codec_ctx.response_status = Some(upstream_response.status.as_u16());
+                for (name, value) in upstream_response.headers.iter() {
+                    if let Ok(v) = value.to_str() {
+                        codec_ctx
+                            .response_headers
+                            .insert(name.as_str().to_string(), v.to_string());
+                    }
+                }
+
+                let action = chain.process_response_headers(codec_ctx);
+
+                if action == codec::Action::Continue {
+                    // Sync modified response headers back
+                    for (key, value) in &codec_ctx.response_headers {
+                        let _ = upstream_response.insert_header(
+                            http::header::HeaderName::from_bytes(key.as_bytes())
+                                .unwrap_or(http::header::CONTENT_TYPE),
+                            value.as_str(),
+                        );
+                    }
+                    debug!("Codec plugin chain processed response headers");
+                } else {
+                    warn!("Codec plugin chain returned Stop on response headers");
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Phase 4b: Transform response body chunks.
+    fn response_body_filter(
+        &self,
+        _session: &mut Session,
+        body: &mut Option<Bytes>,
+        end_of_stream: bool,
+        ctx: &mut Self::CTX,
+    ) -> Result<Option<std::time::Duration>, Box<pingora::Error>>
+    where
+        Self::CTX: Send + Sync,
+    {
+        if !ctx.needs_conversion {
+            return Ok(None);
+        }
+
+        let is_streaming = ctx
+            .codec_ctx
+            .as_ref()
+            .map(|c| c.is_streaming)
+            .unwrap_or(false);
+
+        if is_streaming {
+            // Streaming mode: process each chunk individually
+            if let Some(ref chunk) = body {
+                if let Ok(chunk_str) = std::str::from_utf8(chunk) {
+                    let provider_id = ctx.selected_provider.as_deref().unwrap_or("");
+                    let inbound = ctx.protocol.as_str();
+                    let outbound = ctx.outbound_protocol.as_deref().unwrap_or("");
+
+                    if let Some(chain) =
+                        self.codec_registry.get_chain(provider_id, inbound, outbound)
+                    {
+                        if let Some(ref mut codec_ctx) = ctx.codec_ctx {
+                            match chain.process_response_stream_chunk(codec_ctx, chunk_str) {
+                                Ok(Some(transformed)) => {
+                                    *body = Some(Bytes::from(transformed));
+                                }
+                                Ok(None) => {
+                                    // Chunk filtered out
+                                    *body = Some(Bytes::new());
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, "Codec stream chunk transform error");
+                                    // Pass through on error
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Non-streaming: buffer body chunks, transform on end_of_stream
+            if let Some(ref chunk) = body {
+                if let Some(ref mut buf) = ctx.response_body_buffer {
+                    buf.extend_from_slice(chunk);
+                }
+            }
+
+            if end_of_stream {
+                let full_body = ctx.response_body_buffer.take().unwrap_or_default();
+
+                if !full_body.is_empty() {
+                    let provider_id = ctx.selected_provider.as_deref().unwrap_or("");
+                    let inbound = ctx.protocol.as_str();
+                    let outbound = ctx.outbound_protocol.as_deref().unwrap_or("");
+
+                    if let Some(chain) =
+                        self.codec_registry.get_chain(provider_id, inbound, outbound)
+                    {
+                        if let Some(ref mut codec_ctx) = ctx.codec_ctx {
+                            match chain.process_response_body(codec_ctx, full_body) {
+                                Ok(transformed) => {
+                                    debug!(
+                                        len = transformed.len(),
+                                        "Codec plugin chain transformed response body"
+                                    );
+                                    *body = Some(Bytes::from(transformed));
+                                }
+                                Err(e) => {
+                                    error!(
+                                        error = %e,
+                                        "Codec plugin chain failed to transform response body"
+                                    );
+                                    // Pass through the raw buffered body on error
+                                }
+                            }
+                        }
+                    } else {
+                        *body = Some(Bytes::from(full_body));
+                    }
+                }
+            } else {
+                // Buffering — suppress partial chunks from reaching downstream
+                *body = None;
+            }
+        }
+
+        Ok(None)
     }
 
     /// Phase 5: Log the completed request and record metrics.
@@ -263,6 +652,8 @@ impl ProxyHttp for PrismProxy {
             protocol = %ctx.protocol.as_str(),
             status = %status,
             latency_ms = %elapsed.as_millis(),
+            conversion = %ctx.needs_conversion,
+            outbound_protocol = ?ctx.outbound_protocol,
             "Request completed"
         );
 
@@ -278,5 +669,365 @@ impl ProxyHttp for PrismProxy {
                 timestamp: Instant::now(),
             });
         }
+    }
+}
+
+// ════════════════════════════════════════════════
+// Tests
+// ════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codec::chain::ProxyPluginChain;
+    use crate::codec::registry::CodecRegistry;
+    use crate::codec::{Action, ProxyPlugin as CodecProxyPlugin};
+
+    // ── ProxyContext tests ──
+
+    #[test]
+    fn test_proxy_context_default() {
+        let ctx = ProxyContext::default();
+        assert_eq!(ctx.protocol, LlmProtocol::Unknown);
+        assert!(ctx.selected_variant.is_none());
+        assert!(ctx.selected_provider.is_none());
+        assert!(ctx.selected_model.is_none());
+        assert!(ctx.upstream_base_url.is_none());
+        assert!(ctx.upstream_auth.is_none());
+        assert!(ctx.response_status.is_none());
+        // Codec fields
+        assert!(ctx.codec_ctx.is_none());
+        assert!(!ctx.needs_conversion);
+        assert!(ctx.request_body_buffer.is_none());
+        assert!(ctx.response_body_buffer.is_none());
+        assert!(ctx.outbound_protocol.is_none());
+    }
+
+    #[test]
+    fn test_proxy_context_codec_fields() {
+        let mut ctx = ProxyContext::default();
+        ctx.needs_conversion = true;
+        ctx.outbound_protocol = Some("anthropic".to_string());
+
+        let codec_ctx = codec::ProxyContext::new();
+        ctx.codec_ctx = Some(codec_ctx);
+
+        assert!(ctx.needs_conversion);
+        assert_eq!(ctx.outbound_protocol, Some("anthropic".to_string()));
+        assert!(ctx.codec_ctx.is_some());
+    }
+
+    #[test]
+    fn test_proxy_context_with_body_buffers() {
+        let mut ctx = ProxyContext::default();
+        ctx.request_body_buffer = Some(Vec::new());
+        ctx.response_body_buffer = Some(Vec::new());
+
+        ctx.request_body_buffer.as_mut().unwrap().extend_from_slice(b"request");
+        ctx.response_body_buffer.as_mut().unwrap().extend_from_slice(b"response");
+
+        assert_eq!(ctx.request_body_buffer.as_ref().unwrap(), b"request");
+        assert_eq!(ctx.response_body_buffer.as_ref().unwrap(), b"response");
+    }
+
+    // ── PrismProxy construction tests ──
+
+    #[test]
+    fn test_prism_proxy_new_has_empty_codec_registry() {
+        let registry = prism_core::registry::InMemoryRegistry::new();
+        let router = Arc::new(PrismRouter::new(registry));
+        let metrics = Arc::new(MetricsCollector::new(100));
+
+        let proxy = PrismProxy::new(router, metrics);
+
+        // Empty registry should not need conversion for anything
+        assert!(!proxy.codec_registry.needs_conversion("any", "openai", "anthropic"));
+    }
+
+    #[test]
+    fn test_prism_proxy_with_codec_registry() {
+        let registry = prism_core::registry::InMemoryRegistry::new();
+        let router = Arc::new(PrismRouter::new(registry));
+        let metrics = Arc::new(MetricsCollector::new(100));
+
+        let mut codec_reg = CodecRegistry::new();
+        codec_reg.register_protocol_pair("openai", "anthropic", ProxyPluginChain::new());
+
+        let proxy = PrismProxy::with_codec_registry(
+            router,
+            metrics,
+            Arc::new(codec_reg),
+        );
+
+        assert!(proxy.codec_registry.needs_conversion("any", "openai", "anthropic"));
+        assert!(!proxy.codec_registry.needs_conversion("any", "anthropic", "openai"));
+    }
+
+    // ── init_codec_ctx tests ──
+
+    #[test]
+    fn test_init_codec_ctx() {
+        let mut ctx = ProxyContext::default();
+        ctx.protocol = LlmProtocol::OpenAI;
+        ctx.selected_provider = Some("anthropic-main".to_string());
+        ctx.selected_model = Some("claude-3-opus".to_string());
+        ctx.selected_variant = Some("claude-variant".to_string());
+        ctx.upstream_base_url = Some("https://api.anthropic.com/v1".to_string());
+        ctx.upstream_auth = Some("Bearer sk-test".to_string());
+        ctx.outbound_protocol = Some("anthropic".to_string());
+
+        PrismProxy::init_codec_ctx(&mut ctx);
+
+        let codec_ctx = ctx.codec_ctx.as_ref().unwrap();
+        assert_eq!(codec_ctx.inbound_protocol, "openai");
+        assert_eq!(codec_ctx.outbound_protocol, "anthropic");
+        assert_eq!(codec_ctx.selected_provider, "anthropic-main");
+        assert_eq!(codec_ctx.selected_model, "claude-3-opus");
+        assert_eq!(codec_ctx.selected_variant, "claude-variant");
+        assert_eq!(codec_ctx.upstream_host, "api.anthropic.com");
+        assert_eq!(codec_ctx.upstream_auth, Some("Bearer sk-test".to_string()));
+
+        // Buffers should be initialized
+        assert!(ctx.request_body_buffer.is_some());
+        assert!(ctx.response_body_buffer.is_some());
+    }
+
+    #[test]
+    fn test_init_codec_ctx_without_upstream_url() {
+        let mut ctx = ProxyContext::default();
+        ctx.protocol = LlmProtocol::OpenAI;
+        ctx.outbound_protocol = Some("anthropic".to_string());
+
+        PrismProxy::init_codec_ctx(&mut ctx);
+
+        let codec_ctx = ctx.codec_ctx.as_ref().unwrap();
+        assert_eq!(codec_ctx.upstream_host, "");
+        assert!(codec_ctx.upstream_auth.is_none());
+    }
+
+    // ── Parse upstream tests ──
+
+    #[test]
+    fn test_parse_upstream_https() {
+        let (host, port, tls) = PrismProxy::parse_upstream("https://api.openai.com/v1").unwrap();
+        assert_eq!(host, "api.openai.com");
+        assert_eq!(port, 443);
+        assert!(tls);
+    }
+
+    #[test]
+    fn test_parse_upstream_http() {
+        let (host, port, tls) = PrismProxy::parse_upstream("http://localhost:8080/v1").unwrap();
+        assert_eq!(host, "localhost");
+        assert_eq!(port, 8080);
+        assert!(!tls);
+    }
+
+    #[test]
+    fn test_parse_upstream_no_port() {
+        let (host, port, tls) = PrismProxy::parse_upstream("http://example.com/path").unwrap();
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 80);
+        assert!(!tls);
+    }
+
+    // ── Mock plugin chain integration tests ──
+
+    /// A test plugin that transforms request/response bodies.
+    struct MockCodecPlugin {
+        name: String,
+        /// Prefix to add to request body
+        req_prefix: String,
+        /// Prefix to add to response body
+        resp_prefix: String,
+        /// Header to inject
+        inject_header: Option<(String, String)>,
+        /// Path to rewrite to
+        rewrite_path: Option<String>,
+    }
+
+    impl MockCodecPlugin {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.to_string(),
+                req_prefix: format!("[{}:req]", name),
+                resp_prefix: format!("[{}:resp]", name),
+                inject_header: None,
+                rewrite_path: None,
+            }
+        }
+
+        fn with_header(mut self, key: &str, value: &str) -> Self {
+            self.inject_header = Some((key.to_string(), value.to_string()));
+            self
+        }
+
+        fn with_path(mut self, path: &str) -> Self {
+            self.rewrite_path = Some(path.to_string());
+            self
+        }
+    }
+
+    impl CodecProxyPlugin for MockCodecPlugin {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn on_request_headers(&self, ctx: &mut codec::ProxyContext) -> Action {
+            if let Some((ref k, ref v)) = self.inject_header {
+                ctx.request_headers.insert(k.clone(), v.clone());
+            }
+            if let Some(ref path) = self.rewrite_path {
+                ctx.upstream_path = path.clone();
+            }
+            Action::Continue
+        }
+
+        fn on_request_body(
+            &self,
+            _ctx: &mut codec::ProxyContext,
+            body: Vec<u8>,
+        ) -> Result<Vec<u8>, String> {
+            let mut new_body = self.req_prefix.as_bytes().to_vec();
+            new_body.extend_from_slice(&body);
+            Ok(new_body)
+        }
+
+        fn on_response_headers(&self, _ctx: &mut codec::ProxyContext) -> Action {
+            Action::Continue
+        }
+
+        fn on_response_body(
+            &self,
+            _ctx: &mut codec::ProxyContext,
+            body: Vec<u8>,
+        ) -> Result<Vec<u8>, String> {
+            let mut new_body = self.resp_prefix.as_bytes().to_vec();
+            new_body.extend_from_slice(&body);
+            Ok(new_body)
+        }
+
+        fn on_response_stream_chunk(
+            &self,
+            _ctx: &mut codec::ProxyContext,
+            chunk: &str,
+        ) -> Result<Option<String>, String> {
+            Ok(Some(format!("[{}]{}", self.name, chunk)))
+        }
+    }
+
+    #[test]
+    fn test_codec_registry_with_mock_plugin_request_body() {
+        let mut chain = ProxyPluginChain::new();
+        chain.add(Box::new(MockCodecPlugin::new("openai2anthropic")));
+
+        let mut registry = CodecRegistry::new();
+        registry.register_protocol_pair("openai", "anthropic", chain);
+
+        let mut codec_ctx = codec::ProxyContext::new();
+        codec_ctx.inbound_protocol = "openai".to_string();
+        codec_ctx.outbound_protocol = "anthropic".to_string();
+
+        let chain = registry.get_chain("any-provider", "openai", "anthropic").unwrap();
+
+        // Test request body transformation
+        let body = br#"{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}"#.to_vec();
+        let result = chain.process_request_body(&mut codec_ctx, body.clone()).unwrap();
+        assert!(result.starts_with(b"[openai2anthropic:req]"));
+        assert!(result.ends_with(&body));
+    }
+
+    #[test]
+    fn test_codec_registry_with_mock_plugin_response_body() {
+        let mut chain = ProxyPluginChain::new();
+        chain.add(Box::new(MockCodecPlugin::new("converter")));
+
+        let mut registry = CodecRegistry::new();
+        registry.register_protocol_pair("openai", "anthropic", chain);
+
+        let mut codec_ctx = codec::ProxyContext::new();
+        let chain = registry.get_chain("any", "openai", "anthropic").unwrap();
+
+        let body = b"upstream response".to_vec();
+        let result = chain.process_response_body(&mut codec_ctx, body).unwrap();
+        assert_eq!(result, b"[converter:resp]upstream response");
+    }
+
+    #[test]
+    fn test_codec_registry_with_mock_plugin_headers() {
+        let mut chain = ProxyPluginChain::new();
+        chain.add(Box::new(
+            MockCodecPlugin::new("header-plugin")
+                .with_header("x-anthropic-version", "2023-06-01")
+                .with_path("/v1/messages"),
+        ));
+
+        let mut registry = CodecRegistry::new();
+        registry.register_protocol_pair("openai", "anthropic", chain);
+
+        let mut codec_ctx = codec::ProxyContext::new();
+        let chain = registry.get_chain("any", "openai", "anthropic").unwrap();
+
+        let action = chain.process_request_headers(&mut codec_ctx);
+        assert_eq!(action, Action::Continue);
+        assert_eq!(
+            codec_ctx.request_headers.get("x-anthropic-version"),
+            Some(&"2023-06-01".to_string())
+        );
+        assert_eq!(codec_ctx.upstream_path, "/v1/messages");
+    }
+
+    #[test]
+    fn test_codec_registry_with_mock_plugin_stream_chunk() {
+        let mut chain = ProxyPluginChain::new();
+        chain.add(Box::new(MockCodecPlugin::new("streamer")));
+
+        let mut registry = CodecRegistry::new();
+        registry.register_protocol_pair("openai", "anthropic", chain);
+
+        let mut codec_ctx = codec::ProxyContext::new();
+        let chain = registry.get_chain("any", "openai", "anthropic").unwrap();
+
+        let result = chain
+            .process_response_stream_chunk(&mut codec_ctx, "data: {\"id\":\"1\"}\n\n")
+            .unwrap();
+        assert_eq!(
+            result,
+            Some("[streamer]data: {\"id\":\"1\"}\n\n".to_string())
+        );
+    }
+
+    #[test]
+    fn test_no_conversion_when_same_protocol() {
+        let registry = CodecRegistry::new();
+        // Same inbound and outbound — never needs conversion
+        assert!(!registry.needs_conversion("any", "openai", "openai"));
+    }
+
+    #[test]
+    fn test_no_conversion_when_registry_empty() {
+        let registry = CodecRegistry::new();
+        assert!(!registry.needs_conversion("any", "openai", "anthropic"));
+    }
+
+    #[test]
+    fn test_multi_plugin_chain_body_transform() {
+        let mut chain = ProxyPluginChain::new();
+        chain.add(Box::new(MockCodecPlugin::new("A")));
+        chain.add(Box::new(MockCodecPlugin::new("B")));
+
+        let mut registry = CodecRegistry::new();
+        registry.register_protocol_pair("openai", "anthropic", chain);
+
+        let mut codec_ctx = codec::ProxyContext::new();
+        let chain = registry.get_chain("any", "openai", "anthropic").unwrap();
+
+        // Request: A → B (in order)
+        let result = chain.process_request_body(&mut codec_ctx, b"X".to_vec()).unwrap();
+        assert_eq!(result, b"[B:req][A:req]X");
+
+        // Response: B → A (reverse order)
+        let result = chain.process_response_body(&mut codec_ctx, b"Y".to_vec()).unwrap();
+        assert_eq!(result, b"[A:resp][B:resp]Y");
     }
 }
