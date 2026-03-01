@@ -15,6 +15,7 @@ use crate::codec;
 use crate::codec::registry::CodecRegistry;
 use crate::metrics::{MetricsCollector, RequestRecord};
 use crate::protocol::LlmProtocol;
+use crate::ratelimit::RateLimiter;
 
 /// Per-request context stored across Pingora proxy phases.
 pub struct ProxyContext {
@@ -75,6 +76,7 @@ pub struct PrismProxy {
     pub router: Arc<PrismRouter>,
     pub metrics: Arc<MetricsCollector>,
     pub codec_registry: Arc<CodecRegistry>,
+    pub rate_limiter: Option<Arc<RateLimiter>>,
 }
 
 impl PrismProxy {
@@ -83,6 +85,7 @@ impl PrismProxy {
             router,
             metrics,
             codec_registry: Arc::new(CodecRegistry::new()),
+            rate_limiter: None,
         }
     }
 
@@ -95,7 +98,13 @@ impl PrismProxy {
             router,
             metrics,
             codec_registry,
+            rate_limiter: None,
         }
+    }
+
+    pub fn with_rate_limiter(mut self, limiter: Arc<RateLimiter>) -> Self {
+        self.rate_limiter = Some(limiter);
+        self
     }
 
     /// Parse a base URL into (host, port, use_tls).
@@ -184,6 +193,69 @@ impl ProxyHttp for PrismProxy {
             protocol = %ctx.protocol.as_str(),
             "Request received"
         );
+
+        // Rate limit check — early, before routing
+        if let Some(ref limiter) = self.rate_limiter {
+            let headers: Vec<(String, String)> = session
+                .req_header()
+                .headers
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.as_str().to_lowercase(),
+                        v.to_str().unwrap_or("").to_string(),
+                    )
+                })
+                .collect();
+
+            if let Err(denied) = limiter.check(&headers) {
+                warn!(rule = %denied.rule_name, "Rate limit exceeded");
+
+                let mut header =
+                    pingora::http::ResponseHeader::build(denied.status_code, None).unwrap();
+                if let Some(retry_after) = denied.retry_after_secs {
+                    header
+                        .insert_header("Retry-After", retry_after.to_string())
+                        .unwrap();
+                }
+                header
+                    .insert_header("Content-Type", "application/json")
+                    .unwrap();
+                header
+                    .insert_header("X-RateLimit-Rule", &denied.rule_name)
+                    .unwrap();
+
+                let body = serde_json::json!({
+                    "error": {
+                        "type": "rate_limit_exceeded",
+                        "message": denied.message,
+                        "rule": denied.rule_name,
+                    }
+                });
+
+                session.set_keepalive(None);
+                session
+                    .write_response_header(Box::new(header), true)
+                    .await
+                    .map_err(|e| {
+                        pingora::Error::explain(
+                            pingora::ErrorType::WriteError,
+                            format!("rate limit response header error: {}", e),
+                        )
+                    })?;
+                session
+                    .write_response_body(Some(Bytes::from(body.to_string())), true)
+                    .await
+                    .map_err(|e| {
+                        pingora::Error::explain(
+                            pingora::ErrorType::WriteError,
+                            format!("rate limit response body error: {}", e),
+                        )
+                    })?;
+
+                return Ok(true);
+            }
+        }
 
         Ok(false) // continue to upstream
     }
@@ -682,6 +754,7 @@ mod tests {
     use crate::codec::chain::ProxyPluginChain;
     use crate::codec::registry::CodecRegistry;
     use crate::codec::{Action, ProxyPlugin as CodecProxyPlugin};
+    use crate::ratelimit::{RateLimiter, RateLimitRule};
 
     // ── ProxyContext tests ──
 
@@ -1029,5 +1102,58 @@ mod tests {
         // Response: B → A (reverse order)
         let result = chain.process_response_body(&mut codec_ctx, b"Y".to_vec()).unwrap();
         assert_eq!(result, b"[A:resp][B:resp]Y");
+    }
+
+    // ── PrismProxy with rate limiter tests ──
+
+    #[test]
+    fn test_prism_proxy_without_rate_limiter() {
+        let registry = prism_core::registry::InMemoryRegistry::new();
+        let router = Arc::new(PrismRouter::new(registry));
+        let metrics = Arc::new(MetricsCollector::new(100));
+
+        let proxy = PrismProxy::new(router, metrics);
+        assert!(proxy.rate_limiter.is_none());
+    }
+
+    #[test]
+    fn test_prism_proxy_with_rate_limiter() {
+        let registry = prism_core::registry::InMemoryRegistry::new();
+        let router = Arc::new(PrismRouter::new(registry));
+        let metrics = Arc::new(MetricsCollector::new(100));
+
+        let limiter = Arc::new(RateLimiter::new(vec![RateLimitRule {
+            name: "global".to_string(),
+            key_headers: vec![],
+            window_secs: 60,
+            max_requests: 100,
+            max_tokens: None,
+            enabled: true,
+            status_code: 429,
+            message: "Rate limit exceeded".to_string(),
+        }]));
+
+        let proxy = PrismProxy::new(router, metrics).with_rate_limiter(limiter.clone());
+        assert!(proxy.rate_limiter.is_some());
+        assert_eq!(proxy.rate_limiter.as_ref().unwrap().rules().len(), 1);
+        assert_eq!(proxy.rate_limiter.as_ref().unwrap().rules()[0].name, "global");
+    }
+
+    #[test]
+    fn test_prism_proxy_with_rate_limiter_and_codec() {
+        let registry = prism_core::registry::InMemoryRegistry::new();
+        let router = Arc::new(PrismRouter::new(registry));
+        let metrics = Arc::new(MetricsCollector::new(100));
+
+        let mut codec_reg = CodecRegistry::new();
+        codec_reg.register_protocol_pair("openai", "anthropic", ProxyPluginChain::new());
+
+        let limiter = Arc::new(RateLimiter::new(vec![]));
+
+        let proxy = PrismProxy::with_codec_registry(router, metrics, Arc::new(codec_reg))
+            .with_rate_limiter(limiter);
+
+        assert!(proxy.rate_limiter.is_some());
+        assert!(proxy.codec_registry.needs_conversion("any", "openai", "anthropic"));
     }
 }
