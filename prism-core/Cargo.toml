@@ -16,6 +16,7 @@ dashmap = "5"
 rand = "0.8"
 regex = "1"
 ureq = { version = "2", features = ["json"] }
-wasmtime = { version = "20", optional = true }
+wasmtime = { version = "42", optional = true }
+tracing = "0.1"
 
 [dev-dependencies]

@@ -21,6 +21,8 @@ pub use wasm_discovery::WasmDiscovery;
 
 use std::fmt;
 
+use serde::{Serialize, Deserialize};
+
 use crate::types::*;
 
 // ════════════════════════════════════════════════
@@ -30,7 +32,7 @@ use crate::types::*;
 /// The complete result set returned by a [`Discovery`] plugin.
 ///
 /// Contains all scheduling objects discovered from a single source.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DiscoveryResult {
     pub providers: Vec<Provider>,
     pub endpoints: Vec<Endpoint>,
