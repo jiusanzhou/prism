@@ -85,8 +85,6 @@ pub struct PrismProxy {
     pub metrics: Arc<MetricsCollector>,
     pub codec_registry: Arc<CodecRegistry>,
     pub rate_limiter: Option<Arc<RateLimiter>>,
-    /// HTTP client for upstream forwarding (reqwest-based, bypasses Pingora's connector).
-    pub http_client: reqwest::Client,
 }
 
 impl PrismProxy {
@@ -96,11 +94,6 @@ impl PrismProxy {
             metrics,
             codec_registry: Arc::new(CodecRegistry::new()),
             rate_limiter: None,
-            http_client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .connect_timeout(std::time::Duration::from_secs(10))
-                .build()
-                .unwrap(),
         }
     }
 
@@ -115,11 +108,6 @@ impl PrismProxy {
             metrics,
             codec_registry,
             rate_limiter: None,
-            http_client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .connect_timeout(std::time::Duration::from_secs(10))
-                .build()
-                .unwrap(),
         }
     }
 
@@ -190,8 +178,9 @@ impl PrismProxy {
         proxy_ctx.request_body_buffer = Some(Vec::new());
         proxy_ctx.response_body_buffer = Some(Vec::new());
     }
-    /// Use reqwest to forward the request directly, bypassing Pingora's upstream connector.
-    /// This is more reliable for HTTPS upstream servers.
+        /// Use reqwest to forward the request directly, bypassing Pingora's upstream connector.
+    /// Kept as fallback for environments where Pingora's openssl feature is unavailable.
+    #[allow(dead_code)]
     async fn reqwest_forward(
         &self,
         session: &mut Session,
@@ -315,7 +304,15 @@ impl PrismProxy {
             "PATCH" => reqwest::Method::PATCH,
             _ => reqwest::Method::POST,
         };
-        let mut req = self.http_client.request(req_method, &upstream_url);
+        let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .build()
+                .map_err(|e| pingora::Error::explain(
+                    pingora::ErrorType::InternalError,
+                    format!("create http client: {}", e),
+                ))?;
+            let mut req = client.request(req_method, &upstream_url);
 
         // Forward content-type
         if let Some(ct) = session.req_header().headers.get("content-type") {
@@ -545,9 +542,10 @@ impl ProxyHttp for PrismProxy {
             }
         }
 
-        // Use reqwest-based forwarding (bypasses Pingora's upstream connector
-        // which has issues with some HTTPS servers)
-        return self.reqwest_forward(session, ctx).await;
+        // Try Pingora's native upstream connector first (requires "openssl" feature
+        // for proper HTTPS support). Falls back to reqwest if Pingora connector
+        // is not working (e.g., missing TLS feature).
+        Ok(false) // continue to Pingora upstream pipeline
     }
 
 
