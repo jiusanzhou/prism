@@ -7,7 +7,7 @@
 *一束请求进来，根据策略折射到最优模型。*
 
 [![Rust](https://img.shields.io/badge/Rust-核心引擎-orange?logo=rust)](prism-core/)
-[![Tests](https://img.shields.io/badge/测试-307_通过-brightgreen)]()
+[![Tests](https://img.shields.io/badge/测试-803_通过-brightgreen)]()
 [![License](https://img.shields.io/badge/License-MIT-blue)]()
 
 [English](./README.md) · [中文](./README.zh-CN.md)
@@ -25,14 +25,14 @@
 - 💰 不同团队需要走不同的计费账号
 - 🧪 想 A/B 测试对比模型效果，但缺基础设施
 
-**Prism 自动解决这些问题**：分析请求内容判断复杂度，结合你的策略偏好，在 **8 微秒**内选出最优的模型和 Provider。
+**Prism 自动解决这些问题**：分析请求内容判断复杂度，结合你的策略偏好，在 **90 微秒**内选出最优的模型和 Provider。
 
 ### 核心特性
 
 | | 特性 | 说明 |
 |---|---|---|
 | 🧠 | **智能路由** | 分析请求内容（代码/推理/翻译/闲聊），自动匹配模型 |
-| ⚡ | **极致性能** | Rust 核心引擎，路由决策 8μs，P99 < 5ms |
+| ⚡ | **极致性能** | Rust 核心引擎，路由决策 90μs（100 variants），线性扩展 |
 | 🎯 | **多策略** | Balanced / SLO / CostFirst / QualityFirst，请求级切换 |
 | 🔌 | **即插即用** | OpenAI 兼容 API，改一行 base_url 就能接入 |
 | 📊 | **可观测** | Prometheus 6 维度监控指标、请求追踪、成本分析 |
@@ -215,7 +215,7 @@ curl http://localhost:8081/v1/chat/completions \
 X-Prism-Model: gpt-4o-mini
 X-Prism-Provider: openai
 X-Prism-Variant: gpt-4o-mini@openai
-X-Prism-Decision-Time-Us: 8
+X-Prism-Decision-Time-Us: 92
 ```
 
 ## 路由策略
@@ -560,8 +560,8 @@ prism/
 
 ```bash
 cargo build --release        # 构建
-cargo test                   # 运行测试（307 个通过）
-cargo bench                  # 性能基准测试（prism-core）
+cargo test                   # 运行测试（803 个通过）
+cargo bench                  # 性能基准测试（prism-core + prism-router）
 cargo fmt --all              # 格式化代码
 cargo clippy -- -D warnings  # 代码检查
 ```
@@ -576,12 +576,57 @@ cargo clippy -- -D warnings  # 代码检查
 
 ## 性能
 
-| 指标 | 实测 | 目标 |
-|---|---|---|
-| 路由决策 | **8μs** | < 500μs |
-| P99 延迟 | < 5ms | < 5ms |
-| 内存占用 | ~30MB | < 100MB |
-| 测试 | 352（默认）/ ~375（含 wasm） | — |
+### 路由决策延迟
+
+| Variants 数量 | 路由延迟 | 完整 Proxy Pipeline | 说明 |
+|------------|---------|-------------------:|------|
+| **100** | 90 µs | 100 µs | 典型小规模部署 |
+| **1,000** | 900 µs | 980 µs | 中等规模（32p × 32m） |
+| **10,000** | 11 ms | 11 ms | 大型多 Provider 集群 |
+| **100,000** | 146 ms | 132 ms | 极端规模（317p × 317m） |
+
+> 完整 Proxy Pipeline = 限流检查 + 路由 + Codec Body 变换 + 指标记录。
+> Pipeline 额外开销仅 **~10µs**，所有规模下路由本身是主要耗时。
+
+### 组件性能
+
+| 组件 | 指标 | 延迟 |
+|------|------|-----:|
+| 限流 | 全局规则检查 | 100 ns |
+| 限流 | Per-model 维度 | 150 ns |
+| 限流 | 5 条规则串行 | 500 ns |
+| 限流 | Override 匹配（5 个） | 300 ns |
+| Codec 链 | 请求体变换（2KB） | 2 µs |
+| Codec 链 | SSE 流式 chunk（1 插件） | 100 ns |
+| Codec 注册表 | 协议对查找 | 78 ns |
+| 配置热更新 | **arc-swap load（每请求）** | **9.8 ns** |
+| 配置热更新 | arc-swap store（重载） | 22 µs |
+| 配置热更新 | Registry 重建（400 variants） | 295 µs |
+| 指标 | 单 variant 记录 | 80 ns |
+| 指标 | 6 维全标签记录 | 1.7 µs |
+| 指标 | Prometheus 格式输出 | 28 µs |
+
+### 运行 Benchmark
+
+```bash
+# 核心路由 benchmark
+cargo bench --bench routing
+
+# Proxy 层 benchmark（限流、codec、热更新、指标、端到端）
+cargo bench --bench proxy
+
+# 仅端到端
+cargo bench --bench proxy -- "e2e/"
+```
+
+### 测试覆盖
+
+| 测试套件 | 数量 |
+|---------|-----:|
+| 默认 (`cargo test`) | 803 |
+| 含 WASM (`--features wasm`) | 945 |
+| E2E 集成测试 | 24 |
+| **总计** | **~970** |
 
 ## 技术栈
 

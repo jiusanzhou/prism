@@ -20,3 +20,8 @@ wasmtime = { version = "42", optional = true }
 tracing = "0.1"
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "routing"
+harness = false

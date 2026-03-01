@@ -7,7 +7,7 @@
 *Route every request to the optimal model — automatically.*
 
 [![Rust](https://img.shields.io/badge/Rust-Core_Engine-orange?logo=rust)](prism-core/)
-[![Tests](https://img.shields.io/badge/Tests-307_passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-803_passing-brightgreen)]()
 [![License](https://img.shields.io/badge/License-MIT-blue)]()
 
 [English](./README.md) · [中文](./README.zh-CN.md)
@@ -25,14 +25,14 @@ When you use multiple LLMs (GPT-4o, Claude, DeepSeek, etc.) simultaneously, you 
 - 💰 Different teams need separate billing accounts
 - 🧪 Want to A/B test models but lack the infrastructure
 
-**Prism solves this.** It analyzes request content, determines complexity, and picks the optimal model + provider in **under 8 microseconds** — based on your strategy preferences (save money? low latency? best quality?).
+**Prism solves this.** It analyzes request content, determines complexity, and picks the optimal model + provider in **under 90 microseconds** — based on your strategy preferences (save money? low latency? best quality?).
 
 ### Key Features
 
 | | Feature | Description |
 |---|---|---|
 | 🧠 | **Smart Routing** | Analyzes request content (code / reasoning / translation / chat) to match the best model |
-| ⚡ | **Blazing Fast** | Rust core engine, **8μs** routing decisions, P99 < 5ms |
+| ⚡ | **Blazing Fast** | Rust core engine, **90μs** routing decisions (100 variants), linear scaling |
 | 🎯 | **Multi-Strategy** | Balanced / SLO / Cost-First / Quality-First — switchable per request |
 | 🔌 | **Drop-in** | OpenAI-compatible API — just change `base_url` |
 | 📊 | **Observable** | Prometheus metrics with 6-dimension monitoring, request tracing, cost analysis |
@@ -215,7 +215,7 @@ The proxy response includes routing metadata in headers:
 X-Prism-Model: gpt-4o-mini
 X-Prism-Provider: openai
 X-Prism-Variant: gpt-4o-mini@openai
-X-Prism-Decision-Time-Us: 8
+X-Prism-Decision-Time-Us: 92
 ```
 
 ## Routing Strategies
@@ -560,8 +560,8 @@ prism/
 
 ```bash
 cargo build --release        # Build everything
-cargo test                   # Run all tests (307 passing)
-cargo bench                  # Benchmarks (prism-core)
+cargo test                   # Run all tests (803 passing)
+cargo bench                  # Benchmarks (prism-core + prism-router)
 cargo fmt --all              # Format code
 cargo clippy -- -D warnings  # Lint check
 ```
@@ -577,12 +577,57 @@ cargo clippy -- -D warnings  # Lint check
 
 ## Performance
 
-| Metric | Measured | Target |
-|---|---|---|
-| Routing decision | **8μs** | < 500μs |
-| P99 latency | < 5ms | < 5ms |
-| Memory footprint | ~30MB | < 100MB |
-| Tests | 307 (default) / 365 (with wasm) | — |
+### Routing Decision Latency
+
+| Variants | Routing | Full Proxy Pipeline | Notes |
+|----------|---------|--------------------:|-------|
+| **100** | 90 µs | 100 µs | Typical small-scale deployment |
+| **1,000** | 900 µs | 980 µs | Mid-scale with 32p × 32m |
+| **10,000** | 11 ms | 11 ms | Large multi-provider fleet |
+| **100,000** | 146 ms | 132 ms | Extreme scale (317p × 317m) |
+
+> Full proxy pipeline = rate limiting + routing + codec body transform + metrics recording.
+> Pipeline overhead is **~10µs** — routing dominates at all scales.
+
+### Component Benchmarks
+
+| Component | Metric | Latency |
+|-----------|--------|--------:|
+| Rate limiter | Global rule check | 100 ns |
+| Rate limiter | Per-model keyed | 150 ns |
+| Rate limiter | 5 rules sequential | 500 ns |
+| Rate limiter | Override resolution (5 overrides) | 300 ns |
+| Codec chain | Request body transform (2KB) | 2 µs |
+| Codec chain | SSE stream chunk (1 plugin) | 100 ns |
+| Codec registry | Protocol-pair lookup | 78 ns |
+| Config hot-reload | **arc-swap load (per-request)** | **9.8 ns** |
+| Config hot-reload | arc-swap store (reload) | 22 µs |
+| Config hot-reload | Registry rebuild (400 variants) | 295 µs |
+| Metrics | Single variant record | 80 ns |
+| Metrics | 6-dimension record | 1.7 µs |
+| Metrics | Prometheus format output | 28 µs |
+
+### Run Benchmarks
+
+```bash
+# Core routing benchmarks
+cargo bench --bench routing
+
+# Proxy layer benchmarks (ratelimit, codec, hotreload, metrics, e2e)
+cargo bench --bench proxy
+
+# E2E only
+cargo bench --bench proxy -- "e2e/"
+```
+
+### Test Coverage
+
+| Suite | Count |
+|-------|------:|
+| Default (`cargo test`) | 803 |
+| With WASM (`--features wasm`) | 945 |
+| E2E integration | 24 |
+| **Total** | **~970** |
 
 ## Tech Stack
 
