@@ -1,7 +1,7 @@
 mod env_source;
 mod file_source;
 pub mod registry;
-mod types;
+pub mod types;
 #[cfg(feature = "wasm")]
 mod wasm_source;
 
@@ -245,6 +245,11 @@ fn merge_configs(base: PrismConfig, overlay: PrismConfig) -> PrismConfig {
             base.codec
         } else {
             overlay.codec
+        },
+        access_log: if overlay.access_log.enabled {
+            overlay.access_log
+        } else {
+            base.access_log
         },
     }
 }

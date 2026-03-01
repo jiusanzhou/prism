@@ -4,6 +4,7 @@ use std::time::Instant;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::Utc;
 use pingora::prelude::*;
 use pingora::proxy::{ProxyHttp, Session};
 use pingora::upstreams::peer::HttpPeer;
@@ -12,6 +13,7 @@ use tracing::{debug, error, info, warn};
 use prism_core::analyzer::ChatMessage;
 use prism_core::router::{PrismRouter, RouteMetadata, RouteRequest, Router};
 
+use crate::access_log::{AccessLogData, AccessLogger};
 use crate::codec;
 use crate::codec::registry::CodecRegistry;
 use crate::metrics::{MetricsCollector, RequestRecord};
@@ -55,6 +57,31 @@ pub struct ProxyContext {
     pub outbound_protocol: Option<String>,
     /// Model name to use in upstream request body.
     pub upstream_model_name: Option<String>,
+
+    // ── Access log fields ──
+
+    /// HTTP method captured at request_filter time.
+    pub request_method: String,
+    /// Request URI path captured at request_filter time.
+    pub request_path: String,
+    /// Routing decision time in microseconds.
+    pub decision_time_us: Option<u64>,
+    /// Whether response was streamed.
+    pub is_streaming: Option<bool>,
+    /// Request body bytes received.
+    pub bytes_received: Option<u64>,
+    /// Response body bytes sent.
+    pub bytes_sent: Option<u64>,
+    /// Whether a rate limit rule matched this request.
+    pub ratelimit_matched: bool,
+    /// Rate limit rule name that matched (if any).
+    pub ratelimit_rule: Option<String>,
+    /// Error message (if request failed).
+    pub error_message: Option<String>,
+    /// Request headers snapshot for access log.
+    pub request_headers_snapshot: Vec<(String, String)>,
+    /// Whether this request used the reqwest fallback path.
+    pub reqwest_fallback: bool,
 }
 
 impl Default for ProxyContext {
@@ -75,6 +102,17 @@ impl Default for ProxyContext {
             response_body_buffer: None,
             outbound_protocol: None,
             upstream_model_name: None,
+            request_method: String::new(),
+            request_path: String::new(),
+            decision_time_us: None,
+            is_streaming: None,
+            bytes_received: None,
+            bytes_sent: None,
+            ratelimit_matched: false,
+            ratelimit_rule: None,
+            error_message: None,
+            request_headers_snapshot: Vec::new(),
+            reqwest_fallback: false,
         }
     }
 }
@@ -85,6 +123,7 @@ pub struct PrismProxy {
     pub metrics: Arc<MetricsCollector>,
     pub codec_registry: Arc<CodecRegistry>,
     pub rate_limiter: Option<Arc<RateLimiter>>,
+    pub access_logger: Option<Arc<AccessLogger>>,
 }
 
 impl PrismProxy {
@@ -94,6 +133,7 @@ impl PrismProxy {
             metrics,
             codec_registry: Arc::new(CodecRegistry::new()),
             rate_limiter: None,
+            access_logger: None,
         }
     }
 
@@ -108,12 +148,19 @@ impl PrismProxy {
             metrics,
             codec_registry,
             rate_limiter: None,
+            access_logger: None,
         }
     }
 
     #[allow(dead_code)]
     pub fn with_rate_limiter(mut self, limiter: Arc<RateLimiter>) -> Self {
         self.rate_limiter = Some(limiter);
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn with_access_logger(mut self, logger: Arc<AccessLogger>) -> Self {
+        self.access_logger = Some(logger);
         self
     }
 
@@ -429,6 +476,8 @@ impl PrismProxy {
         }
 
         let elapsed = ctx.request_start.elapsed();
+        ctx.is_streaming = Some(is_streaming);
+        ctx.reqwest_fallback = true;
         info!(
             variant = ?ctx.selected_variant,
             provider = ?ctx.selected_provider,
@@ -451,6 +500,41 @@ impl PrismProxy {
             });
         }
 
+        // Access log for reqwest path (logging() phase won't fire for early-return)
+        if let Some(ref logger) = self.access_logger {
+            let data = AccessLogData {
+                start_time: Utc::now() - chrono::Duration::milliseconds(elapsed.as_millis() as i64),
+                method: ctx.request_method.clone(),
+                path: ctx.request_path.clone(),
+                protocol: ctx.protocol.as_str().to_string(),
+                response_code: status,
+                duration_ms: elapsed.as_millis() as u64,
+                duration_us: elapsed.as_micros() as u64,
+                bytes_received: ctx.bytes_received,
+                bytes_sent: ctx.bytes_sent,
+                variant: ctx.selected_variant.clone(),
+                provider: ctx.selected_provider.clone(),
+                model: ctx.selected_model.clone(),
+                upstream_host: ctx.upstream_base_url.clone(),
+                streaming: Some(is_streaming),
+                conversion: ctx.needs_conversion,
+                decision_time_us: ctx.decision_time_us,
+                request_headers: ctx.request_headers_snapshot.clone(),
+                response_headers: Vec::new(), // reqwest path doesn't easily expose response headers
+                input_tokens: None,
+                output_tokens: None,
+                ratelimit_matched: ctx.ratelimit_matched,
+                ratelimit_rule: ctx.ratelimit_rule.clone(),
+                error: ctx.error_message.clone(),
+                route_strategy: None,
+                route_score: None,
+                route_candidates: None,
+                upstream_response_time_ms: None,
+                reqwest_fallback: true,
+            };
+            logger.log(&data);
+        }
+
         Ok(true) // handled — skip Pingora's upstream pipeline
     }
 }
@@ -470,8 +554,19 @@ impl ProxyHttp for PrismProxy {
         ctx: &mut Self::CTX,
     ) -> Result<bool, Box<pingora::Error>> {
         let path = session.req_header().uri.path().to_string();
+        let method = session.req_header().method.as_str().to_string();
         ctx.protocol = LlmProtocol::from_path(&path);
         ctx.request_start = Instant::now();
+        ctx.request_method = method;
+        ctx.request_path = path.clone();
+
+        // Snapshot request headers for access log
+        ctx.request_headers_snapshot = session
+            .req_header()
+            .headers
+            .iter()
+            .map(|(k, v)| (k.as_str().to_lowercase(), v.to_str().unwrap_or("").to_string()))
+            .collect();
 
         debug!(
             path = %path,
@@ -495,6 +590,8 @@ impl ProxyHttp for PrismProxy {
 
             if let Err(denied) = limiter.check(&headers) {
                 warn!(rule = %denied.rule_name, "Rate limit exceeded");
+                ctx.ratelimit_matched = true;
+                ctx.ratelimit_rule = Some(denied.rule_name.clone());
 
                 let mut header =
                     pingora::http::ResponseHeader::build(denied.status_code, None).unwrap();
@@ -577,8 +674,10 @@ impl ProxyHttp for PrismProxy {
         };
 
         let router = self.router.load();
+        let route_start = Instant::now();
         match router.route(&request) {
             Ok(decision) => {
+                ctx.decision_time_us = Some(route_start.elapsed().as_micros() as u64);
                 ctx.selected_variant = Some(decision.selected_variant.clone());
                 ctx.selected_provider = Some(decision.selected_provider.clone());
                 ctx.selected_model = Some(decision.selected_model.clone());
@@ -1097,6 +1196,7 @@ impl ProxyHttp for PrismProxy {
 
         // Log Pingora-level errors for debugging 502s
         if let Some(e) = _e {
+            ctx.error_message = Some(format!("{}: {:?}", e, e.etype()));
             error!(
                 error = %e,
                 error_type = ?e.etype(),
@@ -1127,6 +1227,52 @@ impl ProxyHttp for PrismProxy {
                 output_tokens: None,
                 timestamp: Instant::now(),
             });
+        }
+
+        // Access log
+        if let Some(ref logger) = self.access_logger {
+            // Collect response headers
+            let response_headers = session
+                .response_written()
+                .map(|r| {
+                    r.headers
+                        .iter()
+                        .map(|(k, v)| (k.as_str().to_lowercase(), v.to_str().unwrap_or("").to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let data = AccessLogData {
+                start_time: Utc::now() - chrono::Duration::milliseconds(elapsed.as_millis() as i64),
+                method: ctx.request_method.clone(),
+                path: ctx.request_path.clone(),
+                protocol: ctx.protocol.as_str().to_string(),
+                response_code: status,
+                duration_ms: elapsed.as_millis() as u64,
+                duration_us: elapsed.as_micros() as u64,
+                bytes_received: ctx.bytes_received,
+                bytes_sent: ctx.bytes_sent,
+                variant: ctx.selected_variant.clone(),
+                provider: ctx.selected_provider.clone(),
+                model: ctx.selected_model.clone(),
+                upstream_host: ctx.upstream_base_url.clone(),
+                streaming: ctx.is_streaming,
+                conversion: ctx.needs_conversion,
+                decision_time_us: ctx.decision_time_us,
+                request_headers: ctx.request_headers_snapshot.clone(),
+                response_headers,
+                input_tokens: None,  // TODO: parse from response
+                output_tokens: None, // TODO: parse from response
+                ratelimit_matched: ctx.ratelimit_matched,
+                ratelimit_rule: ctx.ratelimit_rule.clone(),
+                error: ctx.error_message.clone(),
+                route_strategy: None, // TODO: expose from router
+                route_score: None,
+                route_candidates: None,
+                upstream_response_time_ms: None, // TODO: capture TTFB
+                reqwest_fallback: ctx.reqwest_fallback,
+            };
+            logger.log(&data);
         }
     }
 }

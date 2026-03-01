@@ -35,6 +35,10 @@ pub struct PrismConfig {
     /// Codec / protocol conversion configuration.
     #[serde(default)]
     pub codec: CodecConfig,
+
+    /// Access log configuration.
+    #[serde(default)]
+    pub access_log: AccessLogConfig,
 }
 
 /// Server-level configuration.
@@ -379,6 +383,79 @@ impl Default for CodecConfig {
             provider_chains: HashMap::new(),
             protocol_chains: HashMap::new(),
             default_inbound_protocol: default_protocol(),
+        }
+    }
+}
+
+// ── Access Log Configuration ──
+
+/// Access log output destination.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum AccessLogOutput {
+    Stdout,
+    File,
+    Both,
+}
+
+impl Default for AccessLogOutput {
+    fn default() -> Self {
+        Self::Stdout
+    }
+}
+
+/// Access log format.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum AccessLogFormat {
+    Json,
+    Text,
+}
+
+impl Default for AccessLogFormat {
+    fn default() -> Self {
+        Self::Json
+    }
+}
+
+fn default_text_format() -> String {
+    "[%START_TIME%] \"%METHOD% %PATH%\" %RESPONSE_CODE% %DURATION_MS%ms variant=%VARIANT% provider=%PROVIDER% model=%MODEL% strategy=%ROUTE_STRATEGY% decision=%DECISION_TIME_US%us upstream=%UPSTREAM_HOST% err=%ERROR%".into()
+}
+
+/// Access log configuration — Envoy-style `%COMMAND_OPERATOR%` format.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessLogConfig {
+    /// Enable access logging.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Output destination: stdout, file, or both.
+    #[serde(default)]
+    pub output: AccessLogOutput,
+    /// File path (required when output is "file" or "both").
+    #[serde(default)]
+    pub file_path: Option<String>,
+    /// Output format: json or text.
+    #[serde(default)]
+    pub format: AccessLogFormat,
+    /// Text format string with `%OPERATOR%` placeholders.
+    /// Only used when format=text.
+    #[serde(default = "default_text_format")]
+    pub text_format: String,
+    /// Field selection for JSON format.
+    /// Each entry is a `%OPERATOR%` string. Empty = all default fields.
+    #[serde(default)]
+    pub fields: Vec<String>,
+}
+
+impl Default for AccessLogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            output: AccessLogOutput::default(),
+            file_path: None,
+            format: AccessLogFormat::default(),
+            text_format: default_text_format(),
+            fields: Vec::new(),
         }
     }
 }
