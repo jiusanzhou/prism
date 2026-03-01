@@ -307,6 +307,32 @@ Custom plugins implement the `RoutingPlugin` trait.
 
 </details>
 
+<details>
+<summary><b>WASM Proxy Plugins</b> — extend the proxy layer with WASM</summary>
+
+prism-router supports proxy-layer plugins compiled to WebAssembly. These intercept HTTP request/response at the reverse proxy layer for protocol translation, header manipulation, and body transformation.
+
+**Example: OpenAI Compatibility Plugin** ([`examples/wasm-plugins/openai-compat/`](examples/wasm-plugins/openai-compat/))
+
+Normalizes non-standard requests to OpenAI format:
+- Rewrites `/api/chat` → `/v1/chat/completions`
+- Adds `X-Prism-Converted: true` header
+- Converts `{"prompt": "..."}` → `{"messages": [...]}`
+- Adds `"prism_converted": true` to responses
+
+```bash
+# Build the example plugin
+cd examples/wasm-plugins/openai-compat
+cargo build --target wasm32-unknown-unknown --release
+
+# Run WASM integration tests
+make test-wasm
+```
+
+Enable with feature flag: `cargo build --features wasm`
+
+</details>
+
 ## Observability
 
 ```bash

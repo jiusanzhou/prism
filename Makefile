@@ -59,3 +59,13 @@ build-minimal:
 
 build-no-proxy:
 	cargo build --release -p prism-router --no-default-features --features grpc
+
+# --- WASM plugins ---
+.PHONY: wasm-plugins
+wasm-plugins:
+	cd examples/wasm-plugins/openai-compat && cargo build --target wasm32-unknown-unknown --release
+	cp examples/wasm-plugins/openai-compat/target/wasm32-unknown-unknown/release/prism_openai_compat.wasm prism-router/tests/wasm_fixtures/
+
+.PHONY: test-wasm
+test-wasm: wasm-plugins
+	cargo test -p prism-router --features wasm

@@ -1792,4 +1792,196 @@ mod tests {
             Some(&"yes".to_string())
         );
     }
+
+    // ════════════════════════════════════
+    // OpenAI Compat WASM plugin — E2E integration tests
+    // ════════════════════════════════════
+
+    /// Load the compiled OpenAI compat WASM plugin.
+    fn load_openai_compat_wasm() -> Vec<u8> {
+        let wasm_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("wasm_fixtures")
+            .join("prism_openai_compat.wasm");
+        std::fs::read(&wasm_path).unwrap_or_else(|e| {
+            panic!(
+                "Failed to load OpenAI compat WASM plugin from {:?}: {}. \
+                 Build it first with: cd examples/wasm-plugins/openai-compat && \
+                 cargo build --target wasm32-wasip1 --release",
+                wasm_path, e
+            )
+        })
+    }
+
+    #[test]
+    fn test_openai_compat_wasm_loads() {
+        let wasm_bytes = load_openai_compat_wasm();
+        let plugin = WasmProxyPlugin::new("openai-compat", &wasm_bytes);
+        assert!(plugin.is_ok(), "Failed to load OpenAI compat WASM plugin: {:?}", plugin.err());
+    }
+
+    #[test]
+    fn test_openai_compat_wasm_request_headers_rewrite() {
+        let wasm_bytes = load_openai_compat_wasm();
+        let plugin = WasmProxyPlugin::new("openai-compat", &wasm_bytes).unwrap();
+
+        let mut ctx = ProxyContext::new();
+        ctx.request_path = "/api/chat".to_string();
+        ctx.request_method = "POST".to_string();
+        ctx.request_headers
+            .insert("content-type".to_string(), "application/json".to_string());
+
+        let action = plugin.on_request_headers(&mut ctx);
+        assert_eq!(action, Action::Continue);
+
+        // Path should be rewritten
+        assert_eq!(ctx.request_path, "/v1/chat/completions");
+
+        // X-Prism-Converted header should be added
+        assert_eq!(
+            ctx.request_headers.get("X-Prism-Converted"),
+            Some(&"true".to_string())
+        );
+    }
+
+    #[test]
+    fn test_openai_compat_wasm_request_headers_no_rewrite() {
+        let wasm_bytes = load_openai_compat_wasm();
+        let plugin = WasmProxyPlugin::new("openai-compat", &wasm_bytes).unwrap();
+
+        let mut ctx = ProxyContext::new();
+        ctx.request_path = "/v1/chat/completions".to_string();
+        ctx.request_method = "POST".to_string();
+
+        let action = plugin.on_request_headers(&mut ctx);
+        assert_eq!(action, Action::Continue);
+
+        // Path should NOT be rewritten
+        assert_eq!(ctx.request_path, "/v1/chat/completions");
+
+        // X-Prism-Converted should still be added
+        assert_eq!(
+            ctx.request_headers.get("X-Prism-Converted"),
+            Some(&"true".to_string())
+        );
+    }
+
+    #[test]
+    fn test_openai_compat_wasm_request_body_prompt_to_messages() {
+        let wasm_bytes = load_openai_compat_wasm();
+        let plugin = WasmProxyPlugin::new("openai-compat", &wasm_bytes).unwrap();
+
+        let mut ctx = ProxyContext::new();
+        let body = br#"{"prompt":"Hello world"}"#.to_vec();
+
+        let result = plugin.on_request_body(&mut ctx, body).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&result).unwrap();
+
+        assert!(parsed["messages"].is_array());
+        let messages = parsed["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"], "Hello world");
+    }
+
+    #[test]
+    fn test_openai_compat_wasm_request_body_passthrough() {
+        let wasm_bytes = load_openai_compat_wasm();
+        let plugin = WasmProxyPlugin::new("openai-compat", &wasm_bytes).unwrap();
+
+        let mut ctx = ProxyContext::new();
+        // Body that already has "messages" — should pass through unchanged
+        let body = br#"{"messages":[{"role":"user","content":"Hi"}]}"#.to_vec();
+
+        let result = plugin.on_request_body(&mut ctx, body.clone()).unwrap();
+        // Should be unchanged since there's no "prompt" field
+        let parsed: serde_json::Value = serde_json::from_slice(&result).unwrap();
+        assert!(parsed["messages"].is_array());
+    }
+
+    #[test]
+    fn test_openai_compat_wasm_response_body_adds_converted() {
+        let wasm_bytes = load_openai_compat_wasm();
+        let plugin = WasmProxyPlugin::new("openai-compat", &wasm_bytes).unwrap();
+
+        let mut ctx = ProxyContext::new();
+        let body = br#"{"id":"chatcmpl-1","choices":[]}"#.to_vec();
+
+        let result = plugin.on_response_body(&mut ctx, body).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&result).unwrap();
+
+        assert_eq!(parsed["prism_converted"], true);
+        assert_eq!(parsed["id"], "chatcmpl-1");
+        assert!(parsed["choices"].is_array());
+    }
+
+    #[test]
+    fn test_openai_compat_wasm_e2e_full_pipeline() {
+        use super::super::chain::ProxyPluginChain;
+
+        let wasm_bytes = load_openai_compat_wasm();
+        let plugin = WasmProxyPlugin::new("openai-compat", &wasm_bytes).unwrap();
+
+        let mut chain = ProxyPluginChain::new();
+        chain.add(Box::new(plugin));
+
+        // ── Request phase ──
+
+        let mut ctx = ProxyContext::new();
+        ctx.request_path = "/api/chat".to_string();
+        ctx.request_method = "POST".to_string();
+        ctx.request_headers
+            .insert("content-type".to_string(), "application/json".to_string());
+
+        // Process request headers
+        let action = chain.process_request_headers(&mut ctx);
+        assert_eq!(action, Action::Continue);
+        assert_eq!(ctx.request_path, "/v1/chat/completions");
+        assert_eq!(
+            ctx.request_headers.get("X-Prism-Converted"),
+            Some(&"true".to_string())
+        );
+
+        // Process request body
+        let req_body = br#"{"prompt":"Write a quicksort in Rust"}"#.to_vec();
+        let transformed_body = chain.process_request_body(&mut ctx, req_body).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&transformed_body).unwrap();
+        assert!(parsed["messages"].is_array());
+        let messages = parsed["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"], "Write a quicksort in Rust");
+
+        // ── Response phase ──
+
+        // Process response headers
+        ctx.response_status = Some(200);
+        ctx.response_headers
+            .insert("content-type".to_string(), "application/json".to_string());
+        let action = chain.process_response_headers(&mut ctx);
+        assert_eq!(action, Action::Continue);
+
+        // Process response body
+        let resp_body =
+            br#"{"id":"chatcmpl-abc","choices":[{"message":{"content":"fn quicksort..."}}]}"#
+                .to_vec();
+        let transformed_resp = chain.process_response_body(&mut ctx, resp_body).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&transformed_resp).unwrap();
+        assert_eq!(parsed["prism_converted"], true);
+        assert_eq!(parsed["id"], "chatcmpl-abc");
+        assert!(parsed["choices"].is_array());
+    }
+
+    #[test]
+    fn test_openai_compat_wasm_config() {
+        let wasm_bytes = load_openai_compat_wasm();
+        let mut plugin = WasmProxyPlugin::new("openai-compat", &wasm_bytes).unwrap();
+
+        // Plugin should accept any config
+        let config = serde_json::json!({"some_setting": true});
+        let result = plugin.on_config(&config);
+        assert!(result.is_ok());
+    }
 }

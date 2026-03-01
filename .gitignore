@@ -37,3 +37,4 @@ configs/prism.yaml
 *.log
 tmp/
 prism-wasm-analyzer/target/
+examples/wasm-plugins/*/target/
