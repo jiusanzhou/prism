@@ -2267,7 +2267,7 @@ prism/
 - [x] Makefile
 
 ### Phase 2 — 生产就绪 ✅ (已完成)
-- [x] 307 个单元测试通过（含 wasm feature 365 个）
+- [x] 803 个单元测试通过（含 wasm feature 945 个）+ 24 个 E2E 集成测试
 - [x] Discovery 抽象层 — 插件化候选发现 (StaticDiscovery + WasmDiscovery)
 - [x] WASM Discovery 实现 — wasmtime 宿主层完整实现
 - [x] 推理引擎调度 — PrefixAffinityPlugin + InferenceLoadPlugin (18 个内置插件)
@@ -2323,10 +2323,15 @@ prism/
 
 | 指标 | 实测值 |
 |------|--------|
-| 路由决策 | **8μs** |
-| P99 延迟 | < 5ms |
-| 内存占用 | ~30MB |
-| 测试覆盖 | 374 个测试通过（含 wasm）+ 24 个 E2E |
+| 路由决策 (100 variants) | **90μs** |
+| 路由决策 (1K variants) | **900μs** |
+| 路由决策 (10K variants) | **11ms** |
+| 路由决策 (100K variants) | **146ms** |
+| 完整 Proxy Pipeline 额外开销 | **~10μs** |
+| arc-swap load (每请求热路径) | **9.8ns** |
+| 限流检查 (单规则) | **100ns** |
+| Codec body 变换 (2KB) | **2μs** |
+| 测试覆盖 | 803 (默认) + 945 (含 wasm) + 24 (E2E) |
 
 ---
 
@@ -2345,7 +2350,7 @@ prism/
 | upstream_model_name 映射 | ✅ variant 级自动改写 | ❌ | ✅ | ✅ |
 | 实时负载感知 | ✅ DataLayer + 反馈闭环 | ❌ | ❌ | ❌ |
 | 账号亲和 & 缓存优化 | ✅ | ❌ | ❌ | ❌ |
-| 路由决策延迟 | **8μs** | ~10ms | N/A | N/A |
+| 路由决策延迟 | **90μs** (100v) / **11ms** (10Kv) | ~10ms | N/A | N/A |
 | 6 维度监控 | ✅ Prometheus | ❌ | 部分 | 部分 |
 | 反馈闭环 | ✅ Outcome API | ❌ | ❌ | ❌ |
 | A/B 测试 | ✅ | ❌ | ❌ | ❌ |
