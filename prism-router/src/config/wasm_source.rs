@@ -261,6 +261,7 @@ mod tests {
                 base_url: "https://api.openai.com/v1".into(),
                 timeout_ms: Some(30000),
                 protocols: vec!["http".into()],
+                headers: std::collections::HashMap::new(),
             },
         );
 

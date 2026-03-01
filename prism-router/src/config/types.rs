@@ -89,6 +89,10 @@ pub struct ProviderConfig {
     pub timeout_ms: Option<u32>,
     #[serde(default)]
     pub protocols: Vec<String>,
+    /// Custom headers to send with every request to this provider.
+    /// When set, these take precedence over the default `Authorization: Bearer <api_key>`.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
 }
 
 /// Model configuration.

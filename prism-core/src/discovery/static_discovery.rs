@@ -27,6 +27,8 @@ pub struct StaticProviderConfig {
     pub api_key: Option<String>,
     pub base_url: String,
     pub protocols: Vec<String>,
+    /// Custom headers to send with every request to this provider.
+    pub headers: HashMap<String, String>,
 }
 
 /// Model configuration for static discovery.
@@ -92,12 +94,19 @@ impl StaticDiscovery {
 
         // Providers → also generate default endpoint + account
         for (id, pc) in &self.config.providers {
-            let auth = match &pc.api_key {
-                Some(key) => AuthConfig::ApiKey {
-                    key: format!("Bearer {}", key),
-                    header: "Authorization".to_string(),
-                },
-                None => AuthConfig::default(),
+            let auth = if !pc.headers.is_empty() {
+                // Custom headers take precedence (e.g. x-api-key)
+                AuthConfig::Custom {
+                    headers: pc.headers.clone(),
+                }
+            } else {
+                match &pc.api_key {
+                    Some(key) => AuthConfig::ApiKey {
+                        key: format!("Bearer {}", key),
+                        header: "Authorization".to_string(),
+                    },
+                    None => AuthConfig::default(),
+                }
             };
 
             result.providers.push(Provider {
@@ -213,6 +222,7 @@ mod tests {
                 api_key: Some("sk-test".to_string()),
                 base_url: "https://api.openai.com/v1".to_string(),
                 protocols: vec!["openai".to_string()],
+                headers: HashMap::new(),
             },
         );
 
@@ -315,6 +325,7 @@ mod tests {
                 api_key: None,
                 base_url: "http://localhost:8000".to_string(),
                 protocols: vec![],
+                headers: HashMap::new(),
             },
         );
 
@@ -338,6 +349,7 @@ mod tests {
                 api_key: None,
                 base_url: "http://localhost".to_string(),
                 protocols: vec![],
+                headers: HashMap::new(),
             },
         );
         config.models.push(StaticModelConfig {

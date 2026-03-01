@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use super::{ConfigError, ConfigSource, PrismConfig, ProviderConfig};
 
 /// Environment variable configuration source.
@@ -93,6 +94,7 @@ impl ConfigSource for EnvSource {
                             base_url: String::new(),
                             timeout_ms: None,
                             protocols: vec![],
+                            headers: HashMap::new(),
                         }
                     });
 

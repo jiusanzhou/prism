@@ -55,6 +55,7 @@ fn to_static_discovery_config(config: &PrismConfig) -> StaticDiscoveryConfig {
                     api_key: pc.api_key.clone(),
                     base_url: pc.base_url.clone(),
                     protocols: pc.protocols.clone(),
+                    headers: pc.headers.clone(),
                 },
             )
         })

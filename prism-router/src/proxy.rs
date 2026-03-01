@@ -32,6 +32,8 @@ pub struct ProxyContext {
     pub upstream_base_url: Option<String>,
     /// Authorization header for upstream
     pub upstream_auth: Option<String>,
+    /// Custom headers to send to upstream (e.g. x-api-key)
+    pub upstream_custom_headers: Vec<(String, String)>,
     /// Request start time for latency tracking
     pub request_start: Instant,
     /// HTTP status from upstream response
@@ -64,6 +66,7 @@ impl Default for ProxyContext {
             selected_model: None,
             upstream_base_url: None,
             upstream_auth: None,
+            upstream_custom_headers: Vec::new(),
             request_start: Instant::now(),
             response_status: None,
             codec_ctx: None,
@@ -82,6 +85,8 @@ pub struct PrismProxy {
     pub metrics: Arc<MetricsCollector>,
     pub codec_registry: Arc<CodecRegistry>,
     pub rate_limiter: Option<Arc<RateLimiter>>,
+    /// HTTP client for upstream forwarding (reqwest-based, bypasses Pingora's connector).
+    pub http_client: reqwest::Client,
 }
 
 impl PrismProxy {
@@ -91,6 +96,11 @@ impl PrismProxy {
             metrics,
             codec_registry: Arc::new(CodecRegistry::new()),
             rate_limiter: None,
+            http_client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap(),
         }
     }
 
@@ -105,6 +115,11 @@ impl PrismProxy {
             metrics,
             codec_registry,
             rate_limiter: None,
+            http_client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap(),
         }
     }
 
@@ -174,6 +189,272 @@ impl PrismProxy {
         proxy_ctx.codec_ctx = Some(codec_ctx);
         proxy_ctx.request_body_buffer = Some(Vec::new());
         proxy_ctx.response_body_buffer = Some(Vec::new());
+    }
+    /// Use reqwest to forward the request directly, bypassing Pingora's upstream connector.
+    /// This is more reliable for HTTPS upstream servers.
+    async fn reqwest_forward(
+        &self,
+        session: &mut Session,
+        ctx: &mut ProxyContext,
+    ) -> Result<bool, Box<pingora::Error>> {
+        let path = session.req_header().uri.path().to_string();
+        let method = session.req_header().method.clone();
+
+        // Build route request
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: format!("(proxy request via {})", path),
+        }];
+        let request = RouteRequest {
+            messages,
+            strategy: None,
+            metadata: RouteMetadata::default(),
+            analyze_context: None,
+            required_protocol: if ctx.protocol.as_str() != "unknown" {
+                Some(ctx.protocol.as_str().to_string())
+            } else {
+                None
+            },
+        };
+
+        let router = self.router.load();
+        let decision = match router.route(&request) {
+            Ok(d) => d,
+            Err(e) => {
+                error!(error = %e, "Routing failed");
+                let header = pingora::http::ResponseHeader::build(503, None).unwrap();
+                let body = serde_json::json!({"error": e.to_string()});
+                session.write_response_header(Box::new(header), true).await.ok();
+                session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                return Ok(true);
+            }
+        };
+
+        ctx.selected_variant = Some(decision.selected_variant.clone());
+        ctx.selected_provider = Some(decision.selected_provider.clone());
+        ctx.selected_model = Some(decision.selected_model.clone());
+
+        // Look up provider
+        let provider = router.registry.providers.get(&decision.selected_provider);
+        let base_url = provider.map(|p| p.base_url.as_str()).unwrap_or("https://api.openai.com/v1");
+
+        // Look up upstream_model_name
+        if let Some(variant) = router.registry.variants.get(&decision.selected_variant) {
+            ctx.upstream_model_name = variant.upstream_model_name.clone();
+        }
+
+        // Extract base_path from base_url
+        let without_scheme = base_url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://");
+        let base_path = if let Some(slash_pos) = without_scheme.find('/') {
+            let p = &without_scheme[slash_pos..];
+            p.trim_end_matches('/')
+        } else {
+            ""
+        };
+
+        // Build upstream URL: rewrite /v1 prefix with base_path if needed
+        let upstream_path = if !base_path.is_empty() && (path.starts_with("/v1/") || path == "/v1") {
+            if base_path.ends_with("/v1") {
+                format!("{}{}", base_path, &path[3..])
+            } else {
+                format!("{}{}", base_path, path)
+            }
+        } else if !base_path.is_empty() {
+            format!("{}{}", base_path, path)
+        } else {
+            path.clone()
+        };
+
+        let scheme = if base_url.starts_with("https://") { "https" } else { "http" };
+        let host = without_scheme.split('/').next().unwrap_or("localhost");
+        let upstream_url = format!("{}://{}{}", scheme, host, upstream_path);
+
+        info!(
+            variant = %decision.selected_variant,
+            provider = %decision.selected_provider,
+            url = %upstream_url,
+            "Forwarding via reqwest"
+        );
+
+        // Read request body
+        let body_bytes = session.read_request_body().await
+            .map_err(|e| pingora::Error::explain(
+                pingora::ErrorType::ReadError,
+                format!("read request body: {}", e),
+            ))?
+            .unwrap_or_default();
+
+        // Optionally rewrite model name in body
+        let final_body = if let Some(ref upstream_name) = ctx.upstream_model_name {
+            if !body_bytes.is_empty() {
+                if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+                    if json.get("model").is_some() {
+                        json["model"] = serde_json::Value::String(upstream_name.clone());
+                        serde_json::to_vec(&json).unwrap_or_else(|_| body_bytes.to_vec())
+                    } else {
+                        body_bytes.to_vec()
+                    }
+                } else {
+                    body_bytes.to_vec()
+                }
+            } else {
+                body_bytes.to_vec()
+            }
+        } else {
+            body_bytes.to_vec()
+        };
+
+        // Build reqwest request
+        let req_method = match method.as_str() {
+            "GET" => reqwest::Method::GET,
+            "POST" => reqwest::Method::POST,
+            "PUT" => reqwest::Method::PUT,
+            "DELETE" => reqwest::Method::DELETE,
+            "PATCH" => reqwest::Method::PATCH,
+            _ => reqwest::Method::POST,
+        };
+        let mut req = self.http_client.request(req_method, &upstream_url);
+
+        // Forward content-type
+        if let Some(ct) = session.req_header().headers.get("content-type") {
+            req = req.header("content-type", ct.to_str().unwrap_or("application/json"));
+        } else {
+            req = req.header("content-type", "application/json");
+        }
+
+        // Set auth headers
+        if let Some(p) = provider {
+            match &p.auth {
+                prism_core::types::AuthConfig::ApiKey { key, header } => {
+                    req = req.header(header.as_str(), key.as_str());
+                }
+                prism_core::types::AuthConfig::Custom { headers } => {
+                    for (k, v) in headers {
+                        req = req.header(k.as_str(), v.as_str());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        req = req.body(final_body);
+
+        // Send request
+        let upstream_resp = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                error!(error = %e, "Upstream request failed");
+                let header = pingora::http::ResponseHeader::build(502, None).unwrap();
+                let body = serde_json::json!({"error": format!("upstream error: {}", e)});
+                session.write_response_header(Box::new(header), true).await.ok();
+                session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                return Ok(true);
+            }
+        };
+
+        let status = upstream_resp.status().as_u16();
+        let resp_headers = upstream_resp.headers().clone();
+
+        // Check if this is a streaming response
+        let is_streaming = resp_headers
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|ct| ct.contains("text/event-stream"))
+            .unwrap_or(false);
+
+        // Build response header
+        let mut header = pingora::http::ResponseHeader::build(status, None)
+            .map_err(|e| pingora::Error::explain(
+                pingora::ErrorType::InternalError,
+                format!("build response header: {:?}", e),
+            ))?;
+
+        for (name, value) in resp_headers.iter() {
+            if name == "transfer-encoding" || name == "content-length" {
+                continue; // Let Pingora handle these
+            }
+            if let Ok(v) = value.to_str() {
+                let _ = header.insert_header(
+                    http::header::HeaderName::from_bytes(name.as_ref())
+                        .unwrap_or(http::header::CONTENT_TYPE),
+                    v,
+                );
+            }
+        }
+
+        if is_streaming {
+            // Stream response chunks
+            let _ = header.insert_header("transfer-encoding", "chunked");
+            session.write_response_header(Box::new(header), false).await
+                .map_err(|e| pingora::Error::explain(
+                    pingora::ErrorType::WriteError,
+                    format!("write response header: {}", e),
+                ))?;
+
+            let mut stream = upstream_resp.bytes_stream();
+            use futures_util::StreamExt;
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(data) => {
+                        session.write_response_body(Some(data), false).await
+                            .map_err(|e| pingora::Error::explain(
+                                pingora::ErrorType::WriteError,
+                                format!("write response chunk: {}", e),
+                            ))?;
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Stream chunk error");
+                        break;
+                    }
+                }
+            }
+            session.write_response_body(None, true).await.ok();
+        } else {
+            // Non-streaming: read full body and write at once
+            let resp_body = upstream_resp.bytes().await
+                .map_err(|e| pingora::Error::explain(
+                    pingora::ErrorType::ReadError,
+                    format!("read upstream response: {}", e),
+                ))?;
+
+            session.write_response_header(Box::new(header), false).await
+                .map_err(|e| pingora::Error::explain(
+                    pingora::ErrorType::WriteError,
+                    format!("write response header: {}", e),
+                ))?;
+            session.write_response_body(Some(resp_body), true).await
+                .map_err(|e| pingora::Error::explain(
+                    pingora::ErrorType::WriteError,
+                    format!("write response body: {}", e),
+                ))?;
+        }
+
+        let elapsed = ctx.request_start.elapsed();
+        info!(
+            variant = ?ctx.selected_variant,
+            provider = ?ctx.selected_provider,
+            status = %status,
+            latency_ms = %elapsed.as_millis(),
+            streaming = %is_streaming,
+            "Request completed (reqwest)"
+        );
+
+        // Record metrics
+        if let Some(ref variant_id) = ctx.selected_variant {
+            self.metrics.record(RequestRecord {
+                variant_id: variant_id.clone(),
+                latency_ms: elapsed.as_millis() as u64,
+                ttft_ms: None,
+                success: (200..400).contains(&status),
+                input_tokens: None,
+                output_tokens: None,
+                timestamp: Instant::now(),
+            });
+        }
+
+        Ok(true) // handled — skip Pingora's upstream pipeline
     }
 }
 
@@ -264,8 +545,11 @@ impl ProxyHttp for PrismProxy {
             }
         }
 
-        Ok(false) // continue to upstream
+        // Use reqwest-based forwarding (bypasses Pingora's upstream connector
+        // which has issues with some HTTPS servers)
+        return self.reqwest_forward(session, ctx).await;
     }
+
 
     /// Phase 2: Determine the upstream peer based on routing decision.
     async fn upstream_peer(
@@ -318,8 +602,17 @@ impl ProxyHttp for PrismProxy {
 
                 // Extract auth header from provider
                 if let Some(p) = provider {
-                    if let prism_core::types::AuthConfig::ApiKey { key, .. } = &p.auth {
-                        ctx.upstream_auth = Some(key.clone());
+                    match &p.auth {
+                        prism_core::types::AuthConfig::ApiKey { key, .. } => {
+                            ctx.upstream_auth = Some(key.clone());
+                        }
+                        prism_core::types::AuthConfig::Custom { headers } => {
+                            ctx.upstream_custom_headers = headers
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect();
+                        }
+                        _ => {}
                     }
                 }
 
@@ -375,6 +668,10 @@ impl ProxyHttp for PrismProxy {
                 peer.options.connection_timeout = Some(std::time::Duration::from_secs(5));
                 peer.options.read_timeout = Some(std::time::Duration::from_secs(60));
                 peer.options.write_timeout = Some(std::time::Duration::from_secs(10));
+                // Support HTTP/2 and HTTP/1.1 via ALPN negotiation
+                // Note: some upstream gateways close connection on H2,
+                // so default to H1 for maximum compatibility
+                peer.options.set_http_version(1, 1);
 
                 Ok(Box::new(peer))
             }
@@ -395,14 +692,49 @@ impl ProxyHttp for PrismProxy {
         upstream_request: &mut pingora::http::RequestHeader,
         ctx: &mut Self::CTX,
     ) -> Result<(), Box<pingora::Error>> {
-        // Set the Host header to match the upstream
+        // Set the Host header to match the upstream and rewrite URI path
         if let Some(ref base_url) = ctx.upstream_base_url {
-            let host = base_url
+            let without_scheme = base_url
                 .trim_start_matches("https://")
-                .trim_start_matches("http://")
+                .trim_start_matches("http://");
+            let host = without_scheme
                 .split('/')
                 .next()
                 .unwrap_or("localhost");
+
+            // Extract path prefix from base_url (e.g. "/llm-serve/v1" from "https://host/llm-serve/v1")
+            let base_path = if let Some(slash_pos) = without_scheme.find('/') {
+                let p = &without_scheme[slash_pos..];
+                p.trim_end_matches('/')
+            } else {
+                ""
+            };
+
+            // Rewrite the request URI to use the base_url path.
+            // Client sends e.g. /v1/chat/completions; if base_url has /llm-serve/v1,
+            // we replace the /v1 prefix with /llm-serve/v1.
+            if !base_path.is_empty() {
+                let original_path = upstream_request.uri.path().to_string();
+                // Try to replace the standard API prefix (/v1) with the base path
+                let new_path = if original_path.starts_with("/v1/") || original_path == "/v1" {
+                    // Replace /v1 with base_path (which may end with /v1 or another version)
+                    if base_path.ends_with("/v1") {
+                        format!("{}{}", base_path, &original_path[3..]) // skip "/v1"
+                    } else {
+                        format!("{}{}", base_path, original_path)
+                    }
+                } else {
+                    format!("{}{}", base_path, original_path)
+                };
+                if let Ok(uri) = new_path.parse::<http::Uri>() {
+                    upstream_request.set_uri(uri);
+                    debug!(
+                        original = %original_path,
+                        rewritten = %new_path,
+                        "Rewrote upstream path with base_url prefix"
+                    );
+                }
+            }
 
             upstream_request
                 .insert_header("Host", host)
@@ -420,6 +752,23 @@ impl ProxyHttp for PrismProxy {
                     pingora::ErrorType::InternalError,
                     format!("header error: {:?}", e),
                 ))?;
+        }
+
+        // Set custom headers (e.g. x-api-key for wanqing)
+        {
+            let headers_to_set: Vec<(String, String)> = ctx.upstream_custom_headers.clone();
+            for (key, value) in headers_to_set {
+                upstream_request
+                    .insert_header(
+                        http::header::HeaderName::from_bytes(key.as_bytes())
+                            .unwrap_or(http::header::CONTENT_TYPE),
+                        &value,
+                    )
+                    .map_err(|e| pingora::Error::explain(
+                        pingora::ErrorType::InternalError,
+                        format!("custom header error: {:?}", e),
+                    ))?;
+            }
         }
 
         // ── Codec: process request headers through plugin chain ──
@@ -747,6 +1096,15 @@ impl ProxyHttp for PrismProxy {
             .response_written()
             .map(|r| r.status.as_u16())
             .unwrap_or(0);
+
+        // Log Pingora-level errors for debugging 502s
+        if let Some(e) = _e {
+            error!(
+                error = %e,
+                error_type = ?e.etype(),
+                "Pingora proxy error"
+            );
+        }
 
         info!(
             variant = ?ctx.selected_variant,

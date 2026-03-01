@@ -409,6 +409,7 @@ mod tests {
                 base_url: "https://base.com".into(),
                 timeout_ms: None,
                 protocols: vec![],
+                headers: std::collections::HashMap::new(),
             },
         );
 
@@ -421,6 +422,7 @@ mod tests {
                 base_url: "https://anthropic.com".into(),
                 timeout_ms: None,
                 protocols: vec![],
+                headers: std::collections::HashMap::new(),
             },
         );
 
