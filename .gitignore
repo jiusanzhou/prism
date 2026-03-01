@@ -38,3 +38,4 @@ configs/prism.yaml
 tmp/
 prism-wasm-analyzer/target/
 examples/wasm-plugins/*/target/
+_legacy/

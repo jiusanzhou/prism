@@ -1128,6 +1128,7 @@ mod tests {
             window_secs: 60,
             max_requests: 100,
             max_tokens: None,
+            overrides: vec![],
             enabled: true,
             status_code: 429,
             message: "Rate limit exceeded".to_string(),
