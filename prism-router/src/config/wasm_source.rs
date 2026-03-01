@@ -7,11 +7,13 @@ mod inner {
 
     use crate::config::{ConfigError, ConfigSource, PrismConfig};
 
+    #[allow(dead_code)]
     struct HostState {
         result_json: Option<Vec<u8>>,
         log_messages: Vec<String>,
     }
 
+    #[allow(dead_code)]
     pub struct WasmConfigSource {
         name: String,
         engine: Engine,
@@ -19,6 +21,7 @@ mod inner {
         init_config: Option<String>,
     }
 
+    #[allow(dead_code)]
     impl WasmConfigSource {
         pub fn new(name: &str, wasm_bytes: &[u8]) -> Result<Self, String> {
             let engine = Engine::default();

@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use prism_core::analyzer::ChatMessage;
-use prism_core::data::{DataLayer, DataSource, DataTier, MetricKind, MetricValue, PerformanceDataSource};
+use prism_core::data::{DataLayer, DataSource, MetricKind, MetricValue, PerformanceDataSource};
 use prism_core::registry::{InMemoryRegistry, ModelRegistryTrait};
 use prism_core::router::{PrismRouter, RouteMetadata, RouteRequest, Router};
 use prism_core::strategy::*;

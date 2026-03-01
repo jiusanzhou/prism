@@ -625,7 +625,7 @@ fn build_three_provider_registry() -> InMemoryRegistry {
 #[test]
 fn test_router_with_custom_l2_lowest_latency() {
     use std::sync::Arc;
-    use prism_core::plugin::{PluginRegistry, RoutingPlugin, PluginState};
+    use prism_core::plugin::PluginRegistry;
     use prism_core::plugins::protocol_filter::ProtocolFilterPlugin;
     use prism_core::plugins::latency_scorer::LatencyScorerPlugin;
 

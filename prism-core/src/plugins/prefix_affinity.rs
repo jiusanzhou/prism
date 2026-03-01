@@ -25,6 +25,12 @@ impl PrefixAffinityPlugin {
     }
 }
 
+impl Default for PrefixAffinityPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Jump consistent hash (Lamping & Veach, 2014).
 ///
 /// Maps a 64-bit key to one of `num_buckets` buckets with excellent uniformity
@@ -333,9 +339,11 @@ mod tests {
     fn overloaded_pod_reduces_affinity_score() {
         let plugin = PrefixAffinityPlugin::new();
 
-        let mut overloaded_perf = ModelPerformance::default();
-        overloaded_perf.kv_cache_usage = 0.95;
-        overloaded_perf.waiting_requests = 10;
+        let overloaded_perf = ModelPerformance {
+            kv_cache_usage: 0.95,
+            waiting_requests: 10,
+            ..Default::default()
+        };
 
         let candidates = vec![make_candidate_with_perf("pod-0", overloaded_perf)];
 
@@ -410,9 +418,11 @@ mod tests {
     fn high_cache_hit_rate_gets_bonus() {
         let plugin = PrefixAffinityPlugin::new();
 
-        let mut high_cache_perf = ModelPerformance::default();
-        high_cache_perf.prefix_cache_hit_rate = 0.8;
-        high_cache_perf.prefix_cache_blocks = 100;
+        let high_cache_perf = ModelPerformance {
+            prefix_cache_hit_rate: 0.8,
+            prefix_cache_blocks: 100,
+            ..Default::default()
+        };
 
         let candidates = vec![
             make_candidate("pod-target"),

@@ -45,6 +45,12 @@ pub struct MultiDimCounter {
     values: RwLock<HashMap<RequestLabels, u64>>,
 }
 
+impl Default for MultiDimCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MultiDimCounter {
     pub fn new() -> Self {
         Self {
@@ -70,6 +76,12 @@ impl MultiDimCounter {
 /// Multi-dimensional sum+count (for histogram-style aggregation without buckets).
 pub struct MultiDimSumCount {
     values: RwLock<HashMap<RequestLabels, (u64, u64)>>, // (sum, count)
+}
+
+impl Default for MultiDimSumCount {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MultiDimSumCount {
@@ -285,6 +297,12 @@ pub struct LabeledCounter {
     values: RwLock<HashMap<String, u64>>,
 }
 
+impl Default for LabeledCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LabeledCounter {
     pub fn new() -> Self {
         Self {
@@ -312,6 +330,12 @@ pub struct DualLabeledCounter {
     values: RwLock<HashMap<(String, String), u64>>,
 }
 
+impl Default for DualLabeledCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DualLabeledCounter {
     pub fn new() -> Self {
         Self {
@@ -335,6 +359,12 @@ pub struct LabeledGaugeF64 {
     values: RwLock<HashMap<String, f64>>,
 }
 
+impl Default for LabeledGaugeF64 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LabeledGaugeF64 {
     pub fn new() -> Self {
         Self {
@@ -356,6 +386,12 @@ impl LabeledGaugeF64 {
 /// Gauge with a single string label, i64 values (for inc/dec patterns like active requests).
 pub struct LabeledGaugeI64 {
     values: RwLock<HashMap<String, AtomicI64>>,
+}
+
+impl Default for LabeledGaugeI64 {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LabeledGaugeI64 {
@@ -406,6 +442,12 @@ pub struct ProviderStats {
     pub latency_sum_ms: AtomicU64,
 }
 
+impl Default for ProviderStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProviderStats {
     pub fn new() -> Self {
         Self {
@@ -419,6 +461,12 @@ impl ProviderStats {
 /// Map of provider_id → ProviderStats.
 pub struct ProviderStatsMap {
     stats: RwLock<HashMap<String, Arc<ProviderStats>>>,
+}
+
+impl Default for ProviderStatsMap {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ProviderStatsMap {
@@ -479,6 +527,12 @@ pub struct DataLayerMetrics {
     pub queries_total: AtomicU64,
     pub hits_total: AtomicU64,
     pub latency_sum_us: AtomicU64,
+}
+
+impl Default for DataLayerMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DataLayerMetrics {

@@ -22,6 +22,7 @@ pub struct WatcherConfig {
     /// Debounce duration (avoid rapid reloads from multiple file events).
     pub debounce: Duration,
     /// Whether to reload on startup.
+    #[allow(dead_code)]
     pub reload_on_start: bool,
 }
 

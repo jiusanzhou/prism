@@ -7,17 +7,22 @@ mod wasm_source;
 
 use std::fmt;
 
+#[allow(unused_imports)]
 pub use env_source::EnvSource;
+#[allow(unused_imports)]
 pub use file_source::{ConfigFormat, FileSource};
+#[allow(unused_imports)]
 pub use registry::{build_registry, build_registry_with_discoveries};
 pub use types::*;
 #[cfg(feature = "wasm")]
+#[allow(unused_imports)]
 pub use wasm_source::WasmConfigSource;
 
 // ── ConfigError ──
 
 /// Configuration loading error.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum ConfigError {
     /// File / network unreachable.
     NotFound(String),
@@ -46,6 +51,7 @@ impl std::error::Error for ConfigError {}
 
 /// Configuration change event (foundation for hot-reload).
 #[derive(Debug, Clone)]
+#[allow(dead_code, clippy::large_enum_variant)]
 pub enum ConfigEvent {
     /// Full configuration reload.
     FullReload(PrismConfig),
@@ -62,6 +68,7 @@ pub enum ConfigEvent {
 // ── ConfigSource trait ──
 
 /// Pluggable configuration source trait.
+#[allow(dead_code)]
 pub trait ConfigSource: Send + Sync {
     /// Source name (for logging).
     fn name(&self) -> &str;
@@ -87,6 +94,7 @@ pub trait ConfigSource: Send + Sync {
 
 /// Priority for merging multiple configuration sources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(dead_code)]
 pub enum ConfigPriority {
     /// Base configuration (overridden by everything).
     Base = 0,
@@ -103,10 +111,12 @@ pub enum ConfigPriority {
 // ── CompositeSource ──
 
 /// Composite configuration source — merges multiple sources by priority.
+#[allow(dead_code)]
 pub struct CompositeSource {
     sources: Vec<(ConfigPriority, Box<dyn ConfigSource>)>,
 }
 
+#[allow(dead_code)]
 impl CompositeSource {
     pub fn new() -> Self {
         Self {
@@ -175,6 +185,7 @@ impl ConfigSource for CompositeSource {
 /// - Maps (providers): overlay entries win
 /// - Vecs (models, variants, pools): overlay replaces entirely if non-empty
 /// - Scalars: overlay wins if non-default
+#[allow(dead_code)]
 fn merge_configs(base: PrismConfig, overlay: PrismConfig) -> PrismConfig {
     PrismConfig {
         server: if overlay.server.http_port != 8080
@@ -248,6 +259,7 @@ pub fn load_config(path: &std::path::Path) -> Result<PrismConfig, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
     use std::collections::HashMap;
 
     #[test]

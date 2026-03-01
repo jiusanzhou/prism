@@ -128,8 +128,12 @@ fn error_result(msg: &str) -> *mut PrismRouteResult {
 /// Initialise the routing engine from a JSON configuration blob.
 ///
 /// Returns 0 on success, -1 if the config JSON is invalid, -2 if already initialised.
+///
+/// # Safety
+///
+/// `config_json` must be null or a valid pointer to a NUL-terminated C string.
 #[no_mangle]
-pub extern "C" fn prism_init(config_json: *const c_char) -> i32 {
+pub unsafe extern "C" fn prism_init(config_json: *const c_char) -> i32 {
     let json_str = match unsafe { cstr_to_str(config_json) } {
         Some(s) => s,
         None => return -1,
@@ -186,8 +190,13 @@ pub extern "C" fn prism_init(config_json: *const c_char) -> i32 {
 /// Perform a routing decision.
 ///
 /// Caller **must** free the result with `prism_free_result`.
+///
+/// # Safety
+///
+/// `request` must be null or a valid pointer to a `PrismRouteRequest` struct
+/// whose string fields are null or valid NUL-terminated C strings.
 #[no_mangle]
-pub extern "C" fn prism_route(request: *const PrismRouteRequest) -> *mut PrismRouteResult {
+pub unsafe extern "C" fn prism_route(request: *const PrismRouteRequest) -> *mut PrismRouteResult {
     // Get the global router
     let router = match ROUTER.get() {
         Some(r) => r,
@@ -271,8 +280,12 @@ pub extern "C" fn prism_route(request: *const PrismRouteRequest) -> *mut PrismRo
 /// - Single object: `{"variant_id": "xxx", "current_qps": ..., ...}`
 ///
 /// Returns 0 on success, -1 on parse error, -2 if router not initialised.
+///
+/// # Safety
+///
+/// `stats_json` must be null or a valid pointer to a NUL-terminated C string.
 #[no_mangle]
-pub extern "C" fn prism_update_model_stats(stats_json: *const c_char) -> i32 {
+pub unsafe extern "C" fn prism_update_model_stats(stats_json: *const c_char) -> i32 {
     let router = match ROUTER.get() {
         Some(r) => r,
         None => return -2,
@@ -302,8 +315,12 @@ pub extern "C" fn prism_update_model_stats(stats_json: *const c_char) -> i32 {
 }
 
 /// Free a result previously returned by `prism_route`.
+///
+/// # Safety
+///
+/// `result` must be null or a valid pointer previously returned by `prism_route`.
 #[no_mangle]
-pub extern "C" fn prism_free_result(result: *mut PrismRouteResult) {
+pub unsafe extern "C" fn prism_free_result(result: *mut PrismRouteResult) {
     if result.is_null() {
         return;
     }
@@ -381,8 +398,12 @@ pub extern "C" fn prism_free_string(ptr: *const c_char) {
 ///
 /// Expects JSON matching `OutcomeReport`. Returns 0 on success, -1 on parse error,
 /// -2 if the router is not initialised.
+///
+/// # Safety
+///
+/// `outcome_json` must be null or a valid pointer to a NUL-terminated C string.
 #[no_mangle]
-pub extern "C" fn prism_record_outcome(outcome_json: *const c_char) -> i32 {
+pub unsafe extern "C" fn prism_record_outcome(outcome_json: *const c_char) -> i32 {
     let router = match ROUTER.get() {
         Some(r) => r,
         None => return -2,
@@ -441,30 +462,30 @@ mod tests {
 
     #[test]
     fn test_prism_init_null_ptr() {
-        let result = prism_init(std::ptr::null());
+        let result = unsafe { prism_init(std::ptr::null()) };
         assert_eq!(result, -1);
     }
 
     #[test]
     fn test_prism_init_invalid_json() {
         let bad = CString::new("not json").unwrap();
-        let result = prism_init(bad.as_ptr());
+        let result = unsafe { prism_init(bad.as_ptr()) };
         assert_eq!(result, -1);
     }
 
     #[test]
     fn test_prism_route_null_request() {
-        let result = prism_route(std::ptr::null());
+        let result = unsafe { prism_route(std::ptr::null()) };
         assert!(!result.is_null());
         let r = unsafe { &*result };
         assert!(!r.error.is_null());
-        prism_free_result(result);
+        unsafe { prism_free_result(result) };
     }
 
     #[test]
     fn test_prism_free_result_null() {
         // Must not crash
-        prism_free_result(std::ptr::null_mut());
+        unsafe { prism_free_result(std::ptr::null_mut()) };
     }
 
     #[test]
@@ -475,14 +496,14 @@ mod tests {
 
     #[test]
     fn test_prism_update_model_stats_null() {
-        let result = prism_update_model_stats(std::ptr::null());
+        let result = unsafe { prism_update_model_stats(std::ptr::null()) };
         assert!(result < 0);
     }
 
     #[test]
     fn test_prism_update_model_stats_invalid_json() {
         let bad = CString::new("not json").unwrap();
-        let result = prism_update_model_stats(bad.as_ptr());
+        let result = unsafe { prism_update_model_stats(bad.as_ptr()) };
         assert!(result < 0);
     }
 }

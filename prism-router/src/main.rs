@@ -190,7 +190,7 @@ async fn main() {
 
     // ── Start Proxy server (if feature enabled and not disabled) ──
     #[cfg(feature = "proxy")]
-    let proxy_handle = {
+    let _proxy_handle = {
         let run_proxy = !cli.no_proxy;
         if run_proxy {
             use std::sync::Arc;

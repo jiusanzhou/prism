@@ -57,6 +57,7 @@ pub struct PluginManager {
     /// Currently loaded plugins.
     plugins: RwLock<HashMap<String, PluginInfo>>,
     /// Event listeners.
+    #[allow(clippy::type_complexity)]
     listeners: RwLock<Vec<Box<dyn Fn(PluginEvent) + Send + Sync>>>,
 }
 

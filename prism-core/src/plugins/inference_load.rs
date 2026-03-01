@@ -19,6 +19,12 @@ impl InferenceLoadPlugin {
     }
 }
 
+impl Default for InferenceLoadPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RoutingPlugin for InferenceLoadPlugin {
     fn name(&self) -> &str {
         "inference_load"
@@ -154,8 +160,10 @@ mod tests {
         let plugin = InferenceLoadPlugin::new();
         let state = make_state();
 
-        let mut perf = ModelPerformance::default();
-        perf.kv_cache_usage = 0.96;
+        let perf = ModelPerformance {
+            kv_cache_usage: 0.96,
+            ..Default::default()
+        };
         let candidate = make_candidate_with_perf("pod-full", perf);
 
         assert!(
@@ -169,8 +177,10 @@ mod tests {
         let plugin = InferenceLoadPlugin::new();
         let state = make_state();
 
-        let mut perf = ModelPerformance::default();
-        perf.kv_cache_usage = 0.95;
+        let perf = ModelPerformance {
+            kv_cache_usage: 0.95,
+            ..Default::default()
+        };
         let candidate = make_candidate_with_perf("pod-threshold", perf);
 
         assert!(
@@ -199,11 +209,13 @@ mod tests {
         let plugin = InferenceLoadPlugin::new();
         let state = make_state();
 
-        let mut perf = ModelPerformance::default();
-        perf.kv_cache_usage = 0.9;
-        perf.waiting_requests = 10;
-        perf.gpu_utilization = 0.95;
-        perf.running_requests = 32;
+        let perf = ModelPerformance {
+            kv_cache_usage: 0.9,
+            waiting_requests: 10,
+            gpu_utilization: 0.95,
+            running_requests: 32,
+            ..Default::default()
+        };
 
         let candidate = make_candidate_with_perf("pod-busy", perf);
         let score = plugin.score(&state, &candidate);
@@ -220,25 +232,31 @@ mod tests {
         let state = make_state();
 
         // Light load
-        let mut light = ModelPerformance::default();
-        light.kv_cache_usage = 0.2;
-        light.waiting_requests = 1;
-        light.gpu_utilization = 0.3;
-        light.running_requests = 4;
+        let light = ModelPerformance {
+            kv_cache_usage: 0.2,
+            waiting_requests: 1,
+            gpu_utilization: 0.3,
+            running_requests: 4,
+            ..Default::default()
+        };
 
         // Medium load
-        let mut medium = ModelPerformance::default();
-        medium.kv_cache_usage = 0.6;
-        medium.waiting_requests = 5;
-        medium.gpu_utilization = 0.7;
-        medium.running_requests = 16;
+        let medium = ModelPerformance {
+            kv_cache_usage: 0.6,
+            waiting_requests: 5,
+            gpu_utilization: 0.7,
+            running_requests: 16,
+            ..Default::default()
+        };
 
         // Heavy load
-        let mut heavy = ModelPerformance::default();
-        heavy.kv_cache_usage = 0.9;
-        heavy.waiting_requests = 9;
-        heavy.gpu_utilization = 0.9;
-        heavy.running_requests = 30;
+        let heavy = ModelPerformance {
+            kv_cache_usage: 0.9,
+            waiting_requests: 9,
+            gpu_utilization: 0.9,
+            running_requests: 30,
+            ..Default::default()
+        };
 
         let light_c = make_candidate_with_perf("pod-light", light);
         let medium_c = make_candidate_with_perf("pod-medium", medium);
@@ -264,11 +282,15 @@ mod tests {
         let state = make_state();
 
         // Only GPU utilization differs
-        let mut low_gpu = ModelPerformance::default();
-        low_gpu.gpu_utilization = 0.1;
+        let low_gpu = ModelPerformance {
+            gpu_utilization: 0.1,
+            ..Default::default()
+        };
 
-        let mut high_gpu = ModelPerformance::default();
-        high_gpu.gpu_utilization = 0.9;
+        let high_gpu = ModelPerformance {
+            gpu_utilization: 0.9,
+            ..Default::default()
+        };
 
         let low = make_candidate_with_perf("pod-low-gpu", low_gpu);
         let high = make_candidate_with_perf("pod-high-gpu", high_gpu);

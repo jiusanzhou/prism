@@ -43,6 +43,7 @@ use super::{Action, ProxyContext, ProxyPlugin};
 /// proxy-wasm MapType values.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 enum MapType {
     HttpRequestHeaders = 0,
     HttpRequestTrailers = 1,
@@ -378,6 +379,7 @@ impl WasmProxyPlugin {
     }
 
     /// Create a store + instance with all host functions linked.
+    #[allow(clippy::type_complexity)]
     fn create_instance(
         &self,
         state: Arc<Mutex<HostState>>,

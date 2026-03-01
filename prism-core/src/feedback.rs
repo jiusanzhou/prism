@@ -93,8 +93,10 @@ impl VariantWindow {
     }
 
     fn compute_stats(&self) -> VariantOutcomeStats {
-        let mut stats = VariantOutcomeStats::default();
-        stats.total_requests = self.records.len() as u64;
+        let mut stats = VariantOutcomeStats {
+            total_requests: self.records.len() as u64,
+            ..Default::default()
+        };
 
         for rec in &self.records {
             if rec.success {

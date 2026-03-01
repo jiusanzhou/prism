@@ -523,6 +523,12 @@ impl RoundRobinL3Selector {
     }
 }
 
+impl Default for RoundRobinL3Selector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl L3AccountSelector for RoundRobinL3Selector {
     fn select(
         &self,

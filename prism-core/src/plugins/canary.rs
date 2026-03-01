@@ -22,6 +22,12 @@ struct CanaryConfig {
     canary_pct: f32,
 }
 
+impl Default for CanaryPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CanaryPlugin {
     pub fn new() -> Self {
         Self {

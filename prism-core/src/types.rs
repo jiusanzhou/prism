@@ -7,17 +7,12 @@ use std::time::Instant;
 // ──────────────────────────────────────────────
 
 /// Health status shared across Provider / Endpoint / Account
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum HealthStatus {
+    #[default]
     Healthy,
     Degraded,
     Down,
-}
-
-impl Default for HealthStatus {
-    fn default() -> Self {
-        Self::Healthy
-    }
 }
 
 /// Authentication configuration
@@ -184,17 +179,12 @@ impl ModelPricing {
 }
 
 /// Availability status of a model
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ModelStatus {
+    #[default]
     Available,
     Deprecated,
     Disabled,
-}
-
-impl Default for ModelStatus {
-    fn default() -> Self {
-        Self::Available
-    }
 }
 
 /// Static model metadata (independent of deployment)
@@ -218,17 +208,12 @@ pub struct Model {
 // ──────────────────────────────────────────────
 
 /// Deployment status of a variant
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum VariantStatus {
+    #[default]
     Active,
     Draining,
     Disabled,
-}
-
-impl Default for VariantStatus {
-    fn default() -> Self {
-        Self::Active
-    }
 }
 
 /// Real-time performance snapshot
@@ -334,18 +319,13 @@ pub struct ModelVariant {
 // ──────────────────────────────────────────────
 
 /// How variants within a pool are selected
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SelectionMode {
+    #[default]
     Scored,
     RoundRobin,
     Random,
     WeightedRandom,
-}
-
-impl Default for SelectionMode {
-    fn default() -> Self {
-        Self::Scored
-    }
 }
 
 /// A logical group of model variants

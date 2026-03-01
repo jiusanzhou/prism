@@ -294,11 +294,13 @@ struct CompiledRule {
     complexity: f32,
     require_reasoning: bool,
     require_vision: bool,
+    #[allow(dead_code)]
     priority: i32,
 }
 
 /// Compiled scope with pre-compiled rules.
 struct CompiledScope {
+    #[allow(dead_code)]
     name: String,
     match_on: RuleScopeMatch,
     rules: Vec<CompiledRule>,

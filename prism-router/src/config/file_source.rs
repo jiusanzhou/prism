@@ -5,11 +5,13 @@ use super::{ConfigError, ConfigSource, PrismConfig};
 /// File configuration source — supports YAML/JSON
 pub struct FileSource {
     path: PathBuf,
+    #[allow(dead_code)]
     format: ConfigFormat,
 }
 
 /// Supported configuration file formats.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub enum ConfigFormat {
     Yaml,
     Json,
@@ -25,11 +27,13 @@ impl FileSource {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_format(mut self, format: ConfigFormat) -> Self {
         self.format = format;
         self
     }
 
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }

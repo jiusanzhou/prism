@@ -524,7 +524,7 @@ impl PluginRegistry {
                     });
                 }
                 PluginSource::Wasm(path) => {
-                    self.load_wasm_plugin(&desc, path, &mut result);
+                    self.load_wasm_plugin(desc, path, &mut result);
                 }
             }
         }
@@ -1318,7 +1318,7 @@ mod tests {
             // Compile WAT to WASM binary using wasmtime
             let engine = wasmtime::Engine::default();
             let module = wasmtime::Module::new(&engine, wat).unwrap();
-            let wasm_bytes = module.serialize().unwrap();
+            let _wasm_bytes = module.serialize().unwrap();
             // Actually, wasmtime::Module::new accepts WAT directly, but
             // we need raw bytes for file loading. Use wat crate or write WAT directly.
             // Since WasmProxyPlugin::new also accepts WAT, just write the WAT.

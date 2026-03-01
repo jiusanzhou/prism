@@ -3,7 +3,9 @@ use prism_core::discovery::static_discovery::{
     StaticProviderConfig, StaticVariantConfig,
 };
 use prism_core::discovery::Discovery;
-use prism_core::registry::{InMemoryRegistry, ModelRegistryTrait};
+use prism_core::registry::InMemoryRegistry;
+#[allow(unused_imports)]
+use prism_core::registry::ModelRegistryTrait;
 
 use super::PrismConfig;
 
@@ -24,6 +26,7 @@ pub fn build_registry(config: &PrismConfig) -> InMemoryRegistry {
 ///
 /// The static config is always loaded first; then each additional discovery
 /// source is applied in order (later sources can overwrite earlier ones).
+#[allow(dead_code)]
 pub fn build_registry_with_discoveries(
     config: &PrismConfig,
     extra_discoveries: &[Box<dyn Discovery>],

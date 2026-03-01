@@ -35,6 +35,7 @@ pub struct ProxyContext {
     /// Request start time for latency tracking
     pub request_start: Instant,
     /// HTTP status from upstream response
+    #[allow(dead_code)]
     pub response_status: Option<u16>,
 
     // ── Codec plugin chain integration ──
@@ -93,6 +94,7 @@ impl PrismProxy {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_codec_registry(
         router: Arc<ArcSwap<PrismRouter>>,
         metrics: Arc<MetricsCollector>,
@@ -106,6 +108,7 @@ impl PrismProxy {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_rate_limiter(mut self, limiter: Arc<RateLimiter>) -> Self {
         self.rate_limiter = Some(limiter);
         self
@@ -350,13 +353,12 @@ impl ProxyHttp for PrismProxy {
                 }
 
                 let (host, port, use_tls) =
-                    Self::parse_upstream(base_url).map_err(|e| {
+                    Self::parse_upstream(base_url).inspect_err(|_| {
                         error!(
                             provider = %decision.selected_provider,
                             base_url = %base_url,
                             "Failed to parse upstream URL"
                         );
-                        e
                     })?;
 
                 info!(
@@ -764,7 +766,7 @@ impl ProxyHttp for PrismProxy {
                 variant_id: variant_id.clone(),
                 latency_ms: elapsed.as_millis() as u64,
                 ttft_ms: None, // TODO: capture from streaming first byte
-                success: status >= 200 && status < 400,
+                success: (200..400).contains(&status),
                 input_tokens: None, // TODO: parse from response
                 output_tokens: None,
                 timestamp: Instant::now(),
@@ -807,9 +809,11 @@ mod tests {
 
     #[test]
     fn test_proxy_context_codec_fields() {
-        let mut ctx = ProxyContext::default();
-        ctx.needs_conversion = true;
-        ctx.outbound_protocol = Some("anthropic".to_string());
+        let mut ctx = ProxyContext {
+            needs_conversion: true,
+            outbound_protocol: Some("anthropic".to_string()),
+            ..Default::default()
+        };
 
         let codec_ctx = codec::ProxyContext::new();
         ctx.codec_ctx = Some(codec_ctx);
@@ -821,9 +825,11 @@ mod tests {
 
     #[test]
     fn test_proxy_context_with_body_buffers() {
-        let mut ctx = ProxyContext::default();
-        ctx.request_body_buffer = Some(Vec::new());
-        ctx.response_body_buffer = Some(Vec::new());
+        let mut ctx = ProxyContext {
+            request_body_buffer: Some(Vec::new()),
+            response_body_buffer: Some(Vec::new()),
+            ..Default::default()
+        };
 
         ctx.request_body_buffer.as_mut().unwrap().extend_from_slice(b"request");
         ctx.response_body_buffer.as_mut().unwrap().extend_from_slice(b"response");
@@ -869,14 +875,16 @@ mod tests {
 
     #[test]
     fn test_init_codec_ctx() {
-        let mut ctx = ProxyContext::default();
-        ctx.protocol = LlmProtocol::OpenAI;
-        ctx.selected_provider = Some("anthropic-main".to_string());
-        ctx.selected_model = Some("claude-3-opus".to_string());
-        ctx.selected_variant = Some("claude-variant".to_string());
-        ctx.upstream_base_url = Some("https://api.anthropic.com/v1".to_string());
-        ctx.upstream_auth = Some("Bearer sk-test".to_string());
-        ctx.outbound_protocol = Some("anthropic".to_string());
+        let mut ctx = ProxyContext {
+            protocol: LlmProtocol::OpenAI,
+            selected_provider: Some("anthropic-main".to_string()),
+            selected_model: Some("claude-3-opus".to_string()),
+            selected_variant: Some("claude-variant".to_string()),
+            upstream_base_url: Some("https://api.anthropic.com/v1".to_string()),
+            upstream_auth: Some("Bearer sk-test".to_string()),
+            outbound_protocol: Some("anthropic".to_string()),
+            ..Default::default()
+        };
 
         PrismProxy::init_codec_ctx(&mut ctx);
 
@@ -896,9 +904,11 @@ mod tests {
 
     #[test]
     fn test_init_codec_ctx_without_upstream_url() {
-        let mut ctx = ProxyContext::default();
-        ctx.protocol = LlmProtocol::OpenAI;
-        ctx.outbound_protocol = Some("anthropic".to_string());
+        let mut ctx = ProxyContext {
+            protocol: LlmProtocol::OpenAI,
+            outbound_protocol: Some("anthropic".to_string()),
+            ..Default::default()
+        };
 
         PrismProxy::init_codec_ctx(&mut ctx);
 
@@ -1233,8 +1243,10 @@ mod tests {
 
     #[test]
     fn test_proxy_context_upstream_model_name_set() {
-        let mut ctx = ProxyContext::default();
-        ctx.upstream_model_name = Some("deepseek-reasoner".to_string());
+        let ctx = ProxyContext {
+            upstream_model_name: Some("deepseek-reasoner".to_string()),
+            ..Default::default()
+        };
         assert_eq!(ctx.upstream_model_name, Some("deepseek-reasoner".to_string()));
     }
 }

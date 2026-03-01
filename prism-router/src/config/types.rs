@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use prism_core::types::*;
 
 /// Top-level configuration file structure.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PrismConfig {
     #[serde(default)]
     pub server: ServerConfig,
@@ -35,23 +35,6 @@ pub struct PrismConfig {
     /// Codec / protocol conversion configuration.
     #[serde(default)]
     pub codec: CodecConfig,
-}
-
-impl Default for PrismConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            providers: HashMap::new(),
-            models: Vec::new(),
-            variants: Vec::new(),
-            pools: Vec::new(),
-            routing: RoutingConfig::default(),
-            rate_limits: Vec::new(),
-            plugins: Vec::new(),
-            discoveries: Vec::new(),
-            codec: CodecConfig::default(),
-        }
-    }
 }
 
 /// Server-level configuration.

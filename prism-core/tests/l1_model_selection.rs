@@ -1,5 +1,5 @@
-use prism_core::analyzer::{ChatMessage, RuleBasedAnalyzer, RequestAnalyzer};
-use prism_core::registry::{InMemoryRegistry, ModelRegistryTrait};
+use prism_core::analyzer::ChatMessage;
+use prism_core::registry::InMemoryRegistry;
 use prism_core::router::{PrismRouter, RouteMetadata, RouteRequest, Router};
 use prism_core::strategy::*;
 use prism_core::types::*;

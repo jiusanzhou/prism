@@ -12,10 +12,12 @@ use super::{ConfigError, ConfigSource, PrismConfig, ProviderConfig};
 /// - `PRISM_DEFAULT_STRATEGY=balanced`  → `routing.default_strategy`
 /// - `PRISM_PROVIDER_<ID>_BASE_URL=`    → `providers.<id>.base_url`
 /// - `PRISM_PROVIDER_<ID>_API_KEY=`     → `providers.<id>.api_key`
+#[allow(dead_code)]
 pub struct EnvSource {
     prefix: String,
 }
 
+#[allow(dead_code)]
 impl EnvSource {
     pub fn new() -> Self {
         Self {

@@ -243,7 +243,7 @@ impl DataLayer {
     /// Check whether any registered source supports the given metric kind.
     pub fn has_source_for(&self, kind: MetricKind) -> bool {
         let index = self.index.read().unwrap();
-        index.get(&kind).map_or(false, |v| !v.is_empty())
+        index.get(&kind).is_some_and(|v| !v.is_empty())
     }
 
     /// Names of all registered data sources.

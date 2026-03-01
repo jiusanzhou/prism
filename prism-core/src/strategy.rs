@@ -91,10 +91,11 @@ impl Default for ModelSelectionStrategy {
 // L2 — Provider selection strategy
 // ──────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum ProviderSelectionStrategy {
     Priority,
     LowestCost,
+    #[default]
     LowestLatency,
     WeightedRoundRobin,
     GeoProximity { region_preferences: Vec<String> },
@@ -105,12 +106,6 @@ pub enum ProviderSelectionStrategy {
         availability_weight: f32,
         quota_weight: f32,
     },
-}
-
-impl Default for ProviderSelectionStrategy {
-    fn default() -> Self {
-        Self::LowestLatency
-    }
 }
 
 // ──────────────────────────────────────────────
@@ -193,18 +188,13 @@ pub enum PerformanceMetric {
 }
 
 /// How the final variant is chosen
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum VariantSelectionStrategy {
     BestPerformance { metric: PerformanceMetric },
     Weighted,
     Canary { canary_variant_id: String, canary_pct: f32 },
+    #[default]
     Default,
-}
-
-impl Default for VariantSelectionStrategy {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 // ──────────────────────────────────────────────

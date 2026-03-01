@@ -68,13 +68,12 @@ impl RoutingPlugin for StrategyScorerPlugin {
                         return false;
                     }
                 }
-                RoutingObjective::QualityFirst { max_latency_ms } => {
-                    if let Some(max_lat) = max_latency_ms {
-                        if candidate.variant.performance.p99_latency_ms > *max_lat {
-                            return false;
-                        }
+                RoutingObjective::QualityFirst { max_latency_ms: Some(max_lat) } => {
+                    if candidate.variant.performance.p99_latency_ms > *max_lat {
+                        return false;
                     }
                 }
+                RoutingObjective::QualityFirst { max_latency_ms: None } => {}
                 _ => {}
             }
         }

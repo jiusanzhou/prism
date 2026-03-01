@@ -234,7 +234,7 @@ impl PluginLoader {
         if cache_path.exists() {
             if let Ok(bytes) = std::fs::read(&cache_path) {
                 let sha256 = sha256_hex(&bytes);
-                if expected_digest.map_or(true, |d| sha256_matches(d, &sha256)) {
+                if expected_digest.is_none_or(|d| sha256_matches(d, &sha256)) {
                     return Ok(ResolvedPlugin {
                         name: name.to_string(),
                         wasm_bytes: bytes,
