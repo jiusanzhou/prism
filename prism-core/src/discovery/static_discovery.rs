@@ -47,6 +47,16 @@ pub struct StaticVariantConfig {
     pub model_id: String,
     pub provider_id: String,
     pub weight: Option<f32>,
+    /// Account id for multi-account routing.
+    pub account_id: Option<String>,
+    /// Base URL override for self-hosted models.
+    pub base_url: Option<String>,
+    /// Deployment name (for Azure/GCP etc).
+    pub deployment_name: Option<String>,
+    /// Upstream model name (vendor-specific).
+    pub upstream_model_name: Option<String>,
+    /// Pricing override.
+    pub pricing_override: Option<ModelPricing>,
 }
 
 /// Pool configuration for static discovery.
@@ -144,20 +154,20 @@ impl StaticDiscovery {
         // Variants
         for vc in &self.config.variants {
             let endpoint_id = format!("{}-ep", vc.provider_id);
-            let account_id = format!("{}-acct", vc.provider_id);
+            let default_account_id = format!("{}-acct", vc.provider_id);
 
             result.variants.push(ModelVariant {
                 id: vc.id.clone(),
                 model_id: vc.model_id.clone(),
                 endpoint_id,
-                account_id: Some(account_id),
-                deployment_name: None,
+                account_id: Some(vc.account_id.clone().unwrap_or(default_account_id)),
+                deployment_name: vc.deployment_name.clone(),
                 weight: vc.weight.unwrap_or(1.0),
                 performance: ModelPerformance::default(),
-                pricing_override: None,
+                pricing_override: vc.pricing_override.clone(),
                 status: VariantStatus::Active,
-            base_url: None,
-            upstream_model_name: None,
+                base_url: vc.base_url.clone(),
+                upstream_model_name: vc.upstream_model_name.clone(),
             });
         }
 
@@ -233,6 +243,11 @@ mod tests {
                 model_id: "gpt-4o".to_string(),
                 provider_id: "openai".to_string(),
                 weight: None,
+                account_id: None,
+                base_url: None,
+                deployment_name: None,
+                upstream_model_name: None,
+                pricing_override: None,
             }],
             pools: vec![StaticPoolConfig {
                 id: "default".to_string(),
@@ -338,6 +353,11 @@ mod tests {
             model_id: "m1".to_string(),
             provider_id: "p1".to_string(),
             weight: Some(0.7),
+            account_id: None,
+            base_url: None,
+            deployment_name: None,
+            upstream_model_name: None,
+            pricing_override: None,
         });
 
         let d = StaticDiscovery::new(config);

@@ -212,6 +212,29 @@ fn merge_configs(base: PrismConfig, overlay: PrismConfig) -> PrismConfig {
         } else {
             base.routing
         },
+        rate_limits: if overlay.rate_limits.is_empty() {
+            base.rate_limits
+        } else {
+            overlay.rate_limits
+        },
+        plugins: if overlay.plugins.is_empty() {
+            base.plugins
+        } else {
+            overlay.plugins
+        },
+        discoveries: if overlay.discoveries.is_empty() {
+            base.discoveries
+        } else {
+            overlay.discoveries
+        },
+        codec: if overlay.codec.provider_chains.is_empty()
+            && overlay.codec.protocol_chains.is_empty()
+            && overlay.codec.default_inbound_protocol == "openai"
+        {
+            base.codec
+        } else {
+            overlay.codec
+        },
     }
 }
 
@@ -457,5 +480,55 @@ models:
         assert!(ConfigPriority::File < ConfigPriority::Remote);
         assert!(ConfigPriority::Remote < ConfigPriority::Environment);
         assert!(ConfigPriority::Environment < ConfigPriority::Override);
+    }
+
+    #[test]
+    fn test_merge_configs_new_fields() {
+        let base_yaml = r#"
+rate_limits:
+  - name: global
+    window_secs: 60
+    max_requests: 1000
+plugins:
+  - name: p1
+    source:
+      builtin: p1
+    phases: [proxy]
+discoveries:
+  - name: d1
+    type: static
+codec:
+  default_inbound_protocol: openai
+  provider_chains:
+    anthropic: [openai-to-anthropic]
+"#;
+        let base: PrismConfig = serde_yaml::from_str(base_yaml).unwrap();
+        let overlay = PrismConfig::default();
+
+        // Empty overlay keeps base for new fields
+        let merged = merge_configs(base.clone(), overlay);
+        assert_eq!(merged.rate_limits.len(), 1);
+        assert_eq!(merged.plugins.len(), 1);
+        assert_eq!(merged.discoveries.len(), 1);
+        assert_eq!(merged.codec.provider_chains.len(), 1);
+
+        // Non-empty overlay replaces
+        let overlay_yaml = r#"
+rate_limits:
+  - name: overlay-rule
+    window_secs: 30
+    max_requests: 500
+plugins:
+  - name: p2
+    source:
+      wasm: ./p2.wasm
+    phases: [route]
+"#;
+        let overlay: PrismConfig = serde_yaml::from_str(overlay_yaml).unwrap();
+        let merged = merge_configs(base, overlay);
+        assert_eq!(merged.rate_limits.len(), 1);
+        assert_eq!(merged.rate_limits[0].name, "overlay-rule");
+        assert_eq!(merged.plugins.len(), 1);
+        assert_eq!(merged.plugins[0].name, "p2");
     }
 }

@@ -78,6 +78,11 @@ fn to_static_discovery_config(config: &PrismConfig) -> StaticDiscoveryConfig {
             model_id: vc.model_id.clone(),
             provider_id: vc.provider_id.clone(),
             weight: vc.weight,
+            account_id: vc.account_id.clone(),
+            base_url: vc.base_url.clone(),
+            deployment_name: vc.deployment_name.clone(),
+            upstream_model_name: vc.upstream_model_name.clone(),
+            pricing_override: vc.pricing_override.clone(),
         })
         .collect();
 
