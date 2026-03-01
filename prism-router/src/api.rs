@@ -140,7 +140,8 @@ pub async fn route_handler(
     };
 
     let route_start = Instant::now();
-    let result = state.router.route(&request);
+    let router = state.router();
+    let result = router.route(&request);
     let decision_time_us = route_start.elapsed().as_micros() as u64;
 
     match result {
@@ -231,8 +232,9 @@ pub async fn outcomes_handler(
     };
 
     // Resolve endpoint and region from registry
+    let router = state.router();
     let (endpoint_id, region) = {
-        let registry = &state.router.registry;
+        let registry = &router.registry;
         if let Some(variant) = registry.variants.get(variant_id.as_str()) {
             let ep_id = variant.endpoint_id.clone();
             let reg = registry
@@ -259,7 +261,7 @@ pub async fn outcomes_handler(
         .metrics
         .record_with_context(record, &labels);
 
-    state.router.record_outcome(&report);
+    router.record_outcome(&report);
     (
         StatusCode::OK,
         Json(serde_json::json!({"status": "recorded"})),
@@ -268,8 +270,9 @@ pub async fn outcomes_handler(
 
 /// GET /health — health check
 pub async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let candidates = state.router.registry.get_all_candidates();
-    let model_count = state.router.registry.models.len();
+    let router = state.router();
+    let candidates = router.registry.get_all_candidates();
+    let model_count = router.registry.models.len();
     let variant_count = candidates.len();
     let uptime = state.start_time.elapsed().as_secs();
 
@@ -295,12 +298,39 @@ pub async fn version_handler() -> impl IntoResponse {
 /// GET /metrics — Prometheus metrics
 pub async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     let uptime = state.start_time.elapsed().as_secs();
-    let model_count = state.router.registry.models.len();
-    let variant_count = state.router.registry.get_all_candidates().len();
+    let router = state.router();
+    let model_count = router.registry.models.len();
+    let variant_count = router.registry.get_all_candidates().len();
 
     let output = state.metrics.format_prometheus(uptime, model_count, variant_count);
 
     (StatusCode::OK, output)
+}
+
+/// POST /admin/reload — trigger manual config reload
+pub async fn reload_handler(State(state): State<AppState>) -> impl IntoResponse {
+    use crate::config_watcher::reload_config;
+
+    match reload_config(&state, &state.config_path) {
+        Ok(result) => {
+            let json = serde_json::json!({
+                "status": "ok",
+                "generation": result.generation,
+                "providers": result.providers_count,
+                "models": result.models_count,
+                "variants": result.variants_count,
+                "reload_time_ms": result.duration.as_millis() as u64,
+            });
+            (StatusCode::OK, Json(json))
+        }
+        Err(e) => {
+            let json = serde_json::json!({
+                "status": "error",
+                "message": e,
+            });
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json))
+        }
+    }
 }
 
 // ──────────────────────────────────────────────
@@ -452,7 +482,7 @@ mod tests {
     }
 
     fn test_app() -> Router {
-        let state = AppState::new(PrismRouter::new(test_registry()));
+        let state = AppState::new(PrismRouter::new(test_registry()), std::path::PathBuf::from("test.yaml"));
         Router::new()
             .route("/v1/route", post(route_handler))
             .route("/v1/outcomes", post(outcomes_handler))
@@ -463,7 +493,7 @@ mod tests {
     }
 
     fn empty_app() -> Router {
-        let state = AppState::new(PrismRouter::new(InMemoryRegistry::new()));
+        let state = AppState::new(PrismRouter::new(InMemoryRegistry::new()), std::path::PathBuf::from("test.yaml"));
         Router::new()
             .route("/v1/route", post(route_handler))
             .route("/health", get(health_handler))

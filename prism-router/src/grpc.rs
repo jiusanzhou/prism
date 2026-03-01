@@ -75,7 +75,7 @@ impl RouterService for GrpcRouterService {
             required_protocol: None,
         };
 
-        match self.state.router.route(&core_request) {
+        match self.state.router().route(&core_request) {
             Ok(decision) => {
                 // Build primary upstream from registry data
                 let upstream = build_upstream(
@@ -86,13 +86,14 @@ impl RouterService for GrpcRouterService {
                 );
 
                 // Build fallback upstreams
+                let router = self.state.router();
                 let fallback_chain: Vec<pb::Upstream> = decision
                     .fallback_chain
                     .iter()
                     .filter_map(|variant_id| {
                         // Look up variant to find provider/model
-                        let variant = self.state.router.registry.variants.get(variant_id)?;
-                        let endpoint = self.state.router.registry.endpoints.get(&variant.endpoint_id)?;
+                        let variant = router.registry.variants.get(variant_id)?;
+                        let endpoint = router.registry.endpoints.get(&variant.endpoint_id)?;
                         Some(build_upstream(
                             &self.state,
                             variant_id,
@@ -199,7 +200,7 @@ impl RouterService for GrpcRouterService {
             user_rating: None,
         };
 
-        self.state.router.record_outcome(&core_report);
+        self.state.router().record_outcome(&core_report);
         Ok(Response::new(pb::ReportResponse {}))
     }
 
@@ -207,8 +208,9 @@ impl RouterService for GrpcRouterService {
         &self,
         _request: Request<pb::HealthCheckRequest>,
     ) -> Result<Response<pb::HealthCheckResponse>, Status> {
-        let candidates = self.state.router.registry.get_all_candidates();
-        let model_count = self.state.router.registry.models.len();
+        let router = self.state.router();
+        let candidates = router.registry.get_all_candidates();
+        let model_count = router.registry.models.len();
         let variant_count = candidates.len();
         let uptime = self.state.start_time.elapsed().as_secs();
 
@@ -236,15 +238,17 @@ fn build_upstream(
     let mut headers = std::collections::HashMap::new();
     let timeout_ms: i32 = 30_000;
 
+    let router = state.router();
+
     // Look up provider for base_url and auth
-    if let Some(provider) = state.router.registry.providers.get(provider_id) {
+    if let Some(provider) = router.registry.providers.get(provider_id) {
         base_url = provider.base_url.clone();
         apply_auth_headers(&provider.auth, &mut headers);
     }
 
     // Look up variant → endpoint for possible overrides
-    if let Some(variant) = state.router.registry.variants.get(variant_id) {
-        if let Some(endpoint) = state.router.registry.endpoints.get(&variant.endpoint_id) {
+    if let Some(variant) = router.registry.variants.get(variant_id) {
+        if let Some(endpoint) = router.registry.endpoints.get(&variant.endpoint_id) {
             if let Some(ref url) = endpoint.base_url {
                 base_url = url.clone();
             }
@@ -256,7 +260,7 @@ fn build_upstream(
         }
         // Account-level auth override
         if let Some(ref acct_id) = variant.account_id {
-            if let Some(account) = state.router.registry.accounts.get(acct_id) {
+            if let Some(account) = router.registry.accounts.get(acct_id) {
                 headers.clear();
                 apply_auth_headers(&account.auth, &mut headers);
             }
@@ -450,7 +454,7 @@ mod tests {
     fn test_state() -> AppState {
         let registry = test_registry();
         let router = PrismRouter::new(registry);
-        AppState::new(router)
+        AppState::new(router, std::path::PathBuf::from("test.yaml"))
     }
 
     fn test_service() -> GrpcRouterService {
@@ -588,7 +592,7 @@ mod tests {
         // Empty registry → NoCandidates
         let registry = InMemoryRegistry::new();
         let router = PrismRouter::new(registry);
-        let state = AppState::new(router);
+        let state = AppState::new(router, std::path::PathBuf::from("test.yaml"));
         let svc = GrpcRouterService::new(state);
 
         let result = svc.route(Request::new(simple_route_request())).await;

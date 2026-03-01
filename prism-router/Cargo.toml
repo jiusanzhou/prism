@@ -11,6 +11,8 @@ wasm = ["wasmtime"]
 
 [dependencies]
 prism-core = { path = "../prism-core" }
+arc-swap = "1"
+notify = "6"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

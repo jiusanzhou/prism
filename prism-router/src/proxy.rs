@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytes::Bytes;
 use pingora::prelude::*;
@@ -76,14 +77,14 @@ impl Default for ProxyContext {
 
 /// The Prism proxy service — routes LLM API requests to appropriate providers.
 pub struct PrismProxy {
-    pub router: Arc<PrismRouter>,
+    pub router: Arc<ArcSwap<PrismRouter>>,
     pub metrics: Arc<MetricsCollector>,
     pub codec_registry: Arc<CodecRegistry>,
     pub rate_limiter: Option<Arc<RateLimiter>>,
 }
 
 impl PrismProxy {
-    pub fn new(router: Arc<PrismRouter>, metrics: Arc<MetricsCollector>) -> Self {
+    pub fn new(router: Arc<ArcSwap<PrismRouter>>, metrics: Arc<MetricsCollector>) -> Self {
         Self {
             router,
             metrics,
@@ -93,7 +94,7 @@ impl PrismProxy {
     }
 
     pub fn with_codec_registry(
-        router: Arc<PrismRouter>,
+        router: Arc<ArcSwap<PrismRouter>>,
         metrics: Arc<MetricsCollector>,
         codec_registry: Arc<CodecRegistry>,
     ) -> Self {
@@ -290,20 +291,20 @@ impl ProxyHttp for PrismProxy {
             },
         };
 
-        match self.router.route(&request) {
+        let router = self.router.load();
+        match router.route(&request) {
             Ok(decision) => {
                 ctx.selected_variant = Some(decision.selected_variant.clone());
                 ctx.selected_provider = Some(decision.selected_provider.clone());
                 ctx.selected_model = Some(decision.selected_model.clone());
 
                 // Look up upstream_model_name from the variant
-                if let Some(variant) = self.router.registry.variants.get(&decision.selected_variant) {
+                if let Some(variant) = router.registry.variants.get(&decision.selected_variant) {
                     ctx.upstream_model_name = variant.upstream_model_name.clone();
                 }
 
                 // Look up the provider's base_url and protocols
-                let provider = self
-                    .router
+                let provider = router
                     .registry
                     .providers
                     .get(&decision.selected_provider);
@@ -836,7 +837,7 @@ mod tests {
     #[test]
     fn test_prism_proxy_new_has_empty_codec_registry() {
         let registry = prism_core::registry::InMemoryRegistry::new();
-        let router = Arc::new(PrismRouter::new(registry));
+        let router = Arc::new(ArcSwap::new(Arc::new(PrismRouter::new(registry))));
         let metrics = Arc::new(MetricsCollector::new(100));
 
         let proxy = PrismProxy::new(router, metrics);
@@ -848,7 +849,7 @@ mod tests {
     #[test]
     fn test_prism_proxy_with_codec_registry() {
         let registry = prism_core::registry::InMemoryRegistry::new();
-        let router = Arc::new(PrismRouter::new(registry));
+        let router = Arc::new(ArcSwap::new(Arc::new(PrismRouter::new(registry))));
         let metrics = Arc::new(MetricsCollector::new(100));
 
         let mut codec_reg = CodecRegistry::new();
@@ -1137,7 +1138,7 @@ mod tests {
     #[test]
     fn test_prism_proxy_without_rate_limiter() {
         let registry = prism_core::registry::InMemoryRegistry::new();
-        let router = Arc::new(PrismRouter::new(registry));
+        let router = Arc::new(ArcSwap::new(Arc::new(PrismRouter::new(registry))));
         let metrics = Arc::new(MetricsCollector::new(100));
 
         let proxy = PrismProxy::new(router, metrics);
@@ -1147,7 +1148,7 @@ mod tests {
     #[test]
     fn test_prism_proxy_with_rate_limiter() {
         let registry = prism_core::registry::InMemoryRegistry::new();
-        let router = Arc::new(PrismRouter::new(registry));
+        let router = Arc::new(ArcSwap::new(Arc::new(PrismRouter::new(registry))));
         let metrics = Arc::new(MetricsCollector::new(100));
 
         let limiter = Arc::new(RateLimiter::new(vec![RateLimitRule {
@@ -1171,7 +1172,7 @@ mod tests {
     #[test]
     fn test_prism_proxy_with_rate_limiter_and_codec() {
         let registry = prism_core::registry::InMemoryRegistry::new();
-        let router = Arc::new(PrismRouter::new(registry));
+        let router = Arc::new(ArcSwap::new(Arc::new(PrismRouter::new(registry))));
         let metrics = Arc::new(MetricsCollector::new(100));
 
         let mut codec_reg = CodecRegistry::new();

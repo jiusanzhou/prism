@@ -1,6 +1,7 @@
 mod api;
 pub mod codec;
 mod config;
+mod config_watcher;
 pub mod metrics;
 pub mod plugin_loader;
 pub mod plugin_manager;
@@ -102,12 +103,22 @@ async fn main() {
     // Build registry and router
     let registry = build_registry(&config);
     let router = prism_core::router::PrismRouter::new(registry);
-    let state = AppState::new(router);
+    let state = AppState::new(router, cli.config.clone());
+
+    // Start config watcher
+    let _config_watcher = config_watcher::spawn_config_watcher(
+        state.clone(),
+        config_watcher::WatcherConfig {
+            config_path: cli.config.clone(),
+            debounce: Duration::from_secs(2),
+            ..Default::default()
+        },
+    );
 
     // Start metrics flush background task (every 5 seconds)
     let _metrics_flush = metrics::spawn_metrics_flush(
         Arc::clone(&state.metrics),
-        Arc::clone(state.data_layer()),
+        state.data_layer(),
         Duration::from_secs(5),
     );
 
@@ -115,6 +126,7 @@ async fn main() {
     let app = Router::new()
         .route("/v1/route", post(api::route_handler))
         .route("/v1/outcomes", post(api::outcomes_handler))
+        .route("/admin/reload", post(api::reload_handler))
         .route("/health", get(api::health_handler))
         .route("/version", get(api::version_handler))
         .route("/metrics", get(api::metrics_handler))
