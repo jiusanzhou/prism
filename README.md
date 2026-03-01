@@ -7,7 +7,7 @@
 *Route every request to the optimal model — automatically.*
 
 [![Rust](https://img.shields.io/badge/Rust-Core_Engine-orange?logo=rust)](prism-core/)
-[![Tests](https://img.shields.io/badge/Tests-97_passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-352_passing-brightgreen)]()
 [![License](https://img.shields.io/badge/License-MIT-blue)]()
 
 [English](./README.md) · [中文](./README.zh-CN.md)
@@ -56,8 +56,14 @@ Prism is a Rust workspace with two crates:
                           │                 ├─ Plugin System     │
                           │                 ├─ Strategy Engine   │
                           │                 ├─ Model Registry    │
+                          │                 ├─ Discovery Layer   │
                           │                 ├─ DataLayer         │
                           │                 └─ Feedback Loop     │
+                          │                                      │
+                          │  Proxy Layer:                        │
+                          │  ├─ Codec Plugin Chain (WASM/Native) │
+                          │  ├─ Rate Limiting                    │
+                          │  └─ Model Name Rewrite               │
                           └──────────────────────────────────────┘
                                         │
                           ┌─────────────┼──────────────┐
@@ -298,10 +304,14 @@ Prism adjusts routing scores based on real-world outcomes via its feedback loop.
 
 prism-core uses a plugin pipeline for routing decisions:
 
-- **Filter Plugins** — remove candidates that don't meet requirements (capabilities, health, circuit breaker, protocol)
-- **Scorer Plugins** — score remaining candidates on cost, latency, quality, specialty, feedback, geo-proximity, strategy weights
+- **Filter Plugins** — remove candidates that don't meet requirements (capabilities, health, circuit breaker, protocol, inference load)
+- **Scorer Plugins** — score remaining candidates on cost, latency, quality, specialty, feedback, geo-proximity, strategy weights, prefix affinity, inference load
 
-Built-in plugins: `HealthFilter`, `CapabilityFilter`, `CircuitBreaker`, `ProtocolFilter`, `PinnedModel`, `CostScorer`, `LatencyScorer`, `QualityScorer`, `SpecialtyScorer`, `FeedbackScorer`, `GeoProximity`, `StrategyScorer`, `AffinityScorer`, `Canary`, `Weighted`
+Built-in plugins (18): `HealthFilter`, `CapabilityFilter`, `CircuitBreaker`, `ProtocolFilter`, `PinnedModel`, `CostScorer`, `LatencyScorer`, `QualityScorer`, `SpecialtyScorer`, `FeedbackScorer`, `GeoProximity`, `StrategyScorer`, `AffinityScorer`, `Canary`, `Weighted`, `QuotaAware`, `PrefixAffinity`, `InferenceLoad`
+
+**Inference-aware plugins** (for self-hosted engines like vLLM / SGLang):
+- `PrefixAffinityPlugin` — consistent-hash routing by prompt prefix, maximizes prefix-cache reuse
+- `InferenceLoadPlugin` — filters out pods with KV cache > 95%, scores by GPU utilization and queue depth
 
 Custom plugins implement the `RoutingPlugin` trait.
 
@@ -310,7 +320,13 @@ Custom plugins implement the `RoutingPlugin` trait.
 <details>
 <summary><b>WASM Proxy Plugins</b> — extend the proxy layer with WASM</summary>
 
-prism-router supports proxy-layer plugins compiled to WebAssembly. These intercept HTTP request/response at the reverse proxy layer for protocol translation, header manipulation, and body transformation.
+prism-router supports proxy-layer plugins compiled to WebAssembly via a full codec plugin chain framework. WASM plugins intercept HTTP request/response at the reverse proxy layer for protocol translation, header manipulation, and body transformation.
+
+The plugin chain aligns with the **proxy-wasm ABI** and supports:
+- **4 hook points**: `on_request_headers`, `on_request_body`, `on_response_headers`, `on_response_body`/`on_response_stream_chunk`
+- **ProxyPluginChain**: request-phase in order, response-phase in reverse
+- **CodecRegistry**: maps provider/protocol pairs to the appropriate plugin chain
+- **wasmtime 42 host**: implements core proxy-wasm ABI subset (get/set headers, get/set buffer, log)
 
 **Example: OpenAI Compatibility Plugin** ([`examples/wasm-plugins/openai-compat/`](examples/wasm-plugins/openai-compat/))
 
@@ -329,7 +345,52 @@ cargo build --target wasm32-unknown-unknown --release
 make test-wasm
 ```
 
-Enable with feature flag: `cargo build --features wasm`
+Enable with feature flag: `cargo build -p prism-router --features wasm`
+
+</details>
+
+<details>
+<summary><b>Rate Limiting</b> — configurable, header-based rate limiting</summary>
+
+prism-router includes a built-in rate limiting system with flexible key extraction:
+
+- **Header-based keys**: combine any request headers (e.g., `x-model`, `x-app-id`) into rate limit keys
+- **Sliding window**: request count and token count limiting per time window
+- **Differential overrides**: different limits for different header value combinations
+- **Most-specific match wins**: override with the most matching conditions takes priority
+
+```yaml
+rate_limits:
+  - name: per-model-limit
+    key_headers: ["x-model"]
+    window_secs: 60
+    max_requests: 100
+    overrides:
+      - match_headers: { "x-model": "gpt-4o" }
+        max_requests: 30
+      - match_headers: { "x-model": "gpt-4o", "x-team": "vip" }
+        max_requests: 80  # More specific → wins
+```
+
+</details>
+
+<details>
+<summary><b>Model Name Mapping</b> — upstream_model_name rewrite</summary>
+
+Each `ModelVariant` can specify an `upstream_model_name` to override the `model` field in the request body before forwarding to the upstream provider. This is useful when:
+
+- The provider's API expects a different model name (e.g., `deepseek-chat` vs your internal `deepseek-v3`)
+- Self-hosted engines use path-based model names (e.g., `/data/models/qwen2.5-72b-instruct`)
+
+```yaml
+variants:
+  - id: "deepseek-v3@deepseek"
+    model_id: deepseek-v3
+    provider_id: deepseek
+    upstream_model_name: "deepseek-chat"
+```
+
+The proxy automatically rewrites the JSON body's `"model"` field before forwarding.
 
 </details>
 
@@ -367,7 +428,11 @@ prism/
 │   │   ├── selector.rs          # Candidate scoring & selection
 │   │   ├── registry.rs          # ModelRegistry — model/variant/pool management
 │   │   ├── plugin.rs            # RoutingPlugin trait & pipeline
-│   │   ├── plugins/             # 15 built-in plugins (filter + scorer)
+│   │   ├── plugins/             # 18 built-in plugins (filter + scorer)
+│   │   ├── discovery/           # Pluggable discovery layer
+│   │   │   ├── mod.rs               # Discovery trait
+│   │   │   ├── static_discovery.rs  # Static config (default)
+│   │   │   └── wasm_discovery.rs    # WASM discovery (feature-gated)
 │   │   ├── data.rs              # DataLayer — metrics storage abstraction
 │   │   ├── feedback.rs          # Feedback collector (outcome → weight adjustment)
 │   │   └── ffi.rs               # C FFI interface for embedding
@@ -377,12 +442,21 @@ prism/
 │   │   ├── main.rs              # Entrypoint: HTTP + gRPC + Proxy servers
 │   │   ├── api.rs               # Axum HTTP handlers (route, outcomes, health, metrics)
 │   │   ├── grpc.rs              # tonic gRPC RouterService implementation
-│   │   ├── proxy.rs             # Pingora reverse proxy (OpenAI-compatible)
+│   │   ├── proxy.rs             # Pingora reverse proxy + upstream_model_name rewrite
 │   │   ├── protocol.rs          # Protocol detection (completions, embeddings, etc.)
 │   │   ├── metrics.rs           # MetricsCollector — 6-dimension Prometheus metrics
 │   │   ├── config.rs            # YAML config loading → Registry construction
-│   │   └── state.rs             # AppState (shared Router + Metrics)
+│   │   ├── state.rs             # AppState (shared Router + Metrics)
+│   │   ├── ratelimit.rs         # Rate limiting (sliding window + header-based keys)
+│   │   └── codec/               # Proxy plugin chain (protocol translation)
+│   │       ├── mod.rs               # ProxyPlugin trait + ProxyContext
+│   │       ├── chain.rs             # ProxyPluginChain
+│   │       ├── registry.rs          # CodecRegistry
+│   │       └── wasm_host.rs         # wasmtime host (feature-gated)
 │   └── Cargo.toml
+├── examples/
+│   └── wasm-plugins/
+│       └── openai-compat/       # Example WASM plugin — OpenAI compatibility
 ├── proto/                   # 📋 Protobuf definitions
 │   └── prism/router/v1/
 │       └── router.proto
@@ -391,7 +465,7 @@ prism/
 │   ├── prism.yaml
 │   └── prometheus.yml
 ├── Makefile                 # Build & test commands
-├── Dockerfile               # Multi-stage build (Rust + Go FFI gateway)
+├── Dockerfile               # Multi-stage build
 ├── docker-compose.yml       # Prism + Redis + PostgreSQL + Prometheus
 └── DESIGN.md                # Full technical design document
 ```
@@ -400,7 +474,7 @@ prism/
 
 ```bash
 cargo build --release        # Build everything
-cargo test                   # Run all tests (97 passing)
+cargo test                   # Run all tests (352 passing)
 cargo bench                  # Benchmarks (prism-core)
 cargo fmt --all              # Format code
 cargo clippy -- -D warnings  # Lint check
@@ -412,7 +486,7 @@ cargo clippy -- -D warnings  # Lint check
 |---|---|---|
 | `grpc` | ✅ | Enable gRPC RouterService (tonic) |
 | `proxy` | ✅ | Enable Pingora reverse proxy |
-| `wasm` | ❌ | Enable WASM plugin support (wasmtime) in prism-core |
+| `wasm` | ❌ | Enable WASM proxy plugin support (wasmtime) in prism-router |
 
 ## Performance
 
@@ -421,6 +495,7 @@ cargo clippy -- -D warnings  # Lint check
 | Routing decision | **8μs** | < 500μs |
 | P99 latency | < 5ms | < 5ms |
 | Memory footprint | ~30MB | < 100MB |
+| Tests | 352 (default) / ~375 (with wasm) | — |
 
 ## Tech Stack
 

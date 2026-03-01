@@ -7,7 +7,7 @@
 *一束请求进来，根据策略折射到最优模型。*
 
 [![Rust](https://img.shields.io/badge/Rust-核心引擎-orange?logo=rust)](prism-core/)
-[![Tests](https://img.shields.io/badge/测试-97_通过-brightgreen)]()
+[![Tests](https://img.shields.io/badge/测试-352_通过-brightgreen)]()
 [![License](https://img.shields.io/badge/License-MIT-blue)]()
 
 [English](./README.md) · [中文](./README.zh-CN.md)
@@ -56,8 +56,14 @@ Prism 是一个 Rust workspace，包含两个 crate：
                           │                 ├─ 插件系统          │
                           │                 ├─ 策略引擎          │
                           │                 ├─ 模型注册表        │
+                          │                 ├─ Discovery 层      │
                           │                 ├─ DataLayer         │
                           │                 └─ 反馈闭环          │
+                          │                                      │
+                          │  Proxy 层：                          │
+                          │  ├─ Codec 插件链 (WASM/Native)       │
+                          │  ├─ 限流系统                         │
+                          │  └─ 模型名改写                       │
                           └──────────────────────────────────────┘
                                         │
                           ┌─────────────┼──────────────┐
@@ -298,12 +304,93 @@ Prism 根据实际效果通过反馈闭环动态调整路由评分。
 
 prism-core 使用插件管线进行路由决策：
 
-- **过滤插件** — 移除不满足要求的候选（能力、健康度、熔断、协议）
-- **评分插件** — 对候选打分（成本、延迟、质量、专长、反馈、地理亲和、策略权重）
+- **过滤插件** — 移除不满足要求的候选（能力、健康度、熔断、协议、推理引擎负载）
+- **评分插件** — 对候选打分（成本、延迟、质量、专长、反馈、地理亲和、策略权重、前缀亲和、推理负载）
 
-内置插件：`HealthFilter`、`CapabilityFilter`、`CircuitBreaker`、`ProtocolFilter`、`PinnedModel`、`CostScorer`、`LatencyScorer`、`QualityScorer`、`SpecialtyScorer`、`FeedbackScorer`、`GeoProximity`、`StrategyScorer`、`AffinityScorer`、`Canary`、`Weighted`
+内置插件（18 个）：`HealthFilter`、`CapabilityFilter`、`CircuitBreaker`、`ProtocolFilter`、`PinnedModel`、`CostScorer`、`LatencyScorer`、`QualityScorer`、`SpecialtyScorer`、`FeedbackScorer`、`GeoProximity`、`StrategyScorer`、`AffinityScorer`、`Canary`、`Weighted`、`QuotaAware`、`PrefixAffinity`、`InferenceLoad`
+
+**推理引擎调度插件**（适用于 vLLM / SGLang 等自部署推理引擎）：
+- `PrefixAffinityPlugin` — 基于 prompt 前缀的一致性哈希路由，最大化前缀缓存复用
+- `InferenceLoadPlugin` — 过滤 KV Cache 使用率 > 95% 的节点，按 GPU 利用率和队列深度评分
 
 自定义插件实现 `RoutingPlugin` trait 即可。
+
+</details>
+
+<details>
+<summary><b>WASM Proxy 插件</b> — 使用 WASM 扩展代理层</summary>
+
+prism-router 支持通过完整的 codec 插件链框架将代理层插件编译为 WebAssembly。WASM 插件可在反向代理层拦截 HTTP 请求/响应，用于协议翻译、Header 操作和 Body 变换。
+
+插件链对齐 **proxy-wasm ABI**，支持：
+- **4 个 Hook 点**：`on_request_headers`、`on_request_body`、`on_response_headers`、`on_response_body`/`on_response_stream_chunk`
+- **ProxyPluginChain**：请求阶段正序执行，响应阶段逆序执行
+- **CodecRegistry**：按 provider/协议对映射到对应的插件链
+- **wasmtime 42 宿主**：实现 proxy-wasm ABI 核心子集（get/set headers、get/set buffer、log）
+
+**示例：OpenAI 兼容插件** ([`examples/wasm-plugins/openai-compat/`](examples/wasm-plugins/openai-compat/))
+
+将非标请求标准化为 OpenAI 格式：
+- 改写 `/api/chat` → `/v1/chat/completions`
+- 添加 `X-Prism-Converted: true` Header
+- 转换 `{"prompt": "..."}` → `{"messages": [...]}`
+- 在响应中添加 `"prism_converted": true`
+
+```bash
+# 构建示例插件
+cd examples/wasm-plugins/openai-compat
+cargo build --target wasm32-unknown-unknown --release
+
+# 运行 WASM 集成测试
+make test-wasm
+```
+
+启用方式：`cargo build -p prism-router --features wasm`
+
+</details>
+
+<details>
+<summary><b>限流系统</b> — 可配置的 Header 维度限流</summary>
+
+prism-router 内置灵活的限流系统，支持基于 Header 的 key 提取：
+
+- **Header-based key**：组合任意请求 Header（如 `x-model`、`x-app-id`）作为限流 key
+- **滑动窗口**：按时间窗口的请求计数和 token 计数限流
+- **差异化 override**：同一规则下不同 Header 值组合可设置不同限额
+- **最具体匹配优先**：匹配条件最多的 override 生效
+
+```yaml
+rate_limits:
+  - name: per-model-limit
+    key_headers: ["x-model"]
+    window_secs: 60
+    max_requests: 100
+    overrides:
+      - match_headers: { "x-model": "gpt-4o" }
+        max_requests: 30
+      - match_headers: { "x-model": "gpt-4o", "x-team": "vip" }
+        max_requests: 80  # 更具体 → 优先
+```
+
+</details>
+
+<details>
+<summary><b>模型名映射</b> — upstream_model_name 改写</summary>
+
+每个 `ModelVariant` 可指定 `upstream_model_name`，在转发请求前自动改写请求体中的 `model` 字段。适用于：
+
+- Provider 的 API 期望不同的模型名（如 `deepseek-chat` vs 内部的 `deepseek-v3`）
+- 自部署推理引擎使用路径式模型名（如 `/data/models/qwen2.5-72b-instruct`）
+
+```yaml
+variants:
+  - id: "deepseek-v3@deepseek"
+    model_id: deepseek-v3
+    provider_id: deepseek
+    upstream_model_name: "deepseek-chat"
+```
+
+代理会在转发前自动将 JSON body 中的 `"model"` 字段改写为该值。
 
 </details>
 
@@ -341,7 +428,11 @@ prism/
 │   │   ├── selector.rs          # 候选评分与选择
 │   │   ├── registry.rs          # ModelRegistry — 模型/变体/池管理
 │   │   ├── plugin.rs            # RoutingPlugin trait 与管线
-│   │   ├── plugins/             # 15 个内置插件（过滤 + 评分）
+│   │   ├── plugins/             # 18 个内置插件（过滤 + 评分）
+│   │   ├── discovery/           # 插件化候选发现层
+│   │   │   ├── mod.rs               # Discovery trait 定义
+│   │   │   ├── static_discovery.rs  # 静态配置发现（默认）
+│   │   │   └── wasm_discovery.rs    # WASM 发现插件（feature-gated）
 │   │   ├── data.rs              # DataLayer — 指标存储抽象
 │   │   ├── feedback.rs          # 反馈收集器（结果 → 权重调整）
 │   │   └── ffi.rs               # C FFI 接口（用于嵌入）
@@ -351,12 +442,21 @@ prism/
 │   │   ├── main.rs              # 入口：HTTP + gRPC + Proxy 服务
 │   │   ├── api.rs               # Axum HTTP 处理器（route、outcomes、health、metrics）
 │   │   ├── grpc.rs              # tonic gRPC RouterService 实现
-│   │   ├── proxy.rs             # Pingora 反向代理（OpenAI 兼容）
+│   │   ├── proxy.rs             # Pingora 反向代理 + upstream_model_name 改写
 │   │   ├── protocol.rs          # 协议检测（completions、embeddings 等）
 │   │   ├── metrics.rs           # MetricsCollector — 6 维度 Prometheus 指标
 │   │   ├── config.rs            # YAML 配置加载 → Registry 构建
-│   │   └── state.rs             # AppState（共享 Router + Metrics）
+│   │   ├── state.rs             # AppState（共享 Router + Metrics）
+│   │   ├── ratelimit.rs         # 限流系统（滑动窗口 + header-based key）
+│   │   └── codec/               # Proxy 插件链（协议翻译）
+│   │       ├── mod.rs               # ProxyPlugin trait + ProxyContext
+│   │       ├── chain.rs             # ProxyPluginChain
+│   │       ├── registry.rs          # CodecRegistry
+│   │       └── wasm_host.rs         # wasmtime 宿主层（feature-gated）
 │   └── Cargo.toml
+├── examples/
+│   └── wasm-plugins/
+│       └── openai-compat/       # 示例 WASM 插件 — OpenAI 兼容协议转换
 ├── proto/                   # 📋 Protobuf 定义
 │   └── prism/router/v1/
 │       └── router.proto
@@ -365,7 +465,7 @@ prism/
 │   ├── prism.yaml
 │   └── prometheus.yml
 ├── Makefile                 # 构建与测试命令
-├── Dockerfile               # 多阶段构建（Rust + Go FFI 网关）
+├── Dockerfile               # 多阶段构建
 ├── docker-compose.yml       # Prism + Redis + PostgreSQL + Prometheus
 └── DESIGN.md                # 完整技术设计文档
 ```
@@ -374,7 +474,7 @@ prism/
 
 ```bash
 cargo build --release        # 构建
-cargo test                   # 运行测试（97 个通过）
+cargo test                   # 运行测试（352 个通过）
 cargo bench                  # 性能基准测试（prism-core）
 cargo fmt --all              # 格式化代码
 cargo clippy -- -D warnings  # 代码检查
@@ -386,7 +486,7 @@ cargo clippy -- -D warnings  # 代码检查
 |---|---|---|
 | `grpc` | ✅ | 启用 gRPC RouterService (tonic) |
 | `proxy` | ✅ | 启用 Pingora 反向代理 |
-| `wasm` | ❌ | 启用 WASM 插件支持 (wasmtime)，prism-core |
+| `wasm` | ❌ | 启用 WASM proxy 插件支持 (wasmtime)，prism-router |
 
 ## 性能
 
@@ -395,6 +495,7 @@ cargo clippy -- -D warnings  # 代码检查
 | 路由决策 | **8μs** | < 500μs |
 | P99 延迟 | < 5ms | < 5ms |
 | 内存占用 | ~30MB | < 100MB |
+| 测试 | 352（默认）/ ~375（含 wasm） | — |
 
 ## 技术栈
 

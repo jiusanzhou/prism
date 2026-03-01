@@ -851,6 +851,7 @@ pub struct ModelVariant {
     pub endpoint_id: String,             // "openai-us-east"
     pub account_id: Option<String>,      // 绑定的 Account（多账号场景）
     pub deployment_name: Option<String>, // 实际部署版本 "gpt-4o-2024-08-06"
+    pub upstream_model_name: Option<String>, // 发给上游 Provider 的模型名（覆盖 model_id）
     pub weight: f32,                     // 手动权重调整，默认 1.0
     pub performance: ModelPerformance,   // 实时性能数据
     pub pricing_override: Option<ModelPricing>, // 覆盖 Model 层定价（如私有部署）
@@ -862,6 +863,29 @@ pub enum VariantStatus {
     Draining,   // 逐步排空，不接新请求
     Disabled,   // 已禁用
 }
+```
+
+**`upstream_model_name` — 上游模型名映射**
+
+某些 Provider 的模型名与 Prism 的 `model_id` 不同。例如：
+- DeepSeek 官方 API 接受 `deepseek-chat`，但内部 model_id 为 `deepseek-v3`
+- 自部署 vLLM 的模型名可能是 `/data/models/qwen2.5-72b-instruct`
+
+`upstream_model_name` 让 Variant 能覆盖请求体中的 `model` 字段，
+反向代理层会自动把请求 JSON body 里的 `"model"` 改写为该值再转发给上游 Provider。
+
+```yaml
+# 配置示例
+variants:
+  - id: "deepseek-v3@deepseek"
+    model_id: deepseek-v3
+    provider_id: deepseek
+    upstream_model_name: "deepseek-chat"  # 发给上游的实际模型名
+  - id: "qwen2.5-72b@local"
+    model_id: qwen2.5-72b
+    provider_id: local-vllm
+    upstream_model_name: "/data/models/qwen2.5-72b-instruct"
+```
 
 pub struct ModelPerformance {
     pub p50_latency_ms: u32,
@@ -1657,6 +1681,140 @@ experiments:
 
 ---
 
+## 6.4 Discovery 抽象层
+
+Discovery 抽象层将候选对象（Provider、Endpoint、Account、Model、Variant、Pool）的来源从路由引擎中解耦。通过实现 `Discovery` trait，可以从不同来源加载调度对象。
+
+```rust
+pub trait Discovery: Send + Sync {
+    /// Discover all scheduling objects from this source.
+    fn discover(&self) -> Result<DiscoveryResult, DiscoveryError>;
+
+    /// Human-readable name for logging / metrics.
+    fn name(&self) -> &str;
+}
+
+pub struct DiscoveryResult {
+    pub providers: Vec<Provider>,
+    pub endpoints: Vec<Endpoint>,
+    pub accounts:  Vec<Account>,
+    pub models:    Vec<Model>,
+    pub variants:  Vec<ModelVariant>,
+    pub pools:     Vec<ModelPool>,
+}
+```
+
+**内置实现：**
+
+| 实现 | 说明 |
+|------|------|
+| `StaticDiscovery` | 从内存中的配置结构体加载，默认实现 |
+| `WasmDiscovery` | 通过 WASM 模块动态发现候选（`wasm` feature-gated，预留） |
+
+自定义 Discovery 实现（如从 Consul/etcd/Kubernetes API 发现）只需实现 `Discovery` trait。
+
+## 6.5 Proxy 插件链 (Codec)
+
+反向代理层的协议翻译通过 **Proxy 插件链** 实现，位于 `prism-router/src/codec/`。设计对齐 proxy-wasm ABI，支持原生 Rust 插件和 WASM 插件。
+
+### ProxyPlugin Trait
+
+```rust
+pub trait ProxyPlugin: Send + Sync {
+    fn name(&self) -> &str;
+    fn on_request_headers(&self, ctx: &mut ProxyContext) -> Action;
+    fn on_request_body(&self, ctx: &mut ProxyContext, body: &[u8]) -> (Action, Option<Vec<u8>>);
+    fn on_response_headers(&self, ctx: &mut ProxyContext) -> Action;
+    fn on_response_body(&self, ctx: &mut ProxyContext, body: &[u8]) -> (Action, Option<Vec<u8>>);
+    fn on_response_stream_chunk(&self, ctx: &mut ProxyContext, chunk: &[u8]) -> Option<Vec<u8>>;
+}
+```
+
+### 4 个 Hook 点
+
+| Hook | 阶段 | 用途 |
+|------|------|------|
+| `on_request_headers` | 请求头到达 | 路径改写、协议标记、认证注入 |
+| `on_request_body` | 请求体到达 | 请求格式转换 (e.g., prompt → messages) |
+| `on_response_headers` | 响应头到达 | 添加/修改响应头 |
+| `on_response_body` / `on_response_stream_chunk` | 响应体到达 | 响应格式转换、流式 chunk 过滤 |
+
+### ProxyPluginChain
+
+`ProxyPluginChain` 管理多个插件的有序执行：
+- **请求阶段**：插件按添加顺序（正序）执行
+- **响应阶段**：插件按反向顺序（逆序）执行
+- 任何插件返回 `Action::Stop` 则终止链路
+
+### CodecRegistry
+
+`CodecRegistry` 维护 provider/协议对到插件链的映射，根据路由决策的 provider 自动选择正确的协议翻译插件链。
+
+### WASM 宿主层 (wasmtime)
+
+通过 `wasm` feature flag 启用（`prism-router` 的 feature），基于 wasmtime 42 实现 proxy-wasm host ABI 的核心子集：
+
+| proxy-wasm ABI | 支持状态 |
+|---|---|
+| `proxy_on_request_headers` | ✅ |
+| `proxy_on_request_body` | ✅ |
+| `proxy_on_response_headers` | ✅ |
+| `proxy_on_response_body` | ✅ |
+| `proxy_get_header_map_value` | ✅ |
+| `proxy_add_header_map_value` | ✅ |
+| `proxy_get_buffer_bytes` | ✅ |
+| `proxy_set_buffer_bytes` | ✅ |
+| `proxy_log` | ✅ |
+
+WASM 插件编译为 `wasm32-unknown-unknown` 或 `wasm32-wasip1` 目标，运行在沙箱examples/wasm-plugins/openai-compat/`](examples/wasm-plugins/openai-compat/) 获取完整示例。
+
+### Pingora Hook 集成
+
+插件链在 Pingora 反向代理的 5 个阶段中被调用：
+
+```
+upstream_request_filter  → on_request_headers
+  request_body_filter    → on_request_body (+ upstream_model_name 改写)
+upstream_response_filter → on_response_headers
+  response_body_filter   → on_response_body / on_response_stream_chunk
+logging                  → 异步 metrics 上报
+```
+
+## 6.6 限流系统
+
+prism-router 内置可配置的限流系统（`ratelimit.rs`），支持灵活的 header-based key 提取和差异化 override。
+
+### 核心特性
+
+- **Header-based key 提取**：从请求 header 中提取任意组合的 key（如 `x-model`、`x-app-id`），实现 per-model、per-app 或全局维度的限流
+- **滑动窗口**：基于时间窗口的请求计数和 token 计数限流
+- **差异化 override**：同一规则下不同匹配条件可设置不同限额
+- **最具体匹配优先**：当多个 override 同时匹配时，匹配条件数最多的 override 生效（避免宽泛规则覆盖精确规则）
+
+### 配置示例
+
+```yaml
+rate_limits:
+  - name: per-model-limit
+    key_headers: ["x-model"]
+    window_secs: 60
+    max_requests: 100
+    overrides:
+      # GPT-4o 限制更严格
+      - match_headers: { "x-model": "gpt-4o" }
+        max_requests: 30
+      # GPT-4o + 高优先级团队放宽
+      - match_headers: { "x-model": "gpt-4o", "x-team": "vip" }
+        max_requests: 80
+
+  - name: global-limit
+    key_headers: []        # 空 = 全局限流
+    window_secs: 60
+    max_requests: 1000
+```
+
+当请求的 `x-model: gpt-4o` 且 `x-team: vip` 时，两个 override 都匹配，但第二个有 2 个匹配条件，更具体，因此 `max_requests=80` 生效。
+
 ## 7. 项目结构
 
 ```
@@ -1685,7 +1843,7 @@ prism/
 │       ├── selector.rs          # 候选评分与选择
 │       ├── registry.rs          # ModelRegistry — 模型/变体/池管理
 │       ├── plugin.rs            # RoutingPlugin trait & 管线
-│       ├── plugins/             # 15 个内置插件
+│       ├── plugins/             # 18 个内置路由插件
 │       │   ├── health_filter.rs
 │       │   ├── capability_filter.rs
 │       │   ├── circuit_breaker.rs
@@ -1700,24 +1858,44 @@ prism/
 │       │   ├── strategy_scorer.rs
 │       │   ├── affinity.rs
 │       │   ├── canary.rs
-│       │   └── weighted.rs
+│       │   ├── weighted.rs
+│       │   ├── quota_aware.rs           # 配额感知评分
+│       │   ├── prefix_affinity.rs       # 前缀亲和（推理引擎缓存复用）
+│       │   └── inference_load.rs        # 推理引擎负载感知调度
+│       ├── discovery/           # 插件化候选发现层
+│       │   ├── mod.rs               # Discovery trait 定义
+│       │   ├── static_discovery.rs  # 静态配置发现（默认）
+│       │   └── wasm_discovery.rs    # WASM 发现插件（feature-gated）
 │       ├── data.rs              # DataLayer — 指标存储抽象
 │       ├── feedback.rs          # 反馈收集器 (结果 → 权重调整)
 │       └── ffi.rs               # C FFI 接口
 │
 ├── prism-router/                # Rust 独立路由服务
-│   ├── Cargo.toml               # features: grpc, proxy
+│   ├── Cargo.toml               # features: grpc, proxy, wasm
 │   ├── build.rs                 # tonic-build (proto 编译)
 │   └── src/
 │       ├── main.rs              # 入口: HTTP + gRPC + Proxy 服务
 │       ├── api.rs               # Axum HTTP 处理器
 │       ├── grpc.rs              # tonic gRPC RouterService
-│       ├── proxy.rs             # Pingora 反向代理
+│       ├── proxy.rs             # Pingora 反向代理 + upstream_model_name 改写
 │       ├── protocol.rs          # 协议检测
 │       ├── metrics.rs           # MetricsCollector — 6 维度 Prometheus 指标
 │       ├── config.rs            # YAML 配置加载 → Registry 构建
 │       ├── state.rs             # AppState (共享 Router + Metrics)
+│       ├── ratelimit.rs         # 限流系统 (滑动窗口 + header-based key + override)
+│       ├── codec/               # Proxy 插件链 (协议翻译)
+│       │   ├── mod.rs               # ProxyPlugin trait + ProxyContext
+│       │   ├── chain.rs             # ProxyPluginChain (请求正序, 响应逆序)
+│       │   ├── registry.rs          # CodecRegistry (provider/协议对映射)
+│       │   └── wasm_host.rs         # wasmtime 宿主层 (feature-gated `wasm`)
 │       └── gen/                 # 生成的 protobuf 代码
+│
+├── examples/
+│   └── wasm-plugins/
+│       └── openai-compat/       # 示例 WASM 插件 — OpenAI 兼容协议转换
+│           ├── Cargo.toml
+│           ├── src/lib.rs
+│           └── README.md
 │
 ├── configs/
 │   ├── prism.example.yaml       # 配置示例
@@ -1741,13 +1919,22 @@ prism/
 - [x] prism-router: Pingora 反向代理 (OpenAI 兼容)
 - [x] prism-router: YAML 配置加载
 - [x] prism-router: 6 维度 Prometheus 指标 + format_prometheus()
-- [x] prism-router: 97 个单元测试通过
 - [x] proto 文件定义
 - [x] Dockerfile + docker-compose.yml
 - [x] Makefile
 
-### Phase 2 — 生产就绪 (进行中)
-- [ ] 集成测试 / E2E 测试
+### Phase 2 — 生产就绪 ✅ (已完成)
+- [x] 352 个单元测试通过（含 wasm feature ~375 个）
+- [x] Discovery 抽象层 — 插件化候选发现 (StaticDiscovery + WASM 预留)
+- [x] 推理引擎调度 — PrefixAffinityPlugin + InferenceLoadPlugin (18 个内置插件)
+- [x] 多维标签监控指标 — 6 维标签下钻
+- [x] Proxy 插件链框架 — ProxyPlugin trait + chain + registry，hook 对齐 proxy-wasm ABI
+- [x] WASM 宿主层 — wasmtime 42，proxy-wasm host ABI 核心子集
+- [x] Proxy 插件链集成 — Pingora 5 个 hook 接入 codec 插件链
+- [x] 示例 WASM 插件 — OpenAI compat E2E
+- [x] 限流系统 — header-based key + 滑动窗口 + 差异化 override（最具体匹配优先）
+- [x] upstream_model_name — variant 级模型名映射，proxy body 自动改写
+- [x] Legacy 清理 — 移除旧 Go 代码
 - [ ] 配置热更新 (runtime reload)
 - [ ] Redis 实时状态存储
 - [ ] 实际 Provider 请求转发验证 (OpenAI / Anthropic / DeepSeek)
@@ -1757,7 +1944,6 @@ prism/
 
 ### Phase 3 — 智能化 & 集成
 - [ ] 特征分析器 + ONNX 模型分析器
-- [ ] WASM 插件支持 (wasmtime, 已预留 feature flag)
 - [ ] A/B 测试框架
 - [ ] prism-admin Dashboard
 - [ ] Envoy ext_proc 适配
@@ -1790,7 +1976,7 @@ prism/
 | 路由决策 | **8μs** |
 | P99 延迟 | < 5ms |
 | 内存占用 | ~30MB |
-| 测试覆盖 | 97 个测试通过 |
+| 测试覆盖 | 352 个测试通过（含 wasm feature ~375 个） |
 
 ---
 
@@ -1802,7 +1988,11 @@ prism/
 | 多策略切换 | ✅ 请求级 | ❌ | ❌ | 部分 |
 | 反向代理 | ✅ Pingora (高性能) | ❌ | ✅ | ✅ |
 | 现有网关集成 | ✅ gRPC/HTTP API | ❌ | ❌ | ❌ |
-| 插件系统 | ✅ 15 个内置插件 | ❌ | ❌ | ❌ |
+| 路由插件系统 | ✅ 18 个内置插件 | ❌ | ❌ | ❌ |
+| WASM Proxy 插件 | ✅ wasmtime + proxy-wasm ABI | ❌ | ❌ | ❌ |
+| 推理引擎调度 | ✅ 前缀亲和 + 负载感知 | ❌ | ❌ | ❌ |
+| 限流系统 | ✅ header-based key + 差异化 override | ❌ | 部分 | 部分 |
+| upstream_model_name 映射 | ✅ variant 级自动改写 | ❌ | ✅ | ✅ |
 | 实时负载感知 | ✅ DataLayer + 反馈闭环 | ❌ | ❌ | ❌ |
 | 账号亲和 & 缓存优化 | ✅ | ❌ | ❌ | ❌ |
 | 路由决策延迟 | **8μs** | ~10ms | N/A | N/A |
