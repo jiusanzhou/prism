@@ -25,6 +25,8 @@ mod protocol;
 mod proxy;
 #[cfg(feature = "proxy")]
 pub mod ratelimit;
+#[cfg(feature = "proxy")]
+mod access_log;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
