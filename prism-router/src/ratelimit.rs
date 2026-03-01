@@ -726,17 +726,17 @@ mod tests {
     }
 
     #[test]
-    fn test_override_multi_match_first_wins() {
+    fn test_override_same_specificity_first_wins() {
         let mut rule = make_rule("per-model", vec!["x-model"], 60, 100);
         rule.overrides = vec![
-            make_override(&[("x-model", "gpt-4")], Some(10), None),   // first match
-            make_override(&[("x-model", "gpt-4")], Some(200), None),  // would also match but never reached
+            make_override(&[("x-model", "gpt-4")], Some(10), None),   // first match, 1 condition
+            make_override(&[("x-model", "gpt-4")], Some(200), None),  // same specificity, ignored
         ];
 
         let limiter = RateLimiter::new(vec![rule]);
         let h = headers(&[("x-model", "gpt-4")]);
 
-        // Should use first override's limit of 10
+        // Same specificity → first one wins (limit 10)
         for _ in 0..10 {
             assert!(limiter.check(&h).is_ok());
         }
@@ -844,6 +844,107 @@ mod tests {
 
         // unknown model → (100, Some(2000))  (no override matches)
         let (req, tok) = RateLimiter::resolve_limits(&rule, &headers(&[("x-model", "llama")]));
+        assert_eq!(req, 100);
+        assert_eq!(tok, Some(2000));
+    }
+
+    #[test]
+    fn test_override_most_specific_wins_over_order() {
+        // Less specific override listed first, more specific listed second.
+        // The more specific one should win regardless of order.
+        let mut rule = make_rule("model-app", vec!["x-model", "x-app-id"], 60, 100);
+        rule.overrides = vec![
+            make_override(&[("x-model", "gpt-4")], Some(150), None),                            // 1 condition
+            make_override(&[("x-model", "gpt-4"), ("x-app-id", "app-b")], Some(200), None),     // 2 conditions
+        ];
+
+        let limiter = RateLimiter::new(vec![rule]);
+
+        // model=gpt-4, app-id=app-b → both match, but 2-condition override is more specific → 200
+        let h = headers(&[("x-model", "gpt-4"), ("x-app-id", "app-b")]);
+        for _ in 0..200 {
+            assert!(limiter.check(&h).is_ok());
+        }
+        assert!(limiter.check(&h).is_err());
+    }
+
+    #[test]
+    fn test_override_most_specific_reverse_order() {
+        // Same as above but with more specific override listed FIRST.
+        let mut rule = make_rule("model-app", vec!["x-model", "x-app-id"], 60, 100);
+        rule.overrides = vec![
+            make_override(&[("x-model", "gpt-4"), ("x-app-id", "app-b")], Some(200), None),     // 2 conditions
+            make_override(&[("x-model", "gpt-4")], Some(150), None),                            // 1 condition
+        ];
+
+        let limiter = RateLimiter::new(vec![rule]);
+
+        // Should still pick 200 (most specific)
+        let h = headers(&[("x-model", "gpt-4"), ("x-app-id", "app-b")]);
+        for _ in 0..200 {
+            assert!(limiter.check(&h).is_ok());
+        }
+        assert!(limiter.check(&h).is_err());
+    }
+
+    #[test]
+    fn test_override_less_specific_fallback() {
+        // When only the less-specific override matches, it should be used.
+        let mut rule = make_rule("model-app", vec!["x-model", "x-app-id"], 60, 100);
+        rule.overrides = vec![
+            make_override(&[("x-model", "gpt-4")], Some(150), None),
+            make_override(&[("x-model", "gpt-4"), ("x-app-id", "app-b")], Some(200), None),
+        ];
+
+        let limiter = RateLimiter::new(vec![rule]);
+
+        // model=gpt-4, app-id=app-a → only 1-condition override matches → 150
+        let h = headers(&[("x-model", "gpt-4"), ("x-app-id", "app-a")]);
+        for _ in 0..150 {
+            assert!(limiter.check(&h).is_ok());
+        }
+        assert!(limiter.check(&h).is_err());
+    }
+
+    #[test]
+    fn test_resolve_limits_most_specific() {
+        let mut rule = make_rule("test", vec!["x-model", "x-app-id"], 60, 100);
+        rule.max_tokens = Some(2000);
+        rule.overrides = vec![
+            make_override(&[("x-model", "gpt-4")], Some(150), Some(1500)),
+            make_override(&[("x-model", "gpt-4"), ("x-app-id", "app-b")], Some(200), Some(3000)),
+            make_override(&[("x-model", "claude-3")], Some(50), None),
+        ];
+
+        // gpt-4 + app-b → 2-condition override wins: (200, Some(3000))
+        let (req, tok) = RateLimiter::resolve_limits(
+            &rule,
+            &headers(&[("x-model", "gpt-4"), ("x-app-id", "app-b")]),
+        );
+        assert_eq!(req, 200);
+        assert_eq!(tok, Some(3000));
+
+        // gpt-4 + app-a → only 1-condition override matches: (150, Some(1500))
+        let (req, tok) = RateLimiter::resolve_limits(
+            &rule,
+            &headers(&[("x-model", "gpt-4"), ("x-app-id", "app-a")]),
+        );
+        assert_eq!(req, 150);
+        assert_eq!(tok, Some(1500));
+
+        // claude-3 → (50, Some(2000))
+        let (req, tok) = RateLimiter::resolve_limits(
+            &rule,
+            &headers(&[("x-model", "claude-3"), ("x-app-id", "app-x")]),
+        );
+        assert_eq!(req, 50);
+        assert_eq!(tok, Some(2000));
+
+        // no match → defaults
+        let (req, tok) = RateLimiter::resolve_limits(
+            &rule,
+            &headers(&[("x-model", "llama"), ("x-app-id", "app-x")]),
+        );
         assert_eq!(req, 100);
         assert_eq!(tok, Some(2000));
     }
