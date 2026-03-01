@@ -12,7 +12,7 @@ use prism_core::registry::ModelRegistryTrait;
 use prism_core::router::{RouteMetadata, RouteRequest, Router, RouterError};
 use prism_core::strategy::ModelSelectionStrategy;
 
-use crate::metrics::RequestRecord;
+use crate::metrics::{RequestLabels, RequestRecord};
 use crate::state::AppState;
 
 // ──────────────────────────────────────────────
@@ -230,9 +230,34 @@ pub async fn outcomes_handler(
         (variant_id.as_str(), variant_id.as_str())
     };
 
+    // Resolve endpoint and region from registry
+    let (endpoint_id, region) = {
+        let registry = &state.router.registry;
+        if let Some(variant) = registry.variants.get(variant_id.as_str()) {
+            let ep_id = variant.endpoint_id.clone();
+            let reg = registry
+                .endpoints
+                .get(&ep_id)
+                .and_then(|ep| ep.region.clone())
+                .unwrap_or_else(|| "unknown".to_string());
+            (ep_id, reg)
+        } else {
+            ("unknown".to_string(), "unknown".to_string())
+        }
+    };
+
+    let labels = RequestLabels {
+        model: model.to_string(),
+        provider: provider.to_string(),
+        endpoint: endpoint_id,
+        account: variant_id.to_string(),
+        region,
+        variant: variant_id.to_string(),
+    };
+
     state
         .metrics
-        .record_with_context(record, provider, model, variant_id);
+        .record_with_context(record, &labels);
 
     state.router.record_outcome(&report);
     (

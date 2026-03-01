@@ -13,6 +13,88 @@ use prism_core::data::{DataLayer, MetricKind, MetricValue};
 use prism_core::types::ModelPerformance;
 
 // ──────────────────────────────────────────────
+// Multi-dimensional request labels
+// ──────────────────────────────────────────────
+
+/// Request context labels — each request carries full hierarchy for drill-down.
+///
+/// Enables Prometheus aggregation at any level:
+/// `sum by (model)` → `sum by (model, provider)` → `sum by (model, provider, region)` etc.
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct RequestLabels {
+    pub model: String,
+    pub provider: String,
+    pub endpoint: String,
+    pub account: String,
+    pub region: String,
+    pub variant: String,
+}
+
+impl RequestLabels {
+    /// Format as Prometheus label set: `model="...",provider="...",endpoint="...",account="...",region="...",variant=".."`
+    fn prom_labels(&self) -> String {
+        format!(
+            "model=\"{}\",provider=\"{}\",endpoint=\"{}\",account=\"{}\",region=\"{}\",variant=\"{}\"",
+            self.model, self.provider, self.endpoint, self.account, self.region, self.variant
+        )
+    }
+}
+
+/// Multi-dimensional counter: HashMap<RequestLabels, u64> behind RwLock.
+pub struct MultiDimCounter {
+    values: RwLock<HashMap<RequestLabels, u64>>,
+}
+
+impl MultiDimCounter {
+    pub fn new() -> Self {
+        Self {
+            values: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub fn inc(&self, labels: &RequestLabels) {
+        self.inc_by(labels, 1);
+    }
+
+    pub fn inc_by(&self, labels: &RequestLabels, n: u64) {
+        let mut map = self.values.write().unwrap();
+        *map.entry(labels.clone()).or_insert(0) += n;
+    }
+
+    pub fn snapshot(&self) -> Vec<(RequestLabels, u64)> {
+        let map = self.values.read().unwrap();
+        map.iter().map(|(k, v)| (k.clone(), *v)).collect()
+    }
+}
+
+/// Multi-dimensional sum+count (for histogram-style aggregation without buckets).
+pub struct MultiDimSumCount {
+    values: RwLock<HashMap<RequestLabels, (u64, u64)>>, // (sum, count)
+}
+
+impl MultiDimSumCount {
+    pub fn new() -> Self {
+        Self {
+            values: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub fn observe(&self, labels: &RequestLabels, value: u64) {
+        let mut map = self.values.write().unwrap();
+        let entry = map.entry(labels.clone()).or_insert((0, 0));
+        entry.0 += value;
+        entry.1 += 1;
+    }
+
+    pub fn snapshot(&self) -> Vec<(RequestLabels, u64, u64)> {
+        let map = self.values.read().unwrap();
+        map.iter()
+            .map(|(k, (sum, count))| (k.clone(), *sum, *count))
+            .collect()
+    }
+}
+
+// ──────────────────────────────────────────────
 // Request record
 // ──────────────────────────────────────────────
 
@@ -450,6 +532,14 @@ pub struct MetricsCollector {
 
     // ── DataLayer ──
     pub data_layer_metrics: DataLayerMetrics,
+
+    // ── Multi-dimensional metrics ──
+    pub md_requests: MultiDimCounter,
+    pub md_errors: MultiDimCounter,
+    pub md_latency: MultiDimSumCount,
+    pub md_ttft: MultiDimSumCount,
+    pub md_input_tokens: MultiDimCounter,
+    pub md_output_tokens: MultiDimCounter,
 }
 
 impl MetricsCollector {
@@ -490,6 +580,14 @@ impl MetricsCollector {
 
             // DataLayer
             data_layer_metrics: DataLayerMetrics::new(),
+
+            // Multi-dimensional
+            md_requests: MultiDimCounter::new(),
+            md_errors: MultiDimCounter::new(),
+            md_latency: MultiDimSumCount::new(),
+            md_ttft: MultiDimSumCount::new(),
+            md_input_tokens: MultiDimCounter::new(),
+            md_output_tokens: MultiDimCounter::new(),
         }
     }
 
@@ -507,35 +605,45 @@ impl MetricsCollector {
         window.push(record);
     }
 
-    /// Record a request with full context (provider, model, account).
+    /// Record a request with full context (multi-dimensional labels).
     pub fn record_with_context(
         &self,
         record: RequestRecord,
-        provider: &str,
-        model: &str,
-        account: &str,
+        labels: &RequestLabels,
     ) {
-        // Token counters
+        // Multi-dimensional counters
+        self.md_requests.inc(labels);
+        if !record.success {
+            self.md_errors.inc(labels);
+        }
+        self.md_latency.observe(labels, record.latency_ms);
+        if let Some(ttft) = record.ttft_ms {
+            self.md_ttft.observe(labels, ttft);
+        }
+
+        // Token counters (multi-dim + legacy single-label)
         if let Some(inp) = record.input_tokens {
             self.input_tokens
                 .inc_by(&record.variant_id, inp as u64);
+            self.md_input_tokens.inc_by(labels, inp as u64);
         }
         if let Some(out) = record.output_tokens {
             self.output_tokens
                 .inc_by(&record.variant_id, out as u64);
+            self.md_output_tokens.inc_by(labels, out as u64);
         }
 
-        // Provider stats
+        // Provider stats (legacy)
         if record.success {
-            self.provider_stats.record(provider, record.latency_ms);
+            self.provider_stats.record(&labels.provider, record.latency_ms);
         } else {
-            self.provider_stats.record_error(provider);
+            self.provider_stats.record_error(&labels.provider);
         }
 
-        // Traffic distribution
-        self.routes_by_model.inc(model);
-        self.routes_by_provider.inc(provider);
-        self.routes_by_account.inc(account);
+        // Traffic distribution (legacy single-label)
+        self.routes_by_model.inc(&labels.model);
+        self.routes_by_provider.inc(&labels.provider);
+        self.routes_by_account.inc(&labels.account);
 
         // Core record (variant window)
         self.record(record);
@@ -824,6 +932,83 @@ impl MetricsCollector {
             "prism_data_layer_latency_sum_us",
             self.data_layer_metrics.latency_sum_us.load(Ordering::Relaxed),
         );
+
+        // ── 7. Multi-dimensional request metrics ──
+        let md_requests_snap = self.md_requests.snapshot();
+        if !md_requests_snap.is_empty() {
+            prom_help_type(&mut out, "prism_md_requests_total", "Total requests with full dimensional labels", "counter");
+            for (labels, val) in &md_requests_snap {
+                out.push_str(&format!(
+                    "prism_md_requests_total{{{}}} {}\n",
+                    labels.prom_labels(), val
+                ));
+            }
+        }
+
+        let md_errors_snap = self.md_errors.snapshot();
+        if !md_errors_snap.is_empty() {
+            prom_help_type(&mut out, "prism_md_errors_total", "Total errors with full dimensional labels", "counter");
+            for (labels, val) in &md_errors_snap {
+                out.push_str(&format!(
+                    "prism_md_errors_total{{{}}} {}\n",
+                    labels.prom_labels(), val
+                ));
+            }
+        }
+
+        let md_latency_snap = self.md_latency.snapshot();
+        if !md_latency_snap.is_empty() {
+            prom_help_type(&mut out, "prism_md_latency_ms", "Request latency sum/count with full dimensional labels", "summary");
+            for (labels, sum, count) in &md_latency_snap {
+                let pl = labels.prom_labels();
+                out.push_str(&format!(
+                    "prism_md_latency_ms_sum{{{}}} {}\n",
+                    pl, sum
+                ));
+                out.push_str(&format!(
+                    "prism_md_latency_ms_count{{{}}} {}\n",
+                    pl, count
+                ));
+            }
+        }
+
+        let md_ttft_snap = self.md_ttft.snapshot();
+        if !md_ttft_snap.is_empty() {
+            prom_help_type(&mut out, "prism_md_ttft_ms", "TTFT sum/count with full dimensional labels", "summary");
+            for (labels, sum, count) in &md_ttft_snap {
+                let pl = labels.prom_labels();
+                out.push_str(&format!(
+                    "prism_md_ttft_ms_sum{{{}}} {}\n",
+                    pl, sum
+                ));
+                out.push_str(&format!(
+                    "prism_md_ttft_ms_count{{{}}} {}\n",
+                    pl, count
+                ));
+            }
+        }
+
+        let md_input_snap = self.md_input_tokens.snapshot();
+        if !md_input_snap.is_empty() {
+            prom_help_type(&mut out, "prism_md_input_tokens_total", "Input tokens with full dimensional labels", "counter");
+            for (labels, val) in &md_input_snap {
+                out.push_str(&format!(
+                    "prism_md_input_tokens_total{{{}}} {}\n",
+                    labels.prom_labels(), val
+                ));
+            }
+        }
+
+        let md_output_snap = self.md_output_tokens.snapshot();
+        if !md_output_snap.is_empty() {
+            prom_help_type(&mut out, "prism_md_output_tokens_total", "Output tokens with full dimensional labels", "counter");
+            for (labels, val) in &md_output_snap {
+                out.push_str(&format!(
+                    "prism_md_output_tokens_total{{{}}} {}\n",
+                    labels.prom_labels(), val
+                ));
+            }
+        }
 
         // ── Per-variant window metrics ──
         let variants = self.tracked_variants();
@@ -1326,7 +1511,15 @@ mod tests {
             output_tokens: Some(200),
             timestamp: Instant::now(),
         };
-        collector.record_with_context(rec, "openai", "gpt-4o", "acct-1");
+        let labels = RequestLabels {
+            model: "gpt-4o".to_string(),
+            provider: "openai".to_string(),
+            endpoint: "openai-ep".to_string(),
+            account: "acct-1".to_string(),
+            region: "us-east-1".to_string(),
+            variant: "v1".to_string(),
+        };
+        collector.record_with_context(rec, &labels);
 
         assert_eq!(collector.total_requests(), 1);
 
@@ -1356,6 +1549,19 @@ mod tests {
             .map(|(k, r, e, l)| (k, (r, e, l)))
             .collect();
         assert_eq!(prov_map["openai"], (1, 0, 150));
+
+        // Multi-dimensional checks
+        let md_snap = collector.md_requests.snapshot();
+        let md_map: HashMap<RequestLabels, u64> = md_snap.into_iter().collect();
+        assert_eq!(md_map[&labels], 1);
+
+        let md_input = collector.md_input_tokens.snapshot();
+        let md_input_map: HashMap<RequestLabels, u64> = md_input.into_iter().collect();
+        assert_eq!(md_input_map[&labels], 100);
+
+        let md_output = collector.md_output_tokens.snapshot();
+        let md_output_map: HashMap<RequestLabels, u64> = md_output.into_iter().collect();
+        assert_eq!(md_output_map[&labels], 200);
     }
 
     #[test]
@@ -1370,7 +1576,15 @@ mod tests {
             output_tokens: None,
             timestamp: Instant::now(),
         };
-        collector.record_with_context(rec, "anthropic", "claude", "acct-2");
+        let labels = RequestLabels {
+            model: "claude".to_string(),
+            provider: "anthropic".to_string(),
+            endpoint: "anthropic-ep".to_string(),
+            account: "acct-2".to_string(),
+            region: "unknown".to_string(),
+            variant: "v1".to_string(),
+        };
+        collector.record_with_context(rec, &labels);
 
         assert_eq!(collector.total_errors(), 1);
 
@@ -1547,7 +1761,14 @@ mod tests {
             output_tokens: Some(100),
             timestamp: Instant::now(),
         };
-        collector.record_with_context(rec, "openai", "gpt-4o", "acct-1");
+        collector.record_with_context(rec, &RequestLabels {
+            model: "gpt-4o".to_string(),
+            provider: "openai".to_string(),
+            endpoint: "openai-ep".to_string(),
+            account: "acct-1".to_string(),
+            region: "us-east-1".to_string(),
+            variant: "v1".to_string(),
+        });
         collector.rate_limit_utilization.set("openai", 0.75);
         collector.circuit_breaker_state.set("v1", 0.0);
 
@@ -1604,5 +1825,188 @@ mod tests {
         let output = collector.format_prometheus(1, 0, 0);
         assert!(output.contains("prism_active_requests{variant=\"v1\"} 2"));
         assert!(output.contains("prism_active_requests{variant=\"v2\"} 1"));
+    }
+
+    // ──────────────────────────────────────────
+    // Tests for multi-dimensional metrics
+    // ──────────────────────────────────────────
+
+    fn test_labels() -> RequestLabels {
+        RequestLabels {
+            model: "gpt-4o".to_string(),
+            provider: "openai".to_string(),
+            endpoint: "openai-us".to_string(),
+            account: "team-a".to_string(),
+            region: "us-east-1".to_string(),
+            variant: "gpt-4o@openai-us".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_request_labels_prom_format() {
+        let labels = test_labels();
+        let s = labels.prom_labels();
+        assert!(s.contains("model=\"gpt-4o\""));
+        assert!(s.contains("provider=\"openai\""));
+        assert!(s.contains("endpoint=\"openai-us\""));
+        assert!(s.contains("account=\"team-a\""));
+        assert!(s.contains("region=\"us-east-1\""));
+        assert!(s.contains("variant=\"gpt-4o@openai-us\""));
+    }
+
+    #[test]
+    fn test_multi_dim_counter_basic() {
+        let c = MultiDimCounter::new();
+        let l1 = test_labels();
+        let l2 = RequestLabels {
+            model: "claude-3".to_string(),
+            provider: "anthropic".to_string(),
+            endpoint: "anthropic-eu".to_string(),
+            account: "team-b".to_string(),
+            region: "eu-west-1".to_string(),
+            variant: "claude-3@anthropic-eu".to_string(),
+        };
+
+        c.inc(&l1);
+        c.inc(&l1);
+        c.inc_by(&l1, 3);
+        c.inc(&l2);
+
+        let snap: HashMap<RequestLabels, u64> = c.snapshot().into_iter().collect();
+        assert_eq!(snap[&l1], 5);
+        assert_eq!(snap[&l2], 1);
+    }
+
+    #[test]
+    fn test_multi_dim_counter_empty() {
+        let c = MultiDimCounter::new();
+        assert!(c.snapshot().is_empty());
+    }
+
+    #[test]
+    fn test_multi_dim_sum_count_basic() {
+        let sc = MultiDimSumCount::new();
+        let labels = test_labels();
+        sc.observe(&labels, 100);
+        sc.observe(&labels, 200);
+        sc.observe(&labels, 300);
+
+        let snap = sc.snapshot();
+        assert_eq!(snap.len(), 1);
+        let (_, sum, count) = &snap[0];
+        assert_eq!(*sum, 600);
+        assert_eq!(*count, 3);
+    }
+
+    #[test]
+    fn test_multi_dim_sum_count_empty() {
+        let sc = MultiDimSumCount::new();
+        assert!(sc.snapshot().is_empty());
+    }
+
+    #[test]
+    fn test_record_with_context_multi_dim_latency() {
+        let collector = MetricsCollector::new(100);
+        let labels = test_labels();
+        let rec = RequestRecord {
+            variant_id: "gpt-4o@openai-us".to_string(),
+            latency_ms: 250,
+            ttft_ms: Some(50),
+            success: true,
+            input_tokens: Some(100),
+            output_tokens: Some(200),
+            timestamp: Instant::now(),
+        };
+        collector.record_with_context(rec, &labels);
+
+        // Check multi-dim latency
+        let lat_snap = collector.md_latency.snapshot();
+        let lat_map: HashMap<RequestLabels, (u64, u64)> = lat_snap
+            .into_iter()
+            .map(|(k, s, c)| (k, (s, c)))
+            .collect();
+        assert_eq!(lat_map[&labels], (250, 1));
+
+        // Check multi-dim TTFT
+        let ttft_snap = collector.md_ttft.snapshot();
+        let ttft_map: HashMap<RequestLabels, (u64, u64)> = ttft_snap
+            .into_iter()
+            .map(|(k, s, c)| (k, (s, c)))
+            .collect();
+        assert_eq!(ttft_map[&labels], (50, 1));
+    }
+
+    #[test]
+    fn test_record_with_context_multi_dim_errors() {
+        let collector = MetricsCollector::new(100);
+        let labels = test_labels();
+
+        // Record a success
+        let rec1 = RequestRecord {
+            variant_id: "gpt-4o@openai-us".to_string(),
+            latency_ms: 100,
+            ttft_ms: None,
+            success: true,
+            input_tokens: None,
+            output_tokens: None,
+            timestamp: Instant::now(),
+        };
+        collector.record_with_context(rec1, &labels);
+
+        // Record an error
+        let rec2 = RequestRecord {
+            variant_id: "gpt-4o@openai-us".to_string(),
+            latency_ms: 500,
+            ttft_ms: None,
+            success: false,
+            input_tokens: None,
+            output_tokens: None,
+            timestamp: Instant::now(),
+        };
+        collector.record_with_context(rec2, &labels);
+
+        let req_snap: HashMap<RequestLabels, u64> =
+            collector.md_requests.snapshot().into_iter().collect();
+        assert_eq!(req_snap[&labels], 2);
+
+        let err_snap: HashMap<RequestLabels, u64> =
+            collector.md_errors.snapshot().into_iter().collect();
+        assert_eq!(err_snap[&labels], 1);
+    }
+
+    #[test]
+    fn test_format_prometheus_multi_dim_metrics() {
+        let collector = MetricsCollector::new(100);
+        let labels = test_labels();
+        let rec = RequestRecord {
+            variant_id: "gpt-4o@openai-us".to_string(),
+            latency_ms: 200,
+            ttft_ms: Some(40),
+            success: true,
+            input_tokens: Some(500),
+            output_tokens: Some(1000),
+            timestamp: Instant::now(),
+        };
+        collector.record_with_context(rec, &labels);
+
+        let output = collector.format_prometheus(10, 1, 1);
+
+        // Multi-dim request counter
+        assert!(output.contains("prism_md_requests_total{"));
+        assert!(output.contains("model=\"gpt-4o\""));
+        assert!(output.contains("provider=\"openai\""));
+        assert!(output.contains("region=\"us-east-1\""));
+
+        // Multi-dim latency
+        assert!(output.contains("prism_md_latency_ms_sum{"));
+        assert!(output.contains("prism_md_latency_ms_count{"));
+
+        // Multi-dim TTFT
+        assert!(output.contains("prism_md_ttft_ms_sum{"));
+        assert!(output.contains("prism_md_ttft_ms_count{"));
+
+        // Multi-dim tokens
+        assert!(output.contains("prism_md_input_tokens_total{"));
+        assert!(output.contains("prism_md_output_tokens_total{"));
     }
 }
