@@ -91,6 +91,7 @@ fn build_full_registry() -> InMemoryRegistry {
             }),
             status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
         };
         reg.add_variant(variant);
     }
@@ -165,6 +166,7 @@ fn build_full_registry() -> InMemoryRegistry {
         pricing_override: None,
         status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
     });
 
     reg.add_pool(ModelPool {

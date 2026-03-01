@@ -87,6 +87,7 @@ fn build_variant_registry() -> InMemoryRegistry {
         pricing_override: None,
         status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
     });
 
     // Variant B: faster but higher error rate (canary)
@@ -112,6 +113,7 @@ fn build_variant_registry() -> InMemoryRegistry {
         pricing_override: None,
         status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
     });
 
     // Variant C: high weight (preferred)
@@ -137,6 +139,7 @@ fn build_variant_registry() -> InMemoryRegistry {
         pricing_override: None,
         status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
     });
 
     reg.add_pool(ModelPool {

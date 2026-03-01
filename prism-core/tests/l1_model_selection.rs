@@ -109,6 +109,7 @@ fn make_variant(
         pricing_override: None,
         status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
     }
 }
 

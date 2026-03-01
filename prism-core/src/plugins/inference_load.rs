@@ -102,6 +102,7 @@ mod tests {
                 pricing_override: None,
                 status: VariantStatus::Active,
                 base_url: None,
+                upstream_model_name: None,
             },
             model: Model {
                 id: "model-1".into(),

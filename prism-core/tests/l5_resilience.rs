@@ -145,6 +145,7 @@ fn build_resilience_registry() -> InMemoryRegistry {
         pricing_override: None,
         status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
     });
 
     reg.add_variant(ModelVariant {
@@ -169,6 +170,7 @@ fn build_resilience_registry() -> InMemoryRegistry {
         pricing_override: None,
         status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
     });
 
     reg.add_pool(ModelPool {

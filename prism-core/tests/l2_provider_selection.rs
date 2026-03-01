@@ -153,6 +153,7 @@ fn build_multi_provider_registry() -> InMemoryRegistry {
         pricing_override: None,
         status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
     });
 
     reg.add_variant(ModelVariant {
@@ -181,6 +182,7 @@ fn build_multi_provider_registry() -> InMemoryRegistry {
         }),
         status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
     });
 
     reg.add_variant(ModelVariant {
@@ -194,6 +196,7 @@ fn build_multi_provider_registry() -> InMemoryRegistry {
         pricing_override: None,
         status: VariantStatus::Disabled,
             base_url: None,
+            upstream_model_name: None,
     });
 
     reg.add_pool(ModelPool {
@@ -386,6 +389,7 @@ fn test_quota_aware_selection() {
         pricing_override: None,
         status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
     });
 
     // Cheap variant: current_qps = 0.08 (~5% of limit)
@@ -411,6 +415,7 @@ fn test_quota_aware_selection() {
         pricing_override: None,
         status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
     });
 
     reg.add_pool(ModelPool {

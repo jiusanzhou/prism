@@ -117,6 +117,7 @@ fn build_two_variant_registry() -> InMemoryRegistry {
             pricing_override: None,
             status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
         });
     }
 
@@ -378,6 +379,7 @@ fn test_custom_data_layer_integration() {
         pricing_override: None,
         status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
     });
 
     // Candidate should use the data layer value (77), not the static value (999)

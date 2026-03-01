@@ -322,6 +322,11 @@ pub struct ModelVariant {
     /// When set, overrides the provider/endpoint base_url.
     #[serde(default)]
     pub base_url: Option<String>,
+    /// Model name to send upstream in the request body's `model` field.
+    /// When set, replaces the user-facing `model_id` before forwarding.
+    /// E.g., user sees "deepseek-r1" but upstream expects "deepseek-reasoner".
+    #[serde(default)]
+    pub upstream_model_name: Option<String>,
 }
 
 // ──────────────────────────────────────────────

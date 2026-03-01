@@ -49,6 +49,8 @@ pub struct ProxyContext {
     pub response_body_buffer: Option<Vec<u8>>,
     /// Outbound protocol string determined from provider config.
     pub outbound_protocol: Option<String>,
+    /// Model name to use in upstream request body.
+    pub upstream_model_name: Option<String>,
 }
 
 impl Default for ProxyContext {
@@ -67,6 +69,7 @@ impl Default for ProxyContext {
             request_body_buffer: None,
             response_body_buffer: None,
             outbound_protocol: None,
+            upstream_model_name: None,
         }
     }
 }
@@ -293,6 +296,11 @@ impl ProxyHttp for PrismProxy {
                 ctx.selected_provider = Some(decision.selected_provider.clone());
                 ctx.selected_model = Some(decision.selected_model.clone());
 
+                // Look up upstream_model_name from the variant
+                if let Some(variant) = self.router.registry.variants.get(&decision.selected_variant) {
+                    ctx.upstream_model_name = variant.upstream_model_name.clone();
+                }
+
                 // Look up the provider's base_url and protocols
                 let provider = self
                     .router
@@ -492,7 +500,8 @@ impl ProxyHttp for PrismProxy {
         Ok(())
     }
 
-    /// Phase 3b: Handle request body — buffer and transform if conversion is needed.
+    /// Phase 3b: Handle request body — buffer and transform if conversion is needed,
+    /// and/or rewrite the model name for upstream.
     async fn request_body_filter(
         &self,
         _session: &mut Session,
@@ -500,7 +509,9 @@ impl ProxyHttp for PrismProxy {
         end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> Result<(), Box<pingora::Error>> {
-        if !ctx.needs_conversion {
+        let needs_model_rewrite = ctx.upstream_model_name.is_some();
+
+        if !ctx.needs_conversion && !needs_model_rewrite {
             return Ok(());
         }
 
@@ -508,14 +519,31 @@ impl ProxyHttp for PrismProxy {
         if let Some(ref chunk) = body {
             if let Some(ref mut buf) = ctx.request_body_buffer {
                 buf.extend_from_slice(chunk);
+            } else {
+                ctx.request_body_buffer = Some(chunk.to_vec());
             }
         }
 
-        // When we have the complete body, transform it through the plugin chain
+        // When we have the complete body, optionally rewrite model name and/or
+        // transform through the codec plugin chain.
         if end_of_stream {
-            let full_body = ctx.request_body_buffer.take().unwrap_or_default();
+            let mut full_body = ctx.request_body_buffer.take().unwrap_or_default();
 
-            if !full_body.is_empty() {
+            // Model name rewrite — before codec conversion
+            if let Some(ref upstream_name) = ctx.upstream_model_name {
+                if !full_body.is_empty() {
+                    if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&full_body) {
+                        if json.get("model").is_some() {
+                            json["model"] = serde_json::Value::String(upstream_name.clone());
+                            if let Ok(rewritten) = serde_json::to_vec(&json) {
+                                full_body = rewritten;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if ctx.needs_conversion && !full_body.is_empty() {
                 let provider_id = ctx.selected_provider.as_deref().unwrap_or("");
                 let inbound = ctx.protocol.as_str();
                 let outbound = ctx.outbound_protocol.as_deref().unwrap_or("");
@@ -531,6 +559,7 @@ impl ProxyHttp for PrismProxy {
                                     "Codec plugin chain transformed request body"
                                 );
                                 *body = Some(Bytes::from(transformed));
+                                return Ok(());
                             }
                             Err(e) => {
                                 error!(error = %e, "Codec plugin chain failed to transform request body");
@@ -541,13 +570,12 @@ impl ProxyHttp for PrismProxy {
                             }
                         }
                     }
-                } else {
-                    // No chain found (shouldn't happen since needs_conversion was true),
-                    // pass through original body
-                    *body = Some(Bytes::from(full_body));
                 }
             }
-        } else if ctx.needs_conversion {
+
+            // Pass through (possibly rewritten) body
+            *body = Some(Bytes::from(full_body));
+        } else {
             // We're buffering — suppress sending partial chunks upstream.
             // Clear the chunk so Pingora doesn't send it yet.
             *body = None;
@@ -1156,5 +1184,56 @@ mod tests {
 
         assert!(proxy.rate_limiter.is_some());
         assert!(proxy.codec_registry.needs_conversion("any", "openai", "anthropic"));
+    }
+
+    // ── upstream_model_name rewrite tests ──
+
+    #[test]
+    fn test_model_name_rewrite() {
+        // Verify upstream_model_name rewrites the model field in the body
+        let body = br#"{"model":"deepseek-r1","messages":[{"role":"user","content":"hi"}]}"#;
+        let mut json: serde_json::Value = serde_json::from_slice(body).unwrap();
+        let upstream_name = "deepseek-reasoner";
+        json["model"] = serde_json::Value::String(upstream_name.to_string());
+        let rewritten = serde_json::to_vec(&json).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&rewritten).unwrap();
+        assert_eq!(parsed["model"], "deepseek-reasoner");
+        assert_eq!(parsed["messages"][0]["content"], "hi"); // other fields unchanged
+    }
+
+    #[test]
+    fn test_model_name_no_rewrite_when_none() {
+        // When upstream_model_name is None, body should remain unchanged
+        let body = br#"{"model":"deepseek-r1","messages":[{"role":"user","content":"hi"}]}"#;
+        let upstream_model_name: Option<String> = None;
+
+        let mut full_body = body.to_vec();
+        if let Some(ref upstream_name) = upstream_model_name {
+            if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&full_body) {
+                if json.get("model").is_some() {
+                    json["model"] = serde_json::Value::String(upstream_name.clone());
+                    if let Ok(rewritten) = serde_json::to_vec(&json) {
+                        full_body = rewritten;
+                    }
+                }
+            }
+        }
+
+        let parsed: serde_json::Value = serde_json::from_slice(&full_body).unwrap();
+        assert_eq!(parsed["model"], "deepseek-r1"); // unchanged
+        assert_eq!(parsed["messages"][0]["content"], "hi");
+    }
+
+    #[test]
+    fn test_proxy_context_upstream_model_name_default() {
+        let ctx = ProxyContext::default();
+        assert!(ctx.upstream_model_name.is_none());
+    }
+
+    #[test]
+    fn test_proxy_context_upstream_model_name_set() {
+        let mut ctx = ProxyContext::default();
+        ctx.upstream_model_name = Some("deepseek-reasoner".to_string());
+        assert_eq!(ctx.upstream_model_name, Some("deepseek-reasoner".to_string()));
     }
 }

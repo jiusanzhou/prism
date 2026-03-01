@@ -337,6 +337,7 @@ fn test_feedback_influences_routing() {
         pricing_override: None,
         status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
     };
     registry.add_variant(v1);
 
@@ -351,6 +352,7 @@ fn test_feedback_influences_routing() {
         pricing_override: None,
         status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
     };
     registry.add_variant(v2);
 

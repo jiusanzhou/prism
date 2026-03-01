@@ -94,6 +94,7 @@ fn build_multi_account_registry() -> InMemoryRegistry {
             pricing_override: None,
             status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
         });
     }
 
@@ -244,6 +245,7 @@ fn test_soft_affinity_migrates_on_overload() {
         pricing_override: None,
         status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
     });
 
     reg.add_variant(ModelVariant {
@@ -268,6 +270,7 @@ fn test_soft_affinity_migrates_on_overload() {
         pricing_override: None,
         status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
     });
 
     reg.add_pool(ModelPool {
@@ -374,6 +377,7 @@ fn test_hard_affinity_rejects_on_overload() {
             pricing_override: None,
             status: VariantStatus::Active,
             base_url: None,
+            upstream_model_name: None,
         });
     }
 
