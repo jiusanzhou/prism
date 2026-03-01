@@ -37,6 +37,11 @@ bytes = { version = "1", optional = true }
 # wasm feature deps
 wasmtime = { version = "42", optional = true }
 
+# Plugin loader deps
+sha2 = "0.10"
+hex = "0.4"
+ureq = { version = "2", features = ["json"] }
+
 [build-dependencies]
 tonic-build = "0.12"
 

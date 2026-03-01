@@ -2105,6 +2105,7 @@ dependencies = [
  "bytes",
  "clap",
  "dashmap 6.1.0",
+ "hex",
  "http",
  "http-body-util",
  "hyper",
@@ -2115,6 +2116,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -2124,6 +2126,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "ureq",
  "wasmtime",
 ]
 

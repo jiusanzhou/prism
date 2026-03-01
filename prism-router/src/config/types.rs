@@ -289,10 +289,29 @@ pub struct PluginConfig {
 ///   wasm: ./plugins/openai-compat.wasm
 /// source:
 ///   builtin: my-builtin-plugin
+/// source:
+///   url: https://cdn.example.com/plugins/scorer-v1.0.wasm
+///   sha256: abc123...
+/// source:
+///   oci: ghcr.io/prism-plugins/k8s-router:v1.2.0
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PluginSourceConfig {
+    /// Remote HTTP/HTTPS URL: `{ url: "https://cdn.example.com/plugin.wasm" }`
+    Url {
+        url: String,
+        /// Optional SHA-256 checksum for integrity verification.
+        #[serde(default)]
+        sha256: Option<String>,
+    },
+    /// OCI registry image: `{ oci: "registry.example.com/plugins/name:tag" }`
+    Oci {
+        oci: String,
+        /// Optional SHA-256 digest for pinning.
+        #[serde(default)]
+        digest: Option<String>,
+    },
     /// WASM module file path: `{ wasm: "./path.wasm" }`
     Wasm { wasm: String },
     /// Built-in Rust plugin: `{ builtin: "plugin-name" }`
@@ -824,5 +843,120 @@ codec:
         assert_eq!(config.codec.default_inbound_protocol, "openai");
         assert_eq!(config.codec.provider_chains.len(), 1);
         assert_eq!(config.codec.protocol_chains.len(), 1);
+    }
+
+    #[test]
+    fn test_plugin_source_url_serde() {
+        let yaml = r#"
+plugins:
+  - name: remote-scorer
+    source:
+      url: https://cdn.example.com/plugins/scorer-v1.0.wasm
+      sha256: abc123def456
+    phases: [route]
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.plugins.len(), 1);
+        let plugin = &config.plugins[0];
+        assert_eq!(plugin.name, "remote-scorer");
+        match &plugin.source {
+            PluginSourceConfig::Url { url, sha256 } => {
+                assert_eq!(url, "https://cdn.example.com/plugins/scorer-v1.0.wasm");
+                assert_eq!(sha256.as_deref(), Some("abc123def456"));
+            }
+            _ => panic!("expected Url source, got {:?}", plugin.source),
+        }
+    }
+
+    #[test]
+    fn test_plugin_source_url_no_sha256() {
+        let yaml = r#"
+plugins:
+  - name: remote-plugin
+    source:
+      url: https://cdn.example.com/plugin.wasm
+    phases: [proxy]
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        match &config.plugins[0].source {
+            PluginSourceConfig::Url { url, sha256 } => {
+                assert_eq!(url, "https://cdn.example.com/plugin.wasm");
+                assert!(sha256.is_none());
+            }
+            _ => panic!("expected Url source"),
+        }
+    }
+
+    #[test]
+    fn test_plugin_source_oci_serde() {
+        let yaml = r#"
+plugins:
+  - name: k8s-router
+    source:
+      oci: ghcr.io/prism-plugins/k8s-router:v1.2.0
+    phases: [route, proxy]
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.plugins.len(), 1);
+        let plugin = &config.plugins[0];
+        assert_eq!(plugin.name, "k8s-router");
+        match &plugin.source {
+            PluginSourceConfig::Oci { oci, digest } => {
+                assert_eq!(oci, "ghcr.io/prism-plugins/k8s-router:v1.2.0");
+                assert!(digest.is_none());
+            }
+            _ => panic!("expected Oci source, got {:?}", plugin.source),
+        }
+    }
+
+    #[test]
+    fn test_plugin_source_oci_with_digest() {
+        let yaml = r#"
+plugins:
+  - name: pinned-plugin
+    source:
+      oci: ghcr.io/prism/plugin:v1
+      digest: sha256:abc123
+    phases: [proxy]
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        match &config.plugins[0].source {
+            PluginSourceConfig::Oci { oci, digest } => {
+                assert_eq!(oci, "ghcr.io/prism/plugin:v1");
+                assert_eq!(digest.as_deref(), Some("sha256:abc123"));
+            }
+            _ => panic!("expected Oci source"),
+        }
+    }
+
+    #[test]
+    fn test_full_config_with_all_source_types() {
+        let yaml = r#"
+plugins:
+  - name: local-plugin
+    source:
+      wasm: ./plugins/local.wasm
+    phases: [proxy]
+  - name: remote-plugin
+    source:
+      url: https://cdn.example.com/plugins/remote.wasm
+      sha256: deadbeef
+    phases: [route]
+  - name: oci-plugin
+    source:
+      oci: ghcr.io/prism-plugins/oci:v1.0
+    phases: [route, proxy]
+  - name: builtin-plugin
+    source:
+      builtin: health_filter
+    phases: [route]
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.plugins.len(), 4);
+
+        assert!(matches!(&config.plugins[0].source, PluginSourceConfig::Wasm { .. }));
+        assert!(matches!(&config.plugins[1].source, PluginSourceConfig::Url { .. }));
+        assert!(matches!(&config.plugins[2].source, PluginSourceConfig::Oci { .. }));
+        assert!(matches!(&config.plugins[3].source, PluginSourceConfig::Builtin { .. }));
     }
 }
