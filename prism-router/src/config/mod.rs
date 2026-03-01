@@ -2,6 +2,8 @@ mod env_source;
 mod file_source;
 pub mod registry;
 mod types;
+#[cfg(feature = "wasm")]
+mod wasm_source;
 
 use std::fmt;
 
@@ -9,6 +11,8 @@ pub use env_source::EnvSource;
 pub use file_source::{ConfigFormat, FileSource};
 pub use registry::{build_registry, build_registry_with_discoveries};
 pub use types::*;
+#[cfg(feature = "wasm")]
+pub use wasm_source::WasmConfigSource;
 
 // ── ConfigError ──
 
