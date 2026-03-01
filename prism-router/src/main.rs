@@ -2,6 +2,7 @@ mod api;
 pub mod codec;
 mod config;
 pub mod metrics;
+pub mod unified_plugin;
 mod state;
 
 #[cfg(feature = "grpc")]
