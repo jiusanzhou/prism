@@ -34,7 +34,7 @@ async-trait = { version = "0.1", optional = true }
 bytes = { version = "1", optional = true }
 
 # wasm feature deps
-wasmtime = { version = "42", optional = true }
+wasmtime = { version = "24", optional = true }
 
 [build-dependencies]
 tonic-build = "0.12"
