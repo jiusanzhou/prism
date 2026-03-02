@@ -173,6 +173,11 @@ pub trait ProxyPlugin: Send + Sync {
     ) -> Result<Option<String>, String> {
         Ok(Some(chunk.to_string()))
     }
+
+    /// Phase 5: Called at request completion (logging phase).
+    /// Used for metering, billing, auditing — has access to the full ctx
+    /// including response status, duration, selected variant/provider/model, etc.
+    fn on_log(&self, _ctx: &mut ProxyContext) {}
 }
 
 // ════════════════════════════════════════════════

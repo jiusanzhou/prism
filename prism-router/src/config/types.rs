@@ -375,6 +375,10 @@ pub struct CodecConfig {
     /// Default inbound protocol (assumed when client doesn't specify).
     #[serde(default = "default_protocol")]
     pub default_inbound_protocol: String,
+    /// Global plugin chain — runs on ALL requests regardless of protocol.
+    /// Used for cross-cutting concerns: metering, billing, security audit, token counting.
+    #[serde(default)]
+    pub global_chain: Vec<String>,
 }
 
 impl Default for CodecConfig {
@@ -383,6 +387,7 @@ impl Default for CodecConfig {
             provider_chains: HashMap::new(),
             protocol_chains: HashMap::new(),
             default_inbound_protocol: default_protocol(),
+            global_chain: Vec::new(),
         }
     }
 }

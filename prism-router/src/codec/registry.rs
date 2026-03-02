@@ -20,6 +20,9 @@ pub struct CodecRegistry {
     provider_chains: HashMap<String, ProxyPluginChain>,
     /// `(inbound_protocol, outbound_protocol)` → chain.
     protocol_chains: HashMap<(String, String), ProxyPluginChain>,
+    /// Global plugin chain — runs on ALL requests regardless of protocol conversion.
+    /// Used for cross-cutting concerns: metering, billing, security audit, token counting.
+    global_chain: Option<ProxyPluginChain>,
 }
 
 impl CodecRegistry {
@@ -28,7 +31,18 @@ impl CodecRegistry {
         Self {
             provider_chains: HashMap::new(),
             protocol_chains: HashMap::new(),
+            global_chain: None,
         }
+    }
+
+    /// Set the global plugin chain (runs on all requests).
+    pub fn set_global_chain(&mut self, chain: ProxyPluginChain) {
+        self.global_chain = Some(chain);
+    }
+
+    /// Get the global plugin chain (if any).
+    pub fn global_chain(&self) -> Option<&ProxyPluginChain> {
+        self.global_chain.as_ref()
     }
 
     /// Register a chain for a specific provider.
@@ -234,5 +248,51 @@ mod tests {
             .process_request_body(&mut ctx, b"X".to_vec())
             .unwrap();
         assert_eq!(result, b"[a2o]X");
+    }
+
+    // ── Global chain tests ──
+
+    #[test]
+    fn test_global_chain_default_none() {
+        let registry = CodecRegistry::new();
+        assert!(registry.global_chain().is_none());
+    }
+
+    #[test]
+    fn test_set_global_chain() {
+        let mut registry = CodecRegistry::new();
+        let mut chain = ProxyPluginChain::new();
+        chain.add(Box::new(TagPlugin {
+            tag: "global".into(),
+        }));
+        registry.set_global_chain(chain);
+        assert!(registry.global_chain().is_some());
+        assert_eq!(registry.global_chain().unwrap().plugin_names(), vec!["global"]);
+    }
+
+    #[test]
+    fn test_global_chain_independent_of_provider() {
+        let mut registry = CodecRegistry::new();
+
+        // Register a provider chain
+        let mut provider_chain = ProxyPluginChain::new();
+        provider_chain.add(Box::new(TagPlugin {
+            tag: "provider".into(),
+        }));
+        registry.register_provider("openai", provider_chain);
+
+        // Register global chain
+        let mut global = ProxyPluginChain::new();
+        global.add(Box::new(TagPlugin {
+            tag: "global".into(),
+        }));
+        registry.set_global_chain(global);
+
+        // Global chain is always available
+        assert!(registry.global_chain().is_some());
+        // Provider chain still works independently
+        assert!(registry.get_chain("openai", "a", "b").is_some());
+        // Non-matching provider has no codec chain
+        assert!(registry.get_chain("anthropic", "a", "b").is_none());
     }
 }

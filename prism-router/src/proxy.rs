@@ -100,6 +100,8 @@ pub struct ProxyContext {
     pub upstream_transport_failure_reason: Option<String>,
     /// Connection termination details.
     pub connection_termination_details: Option<String>,
+    /// Global plugin chain context (always initialized, not dependent on conversion).
+    pub global_codec_ctx: Option<codec::ProxyContext>,
     /// Number of upstream request attempts.
     pub upstream_request_attempt_count: u32,
 }
@@ -142,6 +144,7 @@ impl Default for ProxyContext {
             response_code_details: None,
             upstream_transport_failure_reason: None,
             connection_termination_details: None,
+            global_codec_ctx: None,
             upstream_request_attempt_count: 1,
         }
     }
@@ -642,6 +645,23 @@ impl ProxyHttp for PrismProxy {
             "Request received"
         );
 
+        // ── Global plugin chain: on_request_headers (pre-route) ──
+        if let Some(global_chain) = self.codec_registry.global_chain() {
+            let mut global_ctx = codec::ProxyContext::new();
+            global_ctx.inbound_protocol = ctx.protocol.as_str().to_string();
+            global_ctx.request_path = ctx.request_path.clone();
+            global_ctx.request_method = ctx.request_method.clone();
+            for (k, v) in &ctx.request_headers_snapshot {
+                global_ctx.request_headers.insert(k.clone(), v.clone());
+            }
+            let action = global_chain.process_request_headers(&mut global_ctx);
+            ctx.global_codec_ctx = Some(global_ctx);
+            if action == codec::Action::Stop {
+                debug!("Global plugin chain stopped request at headers");
+                return Ok(true);
+            }
+        }
+
         // Rate limit check — early, before routing
         if let Some(ref limiter) = self.rate_limiter {
             let headers: Vec<(String, String)> = session
@@ -1012,6 +1032,19 @@ impl ProxyHttp for PrismProxy {
             }
         }
 
+        // ── Global plugin chain: update routing info after route decision ──
+        if let Some(ref mut global_ctx) = ctx.global_codec_ctx {
+            global_ctx.selected_variant = ctx.selected_variant.clone().unwrap_or_default();
+            global_ctx.selected_provider = ctx.selected_provider.clone().unwrap_or_default();
+            global_ctx.selected_model = ctx.selected_model.clone().unwrap_or_default();
+            if let Some(ref base_url) = ctx.upstream_base_url {
+                global_ctx.upstream_host = base_url.clone();
+            }
+            if let Some(ref outbound) = ctx.outbound_protocol {
+                global_ctx.outbound_protocol = outbound.clone();
+            }
+        }
+
         debug!(
             variant = ?ctx.selected_variant,
             "Upstream request filter applied"
@@ -1111,6 +1144,19 @@ impl ProxyHttp for PrismProxy {
         upstream_response: &mut pingora::http::ResponseHeader,
         ctx: &mut Self::CTX,
     ) -> Result<(), Box<pingora::Error>> {
+        // ── Global plugin chain: on_response_headers (all requests) ──
+        if let Some(global_chain) = self.codec_registry.global_chain() {
+            if let Some(ref mut global_ctx) = ctx.global_codec_ctx {
+                global_ctx.response_status = Some(upstream_response.status.as_u16());
+                for (name, value) in upstream_response.headers.iter() {
+                    if let Ok(v) = value.to_str() {
+                        global_ctx.response_headers.insert(name.as_str().to_string(), v.to_string());
+                    }
+                }
+                global_chain.process_response_headers(global_ctx);
+            }
+        }
+
         if !ctx.needs_conversion {
             return Ok(());
         }
@@ -1312,6 +1358,15 @@ impl ProxyHttp for PrismProxy {
                 output_tokens: None,
                 timestamp: Instant::now(),
             });
+        }
+
+        // ── Global plugin chain: on_log (all requests) ──
+        if let Some(global_chain) = self.codec_registry.global_chain() {
+            if let Some(ref mut global_ctx) = ctx.global_codec_ctx {
+                // Update final status info before on_log
+                global_ctx.response_status = Some(status);
+                global_chain.process_log(global_ctx);
+            }
         }
 
         // Access log
