@@ -252,7 +252,10 @@ pub fn parse_format_string(s: &str) -> Vec<FormatSegment> {
                         if let Some(op) = parse_operator_with_param(name_part, param) {
                             segments.push(FormatSegment::Operator(op));
                         } else {
-                            segments.push(FormatSegment::Literal(format!("%{}%", &rest[..full_end - 1])));
+                            segments.push(FormatSegment::Literal(format!(
+                                "%{}%",
+                                &rest[..full_end - 1]
+                            )));
                         }
                         rest = &rest[full_end..];
                         continue;
@@ -286,7 +289,10 @@ pub fn parse_format_string(s: &str) -> Vec<FormatSegment> {
 
 /// Check if a name is a parameterized operator (has a `(param)` form).
 fn is_parameterized_operator(name: &str) -> bool {
-    matches!(name, "START_TIME" | "START_TIME_LOCAL" | "EMIT_TIME" | "REQUEST_HEADER" | "RESPONSE_HEADER")
+    matches!(
+        name,
+        "START_TIME" | "START_TIME_LOCAL" | "EMIT_TIME" | "REQUEST_HEADER" | "RESPONSE_HEADER"
+    )
 }
 
 /// Parse a parameterized operator with its parameter value.
@@ -356,7 +362,9 @@ fn parse_operator(token: &str) -> Option<CommandOperator> {
         "RESPONSE_TX_DURATION_MS" => Some(CommandOperator::ResponseTxDurationMs),
         "UPSTREAM_PROTOCOL" => Some(CommandOperator::UpstreamProtocol),
         "DOWNSTREAM_LOCAL_ADDRESS" => Some(CommandOperator::DownstreamLocalAddress),
-        "UPSTREAM_TRANSPORT_FAILURE_REASON" => Some(CommandOperator::UpstreamTransportFailureReason),
+        "UPSTREAM_TRANSPORT_FAILURE_REASON" => {
+            Some(CommandOperator::UpstreamTransportFailureReason)
+        }
         "CONNECTION_TERMINATION_DETAILS" => Some(CommandOperator::ConnectionTerminationDetails),
         "RESPONSE_CODE_DETAILS" => Some(CommandOperator::ResponseCodeDetails),
         "POOL_NAME" => Some(CommandOperator::PoolName),
@@ -508,7 +516,7 @@ fn resolve_text(op: &CommandOperator, data: &AccessLogData) -> Option<String> {
     match op {
         CommandOperator::StartTime(fmt) => {
             let format_str = fmt.as_deref().unwrap_or("%Y-%m-%dT%H:%M:%S%.3fZ");
-          Some(data.start_time.format(format_str).to_string())
+            Some(data.start_time.format(format_str).to_string())
         }
         CommandOperator::Method => Some(data.method.clone()),
         CommandOperator::Path => Some(data.path.clone()),
@@ -525,18 +533,16 @@ fn resolve_text(op: &CommandOperator, data: &AccessLogData) -> Option<String> {
         CommandOperator::Streaming => data.streaming.map(|v| v.to_string()),
         CommandOperator::Conversion => Some(data.conversion.to_string()),
         CommandOperator::DecisionTimeUs => data.decision_time_us.map(|v| v.to_string()),
-        CommandOperator::RequestHeader(name) => {
-            data.request_headers
-                .iter()
-                .find(|(k, _)| k == name)
-                .map(|(_, v)| v.clone())
-        }
-        CommandOperator::ResponseHeader(name) => {
-            data.response_headers
-                .iter()
-                .find(|(k, _)| k == name)
-                .map(|(_, v)| v.clone())
-        }
+        CommandOperator::RequestHeader(name) => data
+            .request_headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone()),
+        CommandOperator::ResponseHeader(name) => data
+            .response_headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone()),
         CommandOperator::InputTokens => data.input_tokens.map(|v| v.to_string()),
         CommandOperator::OutputTokens => data.output_tokens.map(|v| v.to_string()),
         CommandOperator::RatelimitMatched => Some(data.ratelimit_matched.to_string()),
@@ -567,11 +573,17 @@ fn resolve_text(op: &CommandOperator, data: &AccessLogData) -> Option<String> {
         }
         CommandOperator::RequestHeadersBytes => data.request_headers_bytes.map(|v| v.to_string()),
         CommandOperator::ResponseHeadersBytes => data.response_headers_bytes.map(|v| v.to_string()),
-        CommandOperator::ResponseTxDurationMs => data.response_tx_duration_ms.map(|v| v.to_string()),
+        CommandOperator::ResponseTxDurationMs => {
+            data.response_tx_duration_ms.map(|v| v.to_string())
+        }
         CommandOperator::UpstreamProtocol => data.upstream_protocol.clone(),
         CommandOperator::DownstreamLocalAddress => data.downstream_local_address.clone(),
-        CommandOperator::UpstreamTransportFailureReason => data.upstream_transport_failure_reason.clone(),
-        CommandOperator::ConnectionTerminationDetails => data.connection_termination_details.clone(),
+        CommandOperator::UpstreamTransportFailureReason => {
+            data.upstream_transport_failure_reason.clone()
+        }
+        CommandOperator::ConnectionTerminationDetails => {
+            data.connection_termination_details.clone()
+        }
         CommandOperator::ResponseCodeDetails => data.response_code_details.clone(),
         CommandOperator::PoolName => data.pool_name.clone(),
         CommandOperator::RequestId => data.request_id.clone(),
@@ -722,11 +734,14 @@ fn resolve_json(op: &CommandOperator, data: &AccessLogData) -> Value {
             Some(v) => Value::String(v.clone()),
             None => Value::Null,
         },
-        CommandOperator::UpstreamTransportFailureReason => match &data.upstream_transport_failure_reason {
-            Some(v) => Value::String(v.clone()),
-            None => Value::Null,
-        },
-        CommandOperator::ConnectionTerminationDetails => match &data.connection_termination_details {
+        CommandOperator::UpstreamTransportFailureReason => {
+            match &data.upstream_transport_failure_reason {
+                Some(v) => Value::String(v.clone()),
+                None => Value::Null,
+            }
+        }
+        CommandOperator::ConnectionTerminationDetails => match &data.connection_termination_details
+        {
             Some(v) => Value::String(v.clone()),
             None => Value::Null,
         },
@@ -790,9 +805,7 @@ impl AccessLogger {
             config
                 .fields
                 .iter()
-                .filter_map(|spec| {
-                    parse_field_spec(spec).map(|op| (op.json_key(), op))
-                })
+                .filter_map(|spec| parse_field_spec(spec).map(|op| (op.json_key(), op)))
                 .collect()
         };
 
@@ -923,9 +936,7 @@ mod tests {
                 ("x-api-key".into(), "sk-test-123".into()),
                 ("content-type".into(), "application/json".into()),
             ],
-            response_headers: vec![
-                ("x-request-id".into(), "req-abc-123".into()),
-            ],
+            response_headers: vec![("x-request-id".into(), "req-abc-123".into())],
             input_tokens: Some(150),
             output_tokens: Some(300),
             ratelimit_matched: false,
@@ -963,11 +974,14 @@ mod tests {
     #[test]
     fn test_parse_simple_operators() {
         let segments = parse_format_string("%METHOD% %PATH%");
-        assert_eq!(segments, vec![
-            FormatSegment::Operator(CommandOperator::Method),
-            FormatSegment::Literal(" ".into()),
-            FormatSegment::Operator(CommandOperator::Path),
-        ]);
+        assert_eq!(
+            segments,
+            vec![
+                FormatSegment::Operator(CommandOperator::Method),
+                FormatSegment::Literal(" ".into()),
+                FormatSegment::Operator(CommandOperator::Path),
+            ]
+        );
     }
 
     #[test]
@@ -975,45 +989,64 @@ mod tests {
         let segments = parse_format_string("[%START_TIME%] \"%METHOD% %PATH%\" %RESPONSE_CODE%");
         assert_eq!(segments.len(), 8);
         assert_eq!(segments[0], FormatSegment::Literal("[".into()));
-        assert_eq!(segments[1], FormatSegment::Operator(CommandOperator::StartTime(None)));
+        assert_eq!(
+            segments[1],
+            FormatSegment::Operator(CommandOperator::StartTime(None))
+        );
         assert_eq!(segments[2], FormatSegment::Literal("] \"".into()));
-        assert_eq!(segments[3], FormatSegment::Operator(CommandOperator::Method));
+        assert_eq!(
+            segments[3],
+            FormatSegment::Operator(CommandOperator::Method)
+        );
         assert_eq!(segments[4], FormatSegment::Literal(" ".into()));
         assert_eq!(segments[5], FormatSegment::Operator(CommandOperator::Path));
         assert_eq!(segments[6], FormatSegment::Literal("\" ".into()));
-        assert_eq!(segments[7], FormatSegment::Operator(CommandOperator::ResponseCode));
+        assert_eq!(
+            segments[7],
+            FormatSegment::Operator(CommandOperator::ResponseCode)
+        );
     }
 
     #[test]
     fn test_parse_parameterized_start_time() {
         let segments = parse_format_string("%START_TIME(%Y-%m-%d)%");
-        assert_eq!(segments, vec![
-            FormatSegment::Operator(CommandOperator::StartTime(Some("%Y-%m-%d".into()))),
-        ]);
+        assert_eq!(
+            segments,
+            vec![FormatSegment::Operator(CommandOperator::StartTime(Some(
+                "%Y-%m-%d".into()
+            ))),]
+        );
     }
 
     #[test]
     fn test_parse_request_header() {
         let segments = parse_format_string("%REQUEST_HEADER(X-Api-Key)%");
-        assert_eq!(segments, vec![
-            FormatSegment::Operator(CommandOperator::RequestHeader("x-api-key".into())),
-        ]);
+        assert_eq!(
+            segments,
+            vec![FormatSegment::Operator(CommandOperator::RequestHeader(
+                "x-api-key".into()
+            )),]
+        );
     }
 
     #[test]
     fn test_parse_response_header() {
         let segments = parse_format_string("%RESPONSE_HEADER(X-Request-Id)%");
-        assert_eq!(segments, vec![
-            FormatSegment::Operator(CommandOperator::ResponseHeader("x-request-id".into())),
-        ]);
+        assert_eq!(
+            segments,
+            vec![FormatSegment::Operator(CommandOperator::ResponseHeader(
+                "x-request-id".into()
+            )),]
+        );
     }
 
     #[test]
     fn test_parse_unknown_operator() {
         let segments = parse_format_string("%UNKNOWN_OP%");
-        assert_eq!(segments, vec![
-            FormatSegment::Literal("%UNKNOWN_OP%".into()),
-        ]);
+        assert_eq!(
+            segments,
+            vec![FormatSegment::Literal("%UNKNOWN_OP%".into()),]
+        );
     }
 
     #[test]
@@ -1025,30 +1058,58 @@ mod tests {
     #[test]
     fn test_parse_no_operators() {
         let segments = parse_format_string("just plain text");
-        assert_eq!(segments, vec![
-            FormatSegment::Literal("just plain text".into()),
-        ]);
+        assert_eq!(
+            segments,
+            vec![FormatSegment::Literal("just plain text".into()),]
+        );
     }
 
     #[test]
     fn test_parse_all_operators() {
         let ops = vec![
-            "METHOD", "PATH", "PROTOCOL", "RESPONSE_CODE",
-            "DURATION_MS", "DURATION_US", "BYTES_RECEIVED", "BYTES_SENT",
-            "VARIANT", "PROVIDER", "MODEL", "UPSTREAM_HOST",
-            "STREAMING", "CONVERSION", "DECISION_TIME_US",
-            "INPUT_TOKENS", "OUTPUT_TOKENS", "RATELIMIT_MATCHED",
-            "RATELIMIT_RULE", "ERROR", "ROUTE_STRATEGY", "ROUTE_SCORE",
-            "ROUTE_CANDIDATES", "UPSTREAM_RESPONSE_TIME_MS", "REQWEST_FALLBACK",
-            "RESPONSE_FLAGS", "DOWNSTREAM_REMOTE_ADDRESS",
-            "REQUEST_DURATION_MS", "RESPONSE_DURATION_MS",
+            "METHOD",
+            "PATH",
+            "PROTOCOL",
+            "RESPONSE_CODE",
+            "DURATION_MS",
+            "DURATION_US",
+            "BYTES_RECEIVED",
+            "BYTES_SENT",
+            "VARIANT",
+            "PROVIDER",
+            "MODEL",
+            "UPSTREAM_HOST",
+            "STREAMING",
+            "CONVERSION",
+            "DECISION_TIME_US",
+            "INPUT_TOKENS",
+            "OUTPUT_TOKENS",
+            "RATELIMIT_MATCHED",
+            "RATELIMIT_RULE",
+            "ERROR",
+            "ROUTE_STRATEGY",
+            "ROUTE_SCORE",
+            "ROUTE_CANDIDATES",
+            "UPSTREAM_RESPONSE_TIME_MS",
+            "REQWEST_FALLBACK",
+            "RESPONSE_FLAGS",
+            "DOWNSTREAM_REMOTE_ADDRESS",
+            "REQUEST_DURATION_MS",
+            "RESPONSE_DURATION_MS",
             "UPSTREAM_REQUEST_ATTEMPT_COUNT",
-            "START_TIME_LOCAL", "EMIT_TIME",
-            "REQUEST_HEADERS_BYTES", "RESPONSE_HEADERS_BYTES",
-            "RESPONSE_TX_DURATION_MS", "UPSTREAM_PROTOCOL",
-            "DOWNSTREAM_LOCAL_ADDRESS", "UPSTREAM_TRANSPORT_FAILURE_REASON",
-            "CONNECTION_TERMINATION_DETAILS", "RESPONSE_CODE_DETAILS",
-            "POOL_NAME", "REQUEST_ID", "DOWNSTREAM_TLS_VERSION",
+            "START_TIME_LOCAL",
+            "EMIT_TIME",
+            "REQUEST_HEADERS_BYTES",
+            "RESPONSE_HEADERS_BYTES",
+            "RESPONSE_TX_DURATION_MS",
+            "UPSTREAM_PROTOCOL",
+            "DOWNSTREAM_LOCAL_ADDRESS",
+            "UPSTREAM_TRANSPORT_FAILURE_REASON",
+            "CONNECTION_TERMINATION_DETAILS",
+            "RESPONSE_CODE_DETAILS",
+            "POOL_NAME",
+            "REQUEST_ID",
+            "DOWNSTREAM_TLS_VERSION",
         ];
         for op_name in ops {
             let s = format!("%{}%", op_name);
@@ -1117,7 +1178,8 @@ mod tests {
         let config = AccessLogConfig {
             enabled: true,
             format: AccessLogFormat::Text,
-            text_format: "key=%REQUEST_HEADER(x-api-key)% missing=%REQUEST_HEADER(x-nonexist)%".into(),
+            text_format: "key=%REQUEST_HEADER(x-api-key)% missing=%REQUEST_HEADER(x-nonexist)%"
+                .into(),
             output: AccessLogOutput::Stdout,
             ..Default::default()
         };
@@ -1206,11 +1268,7 @@ mod tests {
             enabled: true,
             format: AccessLogFormat::Json,
             output: AccessLogOutput::Stdout,
-            fields: vec![
-                "%METHOD%".into(),
-                "%PATH%".into(),
-                "%RESPONSE_CODE%".into(),
-            ],
+            fields: vec!["%METHOD%".into(), "%PATH%".into(), "%RESPONSE_CODE%".into()],
             ..Default::default()
         };
         let logger = AccessLogger::new(config).unwrap();
@@ -1486,7 +1544,9 @@ mod tests {
         let data = sample_data();
         let text = logger.format_text(&data);
 
-        assert!(text.starts_with("[2026-03-01T12:00:00.123Z] \"POST /v1/chat/completions\" 200 1250ms"));
+        assert!(
+            text.starts_with("[2026-03-01T12:00:00.123Z] \"POST /v1/chat/completions\" 200 1250ms")
+        );
         assert!(text.contains("variant=gpt4-fast"));
         assert!(text.contains("provider=openai"));
         assert!(text.contains("model=gpt-4o"));
@@ -1804,7 +1864,9 @@ mod tests {
         let config = AccessLogConfig {
             enabled: true,
             format: AccessLogFormat::Text,
-            text_format: "fail=%UPSTREAM_TRANSPORT_FAILURE_REASON% term=%CONNECTION_TERMINATION_DETAILS%".into(),
+            text_format:
+                "fail=%UPSTREAM_TRANSPORT_FAILURE_REASON% term=%CONNECTION_TERMINATION_DETAILS%"
+                    .into(),
             output: AccessLogOutput::Stdout,
             ..Default::default()
         };

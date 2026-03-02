@@ -240,7 +240,6 @@ pub struct ModelPerformance {
     pub last_updated: Option<Instant>,
 
     // ── Inference engine metrics ──
-
     /// GPU utilization (0.0 - 1.0)
     #[serde(default)]
     pub gpu_utilization: f32,

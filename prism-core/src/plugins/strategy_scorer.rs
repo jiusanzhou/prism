@@ -24,12 +24,11 @@ impl StrategyScorerPlugin {
             QualityTier::C => 0.25,
         };
 
-        let specialty_bonus: f32 =
-            if candidate.model.specialties.contains(&profile.task_type) {
-                0.15
-            } else {
-                0.0
-            };
+        let specialty_bonus: f32 = if candidate.model.specialties.contains(&profile.task_type) {
+            0.15
+        } else {
+            0.0
+        };
 
         (tier_score + specialty_bonus).min(1.0)
     }
@@ -68,12 +67,16 @@ impl RoutingPlugin for StrategyScorerPlugin {
                         return false;
                     }
                 }
-                RoutingObjective::QualityFirst { max_latency_ms: Some(max_lat) } => {
+                RoutingObjective::QualityFirst {
+                    max_latency_ms: Some(max_lat),
+                } => {
                     if candidate.variant.performance.p99_latency_ms > *max_lat {
                         return false;
                     }
                 }
-                RoutingObjective::QualityFirst { max_latency_ms: None } => {}
+                RoutingObjective::QualityFirst {
+                    max_latency_ms: None,
+                } => {}
                 _ => {}
             }
         }
@@ -97,11 +100,9 @@ impl RoutingPlugin for StrategyScorerPlugin {
 
                 let cost_score =
                     1.0 - (candidate.effective_pricing.cost_per_1m() / max_cost).min(1.0);
-                let quality_score =
-                    Self::estimate_quality(&state.profile, candidate) as f64;
+                let quality_score = Self::estimate_quality(&state.profile, candidate) as f64;
                 let latency_score = 1.0
-                    - (candidate.variant.performance.p50_latency_ms as f32 / max_latency)
-                        .min(1.0);
+                    - (candidate.variant.performance.p50_latency_ms as f32 / max_latency).min(1.0);
 
                 (cost_score as f32 * cost_weight)
                     + (quality_score as f32 * quality_weight)

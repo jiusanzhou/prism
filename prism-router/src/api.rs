@@ -91,11 +91,13 @@ pub async fn route_handler(
     if body.messages.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::to_value(ErrorResponse {
-                error: "messages must not be empty".to_string(),
-                code: "INVALID_REQUEST".to_string(),
-            })
-            .unwrap()),
+            Json(
+                serde_json::to_value(ErrorResponse {
+                    error: "messages must not be empty".to_string(),
+                    code: "INVALID_REQUEST".to_string(),
+                })
+                .unwrap(),
+            ),
         );
     }
 
@@ -177,7 +179,10 @@ pub async fn route_handler(
                 decision_time_us: decision.decision_time_us,
                 reason: serde_json::to_value(&decision.reason).unwrap_or_default(),
             };
-            (StatusCode::OK, Json(serde_json::to_value(response).unwrap()))
+            (
+                StatusCode::OK,
+                Json(serde_json::to_value(response).unwrap()),
+            )
         }
         Err(e) => {
             let (status, code) = match &e {
@@ -223,10 +228,7 @@ pub async fn outcomes_handler(
     // Fall back to variant_id itself for each dimension
     let variant_id = &report.variant_id;
     let (model, provider) = if let Some(at_pos) = variant_id.find('@') {
-        (
-            &variant_id[..at_pos],
-            &variant_id[at_pos + 1..],
-        )
+        (&variant_id[..at_pos], &variant_id[at_pos + 1..])
     } else {
         (variant_id.as_str(), variant_id.as_str())
     };
@@ -257,9 +259,7 @@ pub async fn outcomes_handler(
         variant: variant_id.to_string(),
     };
 
-    state
-        .metrics
-        .record_with_context(record, &labels);
+    state.metrics.record_with_context(record, &labels);
 
     router.record_outcome(&report);
     (
@@ -302,7 +302,9 @@ pub async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse
     let model_count = router.registry.models.len();
     let variant_count = router.registry.get_all_candidates().len();
 
-    let output = state.metrics.format_prometheus(uptime, model_count, variant_count);
+    let output = state
+        .metrics
+        .format_prometheus(uptime, model_count, variant_count);
 
     (StatusCode::OK, output)
 }
@@ -482,7 +484,10 @@ mod tests {
     }
 
     fn test_app() -> Router {
-        let state = AppState::new(PrismRouter::new(test_registry()), std::path::PathBuf::from("test.yaml"));
+        let state = AppState::new(
+            PrismRouter::new(test_registry()),
+            std::path::PathBuf::from("test.yaml"),
+        );
         Router::new()
             .route("/v1/route", post(route_handler))
             .route("/v1/outcomes", post(outcomes_handler))
@@ -493,7 +498,10 @@ mod tests {
     }
 
     fn empty_app() -> Router {
-        let state = AppState::new(PrismRouter::new(InMemoryRegistry::new()), std::path::PathBuf::from("test.yaml"));
+        let state = AppState::new(
+            PrismRouter::new(InMemoryRegistry::new()),
+            std::path::PathBuf::from("test.yaml"),
+        );
         Router::new()
             .route("/v1/route", post(route_handler))
             .route("/health", get(health_handler))

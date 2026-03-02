@@ -108,10 +108,7 @@ impl PluginManager {
                 });
                 Ok(())
             } else {
-                Err(LoadError::NotFound(format!(
-                    "plugin '{}' not loaded",
-                    name
-                )))
+                Err(LoadError::NotFound(format!("plugin '{}' not loaded", name)))
             }
         } else {
             Err(LoadError::Other("lock poisoned".into()))
@@ -182,10 +179,7 @@ impl PluginManager {
                 info.active = active;
                 Ok(())
             } else {
-                Err(LoadError::NotFound(format!(
-                    "plugin '{}' not loaded",
-                    name
-                )))
+                Err(LoadError::NotFound(format!("plugin '{}' not loaded", name)))
             }
         } else {
             Err(LoadError::Other("lock poisoned".into()))
@@ -218,8 +212,8 @@ mod tests {
     use super::*;
     use crate::config::{PluginConfig, PluginSourceConfig};
     use std::io::Write;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     fn make_wasm_file() -> (tempfile::NamedTempFile, String) {
         let mut tmp = tempfile::NamedTempFile::new().unwrap();

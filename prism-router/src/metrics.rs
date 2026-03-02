@@ -189,8 +189,8 @@ impl VariantWindow {
             if !rec.success {
                 errors += 1;
             }
-            total_tokens += rec.input_tokens.unwrap_or(0) as u64
-                + rec.output_tokens.unwrap_or(0) as u64;
+            total_tokens +=
+                rec.input_tokens.unwrap_or(0) as u64 + rec.output_tokens.unwrap_or(0) as u64;
         }
 
         latencies.sort_unstable();
@@ -660,11 +660,7 @@ impl MetricsCollector {
     }
 
     /// Record a request with full context (multi-dimensional labels).
-    pub fn record_with_context(
-        &self,
-        record: RequestRecord,
-        labels: &RequestLabels,
-    ) {
+    pub fn record_with_context(&self, record: RequestRecord, labels: &RequestLabels) {
         // Multi-dimensional counters
         self.md_requests.inc(labels);
         if !record.success {
@@ -677,19 +673,18 @@ impl MetricsCollector {
 
         // Token counters (multi-dim + legacy single-label)
         if let Some(inp) = record.input_tokens {
-            self.input_tokens
-                .inc_by(&record.variant_id, inp as u64);
+            self.input_tokens.inc_by(&record.variant_id, inp as u64);
             self.md_input_tokens.inc_by(labels, inp as u64);
         }
         if let Some(out) = record.output_tokens {
-            self.output_tokens
-                .inc_by(&record.variant_id, out as u64);
+            self.output_tokens.inc_by(&record.variant_id, out as u64);
             self.md_output_tokens.inc_by(labels, out as u64);
         }
 
         // Provider stats (legacy)
         if record.success {
-            self.provider_stats.record(&labels.provider, record.latency_ms);
+            self.provider_stats
+                .record(&labels.provider, record.latency_ms);
         } else {
             self.provider_stats.record_error(&labels.provider);
         }
@@ -808,19 +803,39 @@ impl MetricsCollector {
         let mut out = String::with_capacity(4096);
 
         // ── Global counters ──
-        prom_help_type(&mut out, "prism_requests_total", "Total routing requests", "counter");
+        prom_help_type(
+            &mut out,
+            "prism_requests_total",
+            "Total routing requests",
+            "counter",
+        );
         prom_counter(&mut out, "prism_requests_total", self.total_requests());
 
-        prom_help_type(&mut out, "prism_errors_total", "Total failed requests", "counter");
+        prom_help_type(
+            &mut out,
+            "prism_errors_total",
+            "Total failed requests",
+            "counter",
+        );
         prom_counter(&mut out, "prism_errors_total", self.total_errors());
 
         prom_help_type(&mut out, "prism_uptime_seconds", "Router uptime", "gauge");
         prom_gauge_u64(&mut out, "prism_uptime_seconds", uptime_secs);
 
-        prom_help_type(&mut out, "prism_registered_models", "Number of registered models", "gauge");
+        prom_help_type(
+            &mut out,
+            "prism_registered_models",
+            "Number of registered models",
+            "gauge",
+        );
         prom_gauge_u64(&mut out, "prism_registered_models", model_count as u64);
 
-        prom_help_type(&mut out, "prism_active_variants", "Number of active variants", "gauge");
+        prom_help_type(
+            &mut out,
+            "prism_active_variants",
+            "Number of active variants",
+            "gauge",
+        );
         prom_gauge_u64(&mut out, "prism_active_variants", variant_count as u64);
 
         // ── 1. Routing decision metrics ──
@@ -831,7 +846,12 @@ impl MetricsCollector {
             &self.routing_decision_duration,
         );
 
-        prom_help_type(&mut out, "prism_strategy_calls_total", "Strategy calls by type", "counter");
+        prom_help_type(
+            &mut out,
+            "prism_strategy_calls_total",
+            "Strategy calls by type",
+            "counter",
+        );
         for (label, val) in self.strategy_calls.snapshot() {
             out.push_str(&format!(
                 "prism_strategy_calls_total{{strategy=\"{}\"}} {}\n",
@@ -839,7 +859,12 @@ impl MetricsCollector {
             ));
         }
 
-        prom_help_type(&mut out, "prism_fallback_triggered_total", "Total fallback triggers", "counter");
+        prom_help_type(
+            &mut out,
+            "prism_fallback_triggered_total",
+            "Total fallback triggers",
+            "counter",
+        );
         prom_counter(
             &mut out,
             "prism_fallback_triggered_total",
@@ -861,9 +886,24 @@ impl MetricsCollector {
         );
 
         // ── 2. Provider metrics ──
-        prom_help_type(&mut out, "prism_provider_requests_total", "Provider request count", "counter");
-        prom_help_type(&mut out, "prism_provider_errors_total", "Provider error count", "counter");
-        prom_help_type(&mut out, "prism_provider_latency_sum_ms", "Provider latency sum in ms", "counter");
+        prom_help_type(
+            &mut out,
+            "prism_provider_requests_total",
+            "Provider request count",
+            "counter",
+        );
+        prom_help_type(
+            &mut out,
+            "prism_provider_errors_total",
+            "Provider error count",
+            "counter",
+        );
+        prom_help_type(
+            &mut out,
+            "prism_provider_latency_sum_ms",
+            "Provider latency sum in ms",
+            "counter",
+        );
         for (provider, requests, errors, latency_sum) in self.provider_stats.snapshot() {
             out.push_str(&format!(
                 "prism_provider_requests_total{{provider=\"{}\"}} {}\n",
@@ -879,7 +919,12 @@ impl MetricsCollector {
             ));
         }
 
-        prom_help_type(&mut out, "prism_rate_limit_utilization", "Rate limit utilization (0.0-1.0)", "gauge");
+        prom_help_type(
+            &mut out,
+            "prism_rate_limit_utilization",
+            "Rate limit utilization (0.0-1.0)",
+            "gauge",
+        );
         for (label, val) in self.rate_limit_utilization.snapshot() {
             out.push_str(&format!(
                 "prism_rate_limit_utilization{{provider=\"{}\"}} {:.4}\n",
@@ -887,7 +932,12 @@ impl MetricsCollector {
             ));
         }
 
-        prom_help_type(&mut out, "prism_circuit_breaker_state", "Circuit breaker state (0=closed, 1=open, 2=half-open)", "gauge");
+        prom_help_type(
+            &mut out,
+            "prism_circuit_breaker_state",
+            "Circuit breaker state (0=closed, 1=open, 2=half-open)",
+            "gauge",
+        );
         for (label, val) in self.circuit_breaker_state.snapshot() {
             out.push_str(&format!(
                 "prism_circuit_breaker_state{{variant=\"{}\"}} {}\n",
@@ -896,7 +946,12 @@ impl MetricsCollector {
         }
 
         // ── 3. Traffic distribution ──
-        prom_help_type(&mut out, "prism_routes_by_model_total", "Routes by model", "counter");
+        prom_help_type(
+            &mut out,
+            "prism_routes_by_model_total",
+            "Routes by model",
+            "counter",
+        );
         for (label, val) in self.routes_by_model.snapshot() {
             out.push_str(&format!(
                 "prism_routes_by_model_total{{model=\"{}\"}} {}\n",
@@ -904,7 +959,12 @@ impl MetricsCollector {
             ));
         }
 
-        prom_help_type(&mut out, "prism_routes_by_provider_total", "Routes by provider", "counter");
+        prom_help_type(
+            &mut out,
+            "prism_routes_by_provider_total",
+            "Routes by provider",
+            "counter",
+        );
         for (label, val) in self.routes_by_provider.snapshot() {
             out.push_str(&format!(
                 "prism_routes_by_provider_total{{provider=\"{}\"}} {}\n",
@@ -912,7 +972,12 @@ impl MetricsCollector {
             ));
         }
 
-        prom_help_type(&mut out, "prism_routes_by_account_total", "Routes by account", "counter");
+        prom_help_type(
+            &mut out,
+            "prism_routes_by_account_total",
+            "Routes by account",
+            "counter",
+        );
         for (label, val) in self.routes_by_account.snapshot() {
             out.push_str(&format!(
                 "prism_routes_by_account_total{{account=\"{}\"}} {}\n",
@@ -920,7 +985,12 @@ impl MetricsCollector {
             ));
         }
 
-        prom_help_type(&mut out, "prism_experiment_assignments_total", "Experiment assignments", "counter");
+        prom_help_type(
+            &mut out,
+            "prism_experiment_assignments_total",
+            "Experiment assignments",
+            "counter",
+        );
         for ((exp, variant), val) in self.experiment_assignments.snapshot() {
             out.push_str(&format!(
                 "prism_experiment_assignments_total{{experiment=\"{}\",variant=\"{}\"}} {}\n",
@@ -929,7 +999,12 @@ impl MetricsCollector {
         }
 
         // ── 4. Token usage ──
-        prom_help_type(&mut out, "prism_input_tokens_total", "Input tokens by variant", "counter");
+        prom_help_type(
+            &mut out,
+            "prism_input_tokens_total",
+            "Input tokens by variant",
+            "counter",
+        );
         for (label, val) in self.input_tokens.snapshot() {
             out.push_str(&format!(
                 "prism_input_tokens_total{{variant=\"{}\"}} {}\n",
@@ -937,7 +1012,12 @@ impl MetricsCollector {
             ));
         }
 
-        prom_help_type(&mut out, "prism_output_tokens_total", "Output tokens by variant", "counter");
+        prom_help_type(
+            &mut out,
+            "prism_output_tokens_total",
+            "Output tokens by variant",
+            "counter",
+        );
         for (label, val) in self.output_tokens.snapshot() {
             out.push_str(&format!(
                 "prism_output_tokens_total{{variant=\"{}\"}} {}\n",
@@ -945,7 +1025,12 @@ impl MetricsCollector {
             ));
         }
 
-        prom_help_type(&mut out, "prism_tokens_per_second", "Tokens per second by variant", "gauge");
+        prom_help_type(
+            &mut out,
+            "prism_tokens_per_second",
+            "Tokens per second by variant",
+            "gauge",
+        );
         for (label, val) in self.tokens_per_second.snapshot() {
             out.push_str(&format!(
                 "prism_tokens_per_second{{variant=\"{}\"}} {:.2}\n",
@@ -954,7 +1039,12 @@ impl MetricsCollector {
         }
 
         // ── 5. Resource ──
-        prom_help_type(&mut out, "prism_active_requests", "Active in-flight requests by variant", "gauge");
+        prom_help_type(
+            &mut out,
+            "prism_active_requests",
+            "Active in-flight requests by variant",
+            "gauge",
+        );
         for (label, val) in self.active_requests.snapshot() {
             out.push_str(&format!(
                 "prism_active_requests{{variant=\"{}\"}} {}\n",
@@ -963,103 +1053,148 @@ impl MetricsCollector {
         }
 
         prom_help_type(&mut out, "prism_queue_depth", "Global queue depth", "gauge");
-        prom_gauge_u64(&mut out, "prism_queue_depth", self.queue_depth.load(Ordering::Relaxed));
+        prom_gauge_u64(
+            &mut out,
+            "prism_queue_depth",
+            self.queue_depth.load(Ordering::Relaxed),
+        );
 
         // ── 6. DataLayer ──
-        prom_help_type(&mut out, "prism_data_layer_queries_total", "DataLayer queries", "counter");
+        prom_help_type(
+            &mut out,
+            "prism_data_layer_queries_total",
+            "DataLayer queries",
+            "counter",
+        );
         prom_counter(
             &mut out,
             "prism_data_layer_queries_total",
-            self.data_layer_metrics.queries_total.load(Ordering::Relaxed),
+            self.data_layer_metrics
+                .queries_total
+                .load(Ordering::Relaxed),
         );
 
-        prom_help_type(&mut out, "prism_data_layer_hits_total", "DataLayer cache hits", "counter");
+        prom_help_type(
+            &mut out,
+            "prism_data_layer_hits_total",
+            "DataLayer cache hits",
+            "counter",
+        );
         prom_counter(
             &mut out,
             "prism_data_layer_hits_total",
             self.data_layer_metrics.hits_total.load(Ordering::Relaxed),
         );
 
-        prom_help_type(&mut out, "prism_data_layer_latency_sum_us", "DataLayer latency sum in microseconds", "counter");
+        prom_help_type(
+            &mut out,
+            "prism_data_layer_latency_sum_us",
+            "DataLayer latency sum in microseconds",
+            "counter",
+        );
         prom_counter(
             &mut out,
             "prism_data_layer_latency_sum_us",
-            self.data_layer_metrics.latency_sum_us.load(Ordering::Relaxed),
+            self.data_layer_metrics
+                .latency_sum_us
+                .load(Ordering::Relaxed),
         );
 
         // ── 7. Multi-dimensional request metrics ──
         let md_requests_snap = self.md_requests.snapshot();
         if !md_requests_snap.is_empty() {
-            prom_help_type(&mut out, "prism_md_requests_total", "Total requests with full dimensional labels", "counter");
+            prom_help_type(
+                &mut out,
+                "prism_md_requests_total",
+                "Total requests with full dimensional labels",
+                "counter",
+            );
             for (labels, val) in &md_requests_snap {
                 out.push_str(&format!(
                     "prism_md_requests_total{{{}}} {}\n",
-                    labels.prom_labels(), val
+                    labels.prom_labels(),
+                    val
                 ));
             }
         }
 
         let md_errors_snap = self.md_errors.snapshot();
         if !md_errors_snap.is_empty() {
-            prom_help_type(&mut out, "prism_md_errors_total", "Total errors with full dimensional labels", "counter");
+            prom_help_type(
+                &mut out,
+                "prism_md_errors_total",
+                "Total errors with full dimensional labels",
+                "counter",
+            );
             for (labels, val) in &md_errors_snap {
                 out.push_str(&format!(
                     "prism_md_errors_total{{{}}} {}\n",
-                    labels.prom_labels(), val
+                    labels.prom_labels(),
+                    val
                 ));
             }
         }
 
         let md_latency_snap = self.md_latency.snapshot();
         if !md_latency_snap.is_empty() {
-            prom_help_type(&mut out, "prism_md_latency_ms", "Request latency sum/count with full dimensional labels", "summary");
+            prom_help_type(
+                &mut out,
+                "prism_md_latency_ms",
+                "Request latency sum/count with full dimensional labels",
+                "summary",
+            );
             for (labels, sum, count) in &md_latency_snap {
                 let pl = labels.prom_labels();
-                out.push_str(&format!(
-                    "prism_md_latency_ms_sum{{{}}} {}\n",
-                    pl, sum
-                ));
-                out.push_str(&format!(
-                    "prism_md_latency_ms_count{{{}}} {}\n",
-                    pl, count
-                ));
+                out.push_str(&format!("prism_md_latency_ms_sum{{{}}} {}\n", pl, sum));
+                out.push_str(&format!("prism_md_latency_ms_count{{{}}} {}\n", pl, count));
             }
         }
 
         let md_ttft_snap = self.md_ttft.snapshot();
         if !md_ttft_snap.is_empty() {
-            prom_help_type(&mut out, "prism_md_ttft_ms", "TTFT sum/count with full dimensional labels", "summary");
+            prom_help_type(
+                &mut out,
+                "prism_md_ttft_ms",
+                "TTFT sum/count with full dimensional labels",
+                "summary",
+            );
             for (labels, sum, count) in &md_ttft_snap {
                 let pl = labels.prom_labels();
-                out.push_str(&format!(
-                    "prism_md_ttft_ms_sum{{{}}} {}\n",
-                    pl, sum
-                ));
-                out.push_str(&format!(
-                    "prism_md_ttft_ms_count{{{}}} {}\n",
-                    pl, count
-                ));
+                out.push_str(&format!("prism_md_ttft_ms_sum{{{}}} {}\n", pl, sum));
+                out.push_str(&format!("prism_md_ttft_ms_count{{{}}} {}\n", pl, count));
             }
         }
 
         let md_input_snap = self.md_input_tokens.snapshot();
         if !md_input_snap.is_empty() {
-            prom_help_type(&mut out, "prism_md_input_tokens_total", "Input tokens with full dimensional labels", "counter");
+            prom_help_type(
+                &mut out,
+                "prism_md_input_tokens_total",
+                "Input tokens with full dimensional labels",
+                "counter",
+            );
             for (labels, val) in &md_input_snap {
                 out.push_str(&format!(
                     "prism_md_input_tokens_total{{{}}} {}\n",
-                    labels.prom_labels(), val
+                    labels.prom_labels(),
+                    val
                 ));
             }
         }
 
         let md_output_snap = self.md_output_tokens.snapshot();
         if !md_output_snap.is_empty() {
-            prom_help_type(&mut out, "prism_md_output_tokens_total", "Output tokens with full dimensional labels", "counter");
+            prom_help_type(
+                &mut out,
+                "prism_md_output_tokens_total",
+                "Output tokens with full dimensional labels",
+                "counter",
+            );
             for (labels, val) in &md_output_snap {
                 out.push_str(&format!(
                     "prism_md_output_tokens_total{{{}}} {}\n",
-                    labels.prom_labels(), val
+                    labels.prom_labels(),
+                    val
                 ));
             }
         }
@@ -1067,12 +1202,42 @@ impl MetricsCollector {
         // ── Per-variant window metrics ──
         let variants = self.tracked_variants();
         if !variants.is_empty() {
-            prom_help_type(&mut out, "prism_variant_latency_p50_ms", "P50 latency per variant", "gauge");
-            prom_help_type(&mut out, "prism_variant_latency_p95_ms", "P95 latency per variant", "gauge");
-            prom_help_type(&mut out, "prism_variant_latency_p99_ms", "P99 latency per variant", "gauge");
-            prom_help_type(&mut out, "prism_variant_error_rate", "Error rate per variant", "gauge");
-            prom_help_type(&mut out, "prism_variant_qps", "Current QPS per variant", "gauge");
-            prom_help_type(&mut out, "prism_variant_ttft_p50_ms", "P50 TTFT per variant", "gauge");
+            prom_help_type(
+                &mut out,
+                "prism_variant_latency_p50_ms",
+                "P50 latency per variant",
+                "gauge",
+            );
+            prom_help_type(
+                &mut out,
+                "prism_variant_latency_p95_ms",
+                "P95 latency per variant",
+                "gauge",
+            );
+            prom_help_type(
+                &mut out,
+                "prism_variant_latency_p99_ms",
+                "P99 latency per variant",
+                "gauge",
+            );
+            prom_help_type(
+                &mut out,
+                "prism_variant_error_rate",
+                "Error rate per variant",
+                "gauge",
+            );
+            prom_help_type(
+                &mut out,
+                "prism_variant_qps",
+                "Current QPS per variant",
+                "gauge",
+            );
+            prom_help_type(
+                &mut out,
+                "prism_variant_ttft_p50_ms",
+                "P50 TTFT per variant",
+                "gauge",
+            );
 
             for variant_id in &variants {
                 if let Some(snap) = self.snapshot(variant_id) {
@@ -1145,7 +1310,11 @@ fn format_histogram(out: &mut String, name: &str, help: &str, histogram: &UsHist
             name, bound, counts[i]
         ));
     }
-    out.push_str(&format!("{}_bucket{{le=\"+Inf\"}} {}\n", name, counts[bounds.len()]));
+    out.push_str(&format!(
+        "{}_bucket{{le=\"+Inf\"}} {}\n",
+        name,
+        counts[bounds.len()]
+    ));
     out.push_str(&format!("{}_sum {}\n", name, sum));
     out.push_str(&format!("{}_count {}\n", name, count));
 }
@@ -1581,8 +1750,11 @@ mod tests {
             collector.routes_by_model.snapshot().into_iter().collect();
         assert_eq!(model_snap["gpt-4o"], 1);
 
-        let provider_snap: HashMap<String, u64> =
-            collector.routes_by_provider.snapshot().into_iter().collect();
+        let provider_snap: HashMap<String, u64> = collector
+            .routes_by_provider
+            .snapshot()
+            .into_iter()
+            .collect();
         assert_eq!(provider_snap["openai"], 1);
 
         let account_snap: HashMap<String, u64> =
@@ -1673,10 +1845,7 @@ mod tests {
         let collector = MetricsCollector::new(100);
         collector.record_fallback();
         collector.record_fallback();
-        assert_eq!(
-            collector.fallback_triggered.load(Ordering::Relaxed),
-            2
-        );
+        assert_eq!(collector.fallback_triggered.load(Ordering::Relaxed), 2);
     }
 
     #[test]
@@ -1702,14 +1871,8 @@ mod tests {
 
         let snap = collector.experiment_assignments.snapshot();
         let map: HashMap<(String, String), u64> = snap.into_iter().collect();
-        assert_eq!(
-            map[&("exp-1".to_string(), "control".to_string())],
-            2
-        );
-        assert_eq!(
-            map[&("exp-1".to_string(), "treatment".to_string())],
-            1
-        );
+        assert_eq!(map[&("exp-1".to_string(), "control".to_string())], 2);
+        assert_eq!(map[&("exp-1".to_string(), "treatment".to_string())], 1);
     }
 
     #[test]
@@ -1750,8 +1913,7 @@ mod tests {
         collector.inc_active_requests("v2");
         collector.dec_active_requests("v1");
 
-        let snap: HashMap<String, i64> =
-            collector.active_requests.snapshot().into_iter().collect();
+        let snap: HashMap<String, i64> = collector.active_requests.snapshot().into_iter().collect();
         assert_eq!(snap["v1"], 1);
         assert_eq!(snap["v2"], 1);
     }
@@ -1815,14 +1977,17 @@ mod tests {
             output_tokens: Some(100),
             timestamp: Instant::now(),
         };
-        collector.record_with_context(rec, &RequestLabels {
-            model: "gpt-4o".to_string(),
-            provider: "openai".to_string(),
-            endpoint: "openai-ep".to_string(),
-            account: "acct-1".to_string(),
-            region: "us-east-1".to_string(),
-            variant: "v1".to_string(),
-        });
+        collector.record_with_context(
+            rec,
+            &RequestLabels {
+                model: "gpt-4o".to_string(),
+                provider: "openai".to_string(),
+                endpoint: "openai-ep".to_string(),
+                account: "acct-1".to_string(),
+                region: "us-east-1".to_string(),
+                variant: "v1".to_string(),
+            },
+        );
         collector.rate_limit_utilization.set("openai", 0.75);
         collector.circuit_breaker_state.set("v1", 0.0);
 
@@ -1865,8 +2030,12 @@ mod tests {
         collector.record_experiment("ab-test", "variant_a");
 
         let output = collector.format_prometheus(1, 0, 0);
-        assert!(output.contains("prism_experiment_assignments_total{experiment=\"ab-test\",variant=\"control\"} 1"));
-        assert!(output.contains("prism_experiment_assignments_total{experiment=\"ab-test\",variant=\"variant_a\"} 1"));
+        assert!(output.contains(
+            "prism_experiment_assignments_total{experiment=\"ab-test\",variant=\"control\"} 1"
+        ));
+        assert!(output.contains(
+            "prism_experiment_assignments_total{experiment=\"ab-test\",variant=\"variant_a\"} 1"
+        ));
     }
 
     #[test]
@@ -1975,18 +2144,14 @@ mod tests {
 
         // Check multi-dim latency
         let lat_snap = collector.md_latency.snapshot();
-        let lat_map: HashMap<RequestLabels, (u64, u64)> = lat_snap
-            .into_iter()
-            .map(|(k, s, c)| (k, (s, c)))
-            .collect();
+        let lat_map: HashMap<RequestLabels, (u64, u64)> =
+            lat_snap.into_iter().map(|(k, s, c)| (k, (s, c))).collect();
         assert_eq!(lat_map[&labels], (250, 1));
 
         // Check multi-dim TTFT
         let ttft_snap = collector.md_ttft.snapshot();
-        let ttft_map: HashMap<RequestLabels, (u64, u64)> = ttft_snap
-            .into_iter()
-            .map(|(k, s, c)| (k, (s, c)))
-            .collect();
+        let ttft_map: HashMap<RequestLabels, (u64, u64)> =
+            ttft_snap.into_iter().map(|(k, s, c)| (k, (s, c))).collect();
         assert_eq!(ttft_map[&labels], (50, 1));
     }
 

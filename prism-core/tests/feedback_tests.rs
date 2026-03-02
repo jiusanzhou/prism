@@ -99,7 +99,11 @@ fn test_quality_adjustment_penalize() {
 fn test_quality_adjustment_neutral_no_data() {
     let collector = FeedbackCollector::new(100);
     let adj = collector.quality_adjustment("unknown-variant");
-    assert!((adj - 1.0).abs() < 0.001, "expected neutral 1.0, got {}", adj);
+    assert!(
+        (adj - 1.0).abs() < 0.001,
+        "expected neutral 1.0, got {}",
+        adj
+    );
 }
 
 #[test]
@@ -120,7 +124,11 @@ fn test_quality_adjustment_neutral_few_samples() {
     }
 
     let adj = collector.quality_adjustment("few-samples");
-    assert!((adj - 1.0).abs() < 0.001, "expected neutral 1.0 with few samples, got {}", adj);
+    assert!(
+        (adj - 1.0).abs() < 0.001,
+        "expected neutral 1.0 with few samples, got {}",
+        adj
+    );
 }
 
 #[test]
@@ -194,9 +202,9 @@ fn test_windowed_stats() {
 #[test]
 fn test_feedback_influences_routing() {
     use prism_core::registry::InMemoryRegistry;
-    use prism_core::router::{PrismRouter, RouteRequest, Router, RouteMetadata};
-    use prism_core::types::*;
+    use prism_core::router::{PrismRouter, RouteMetadata, RouteRequest, Router};
     use prism_core::strategy::*;
+    use prism_core::types::*;
 
     // Set up a registry with two variants of comparable quality
     let mut registry = InMemoryRegistry::new();
@@ -336,8 +344,8 @@ fn test_feedback_influences_routing() {
         performance: ModelPerformance::default(),
         pricing_override: None,
         status: VariantStatus::Active,
-            base_url: None,
-            upstream_model_name: None,
+        base_url: None,
+        upstream_model_name: None,
     };
     registry.add_variant(v1);
 
@@ -351,8 +359,8 @@ fn test_feedback_influences_routing() {
         performance: ModelPerformance::default(),
         pricing_override: None,
         status: VariantStatus::Active,
-            base_url: None,
-            upstream_model_name: None,
+        base_url: None,
+        upstream_model_name: None,
     };
     registry.add_variant(v2);
 

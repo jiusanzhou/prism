@@ -446,7 +446,10 @@ mod tests {
         if candidates[non_target_idx].variant.id == "pod-cached" {
             let score = plugin.score(&state, &candidates[non_target_idx]);
             // Should get bonus from high cache hit rate (> 0.0)
-            assert!(score > 0.0, "cached pod should get bonus score, got {score}");
+            assert!(
+                score > 0.0,
+                "cached pod should get bonus score, got {score}"
+            );
         }
     }
 }

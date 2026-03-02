@@ -54,7 +54,13 @@ fn build_full_registry() -> InMemoryRegistry {
     // Multiple providers with same model (simulating gRPC upstream resolution)
     for (prov_id, base_url, latency, cost_input, cost_output) in [
         ("openai", "https://api.openai.com/v1", 300u32, 2.5, 10.0),
-        ("azure-east", "https://east.openai.azure.com", 200, 2.5, 10.0),
+        (
+            "azure-east",
+            "https://east.openai.azure.com",
+            200,
+            2.5,
+            10.0,
+        ),
         ("azure-west", "https://west.openai.azure.com", 350, 2.0, 8.0),
     ] {
         let mut p = make_provider(prov_id);
@@ -165,8 +171,8 @@ fn build_full_registry() -> InMemoryRegistry {
         },
         pricing_override: None,
         status: VariantStatus::Active,
-            base_url: None,
-            upstream_model_name: None,
+        base_url: None,
+        upstream_model_name: None,
     });
 
     reg.add_pool(ModelPool {
@@ -213,10 +219,16 @@ fn test_decision_contains_upstream_info() {
 
     // Decision must contain all fields needed by Upstream proto message
     assert!(!decision.selected_model.is_empty(), "model must be set");
-    assert!(!decision.selected_provider.is_empty(), "provider must be set");
+    assert!(
+        !decision.selected_provider.is_empty(),
+        "provider must be set"
+    );
     assert!(!decision.selected_variant.is_empty(), "variant must be set");
     assert!(!decision.selected_account.is_empty(), "account must be set");
-    assert!(decision.decision_time_us > 0, "decision time must be tracked");
+    assert!(
+        decision.decision_time_us > 0,
+        "decision time must be tracked"
+    );
 }
 
 /// Verify that the decision reason is populated for each layer.
@@ -228,10 +240,22 @@ fn test_decision_reason_per_layer() {
     let req = simple_request("Hello");
     let decision = router.route(&req).unwrap();
 
-    assert!(!decision.reason.l1_model.is_empty(), "L1 reason must be set");
-    assert!(!decision.reason.l2_provider.is_empty(), "L2 reason must be set");
-    assert!(!decision.reason.l3_account.is_empty(), "L3 reason must be set");
-    assert!(!decision.reason.l4_variant.is_empty(), "L4 reason must be set");
+    assert!(
+        !decision.reason.l1_model.is_empty(),
+        "L1 reason must be set"
+    );
+    assert!(
+        !decision.reason.l2_provider.is_empty(),
+        "L2 reason must be set"
+    );
+    assert!(
+        !decision.reason.l3_account.is_empty(),
+        "L3 reason must be set"
+    );
+    assert!(
+        !decision.reason.l4_variant.is_empty(),
+        "L4 reason must be set"
+    );
 }
 
 /// Multi-provider: same model across different providers should select based on strategy.
@@ -273,7 +297,10 @@ fn test_multi_provider_fallback_chain() {
 
     // Fallback entries should be different from the selected variant
     for fb in &decision.fallback_chain {
-        assert_ne!(fb, &decision.selected_variant, "Fallback should differ from selected");
+        assert_ne!(
+            fb, &decision.selected_variant,
+            "Fallback should differ from selected"
+        );
     }
 }
 
@@ -345,8 +372,10 @@ fn test_draining_variant_excluded() {
     let req = simple_request("Hello");
     let decision = router.route(&req).unwrap();
 
-    assert_ne!(decision.selected_variant, "gpt-4o@azure-east",
-        "Draining variant should not be selected");
+    assert_ne!(
+        decision.selected_variant, "gpt-4o@azure-east",
+        "Draining variant should not be selected"
+    );
 }
 
 // ──────────────────────────────────────────────
@@ -405,8 +434,10 @@ fn test_analyzer_influences_routing() {
     let d_cost = router_cost.route(&simple_req).unwrap();
 
     // Cost-first should pick the cheapest model
-    assert_eq!(d_cost.selected_model, "gpt-4o-mini",
-        "CostFirst should pick cheapest model for simple query");
+    assert_eq!(
+        d_cost.selected_model, "gpt-4o-mini",
+        "CostFirst should pick cheapest model for simple query"
+    );
 
     // Both should produce valid decisions
     assert!(!d_balanced.selected_model.is_empty());

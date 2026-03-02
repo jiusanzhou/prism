@@ -375,6 +375,10 @@ pub struct CodecConfig {
     /// Default inbound protocol (assumed when client doesn't specify).
     #[serde(default = "default_protocol")]
     pub default_inbound_protocol: String,
+    /// Global plugin chain — runs on ALL requests regardless of protocol.
+    /// Used for cross-cutting concerns: metering, billing, security audit, token counting.
+    #[serde(default)]
+    pub global_chain: Vec<String>,
 }
 
 impl Default for CodecConfig {
@@ -383,6 +387,7 @@ impl Default for CodecConfig {
             provider_chains: HashMap::new(),
             protocol_chains: HashMap::new(),
             default_inbound_protocol: default_protocol(),
+            global_chain: Vec::new(),
         }
     }
 }
@@ -749,10 +754,7 @@ variants:
         let v = &config.variants[0];
         assert_eq!(v.id, "deepseek-r1@local");
         assert_eq!(v.base_url.as_deref(), Some("http://10.0.1.5:8080/v1"));
-        assert_eq!(
-            v.upstream_model_name.as_deref(),
-            Some("deepseek-reasoner")
-        );
+        assert_eq!(v.upstream_model_name.as_deref(), Some("deepseek-reasoner"));
         assert_eq!(v.deployment_name.as_deref(), Some("my-deployment"));
         assert_eq!(v.account_id.as_deref(), Some("acct-123"));
         let pricing = v.pricing_override.as_ref().unwrap();
@@ -896,7 +898,10 @@ codec:
 
         // Verify variant new fields
         let ds_variant = &config.variants[1];
-        assert_eq!(ds_variant.base_url.as_deref(), Some("http://10.0.1.5:8080/v1"));
+        assert_eq!(
+            ds_variant.base_url.as_deref(),
+            Some("http://10.0.1.5:8080/v1")
+        );
         assert_eq!(
             ds_variant.upstream_model_name.as_deref(),
             Some("deepseek-reasoner")
@@ -1018,9 +1023,21 @@ plugins:
         let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.plugins.len(), 4);
 
-        assert!(matches!(&config.plugins[0].source, PluginSourceConfig::Wasm { .. }));
-        assert!(matches!(&config.plugins[1].source, PluginSourceConfig::Url { .. }));
-        assert!(matches!(&config.plugins[2].source, PluginSourceConfig::Oci { .. }));
-        assert!(matches!(&config.plugins[3].source, PluginSourceConfig::Builtin { .. }));
+        assert!(matches!(
+            &config.plugins[0].source,
+            PluginSourceConfig::Wasm { .. }
+        ));
+        assert!(matches!(
+            &config.plugins[1].source,
+            PluginSourceConfig::Url { .. }
+        ));
+        assert!(matches!(
+            &config.plugins[2].source,
+            PluginSourceConfig::Oci { .. }
+        ));
+        assert!(matches!(
+            &config.plugins[3].source,
+            PluginSourceConfig::Builtin { .. }
+        ));
     }
 }

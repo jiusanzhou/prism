@@ -6,7 +6,7 @@ use crate::analyzer::ChatMessage;
 use crate::feedback::OutcomeReport;
 use crate::registry::{InMemoryRegistry, ModelRegistryTrait};
 use crate::router::{PrismRouter, RouteMetadata, RouteRequest, Router};
-use crate::selector::{SelectorConfig, create_l2_selector, create_l3_selector, create_l4_selector};
+use crate::selector::{create_l2_selector, create_l3_selector, create_l4_selector, SelectorConfig};
 use crate::strategy::ModelSelectionStrategy;
 use crate::types::*;
 

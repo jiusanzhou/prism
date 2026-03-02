@@ -143,6 +143,17 @@ impl ProxyPluginChain {
         Ok(Some(current))
     }
 
+    /// Process log phase through the chain (in order).
+    /// Called at request completion for metering, billing, auditing.
+    pub fn process_log(&self, ctx: &mut ProxyContext) {
+        for entry in &self.plugins {
+            if !entry.enabled {
+                continue;
+            }
+            entry.plugin.on_log(ctx);
+        }
+    }
+
     /// Enable or disable a plugin by name.
     pub fn set_enabled(&mut self, name: &str, enabled: bool) {
         for entry in &mut self.plugins {
@@ -327,7 +338,10 @@ mod tests {
         let chain = ProxyPluginChain::new();
         let mut ctx = ProxyContext::new();
         let body = b"hello".to_vec();
-        assert_eq!(chain.process_request_body(&mut ctx, body.clone()).unwrap(), body);
+        assert_eq!(
+            chain.process_request_body(&mut ctx, body.clone()).unwrap(),
+            body
+        );
     }
 
     #[test]
@@ -413,9 +427,7 @@ mod tests {
         chain.add(Box::new(NamedMockPlugin::new("C")));
 
         let mut ctx = ProxyContext::new();
-        let result = chain
-            .process_request_body(&mut ctx, b"X".to_vec())
-            .unwrap();
+        let result = chain.process_request_body(&mut ctx, b"X".to_vec()).unwrap();
         // A prefixes [A], then B prefixes [B], then C prefixes [C]
         assert_eq!(result, b"[C][B][A]X");
     }
@@ -534,9 +546,7 @@ mod tests {
         chain.set_enabled("B", false);
 
         let mut ctx = ProxyContext::new();
-        let result = chain
-            .process_request_body(&mut ctx, b"X".to_vec())
-            .unwrap();
+        let result = chain.process_request_body(&mut ctx, b"X".to_vec()).unwrap();
         assert_eq!(result, b"[A]X");
     }
 
@@ -550,9 +560,7 @@ mod tests {
         chain.set_enabled("B", true);
 
         let mut ctx = ProxyContext::new();
-        let result = chain
-            .process_request_body(&mut ctx, b"X".to_vec())
-            .unwrap();
+        let result = chain.process_request_body(&mut ctx, b"X".to_vec()).unwrap();
         assert_eq!(result, b"[B][A]X");
     }
 
@@ -666,15 +674,11 @@ mod tests {
 
         let body = b"unchanged".to_vec();
         assert_eq!(
-            chain
-                .process_request_body(&mut ctx, body.clone())
-                .unwrap(),
+            chain.process_request_body(&mut ctx, body.clone()).unwrap(),
             body
         );
         assert_eq!(
-            chain
-                .process_response_body(&mut ctx, body.clone())
-                .unwrap(),
+            chain.process_response_body(&mut ctx, body.clone()).unwrap(),
             body
         );
         assert_eq!(chain.process_response_headers(&mut ctx), Action::Continue);
@@ -683,5 +687,114 @@ mod tests {
             .process_response_stream_chunk(&mut ctx, "test")
             .unwrap();
         assert_eq!(chunk, Some("test".to_string()));
+    }
+
+    // ── on_log tests ──
+
+    #[test]
+    fn test_process_log_empty_chain() {
+        let chain = ProxyPluginChain::new();
+        let mut ctx = ProxyContext::new();
+        chain.process_log(&mut ctx); // should not panic
+    }
+
+    #[test]
+    fn test_process_log_records_data() {
+        struct MeteringPlugin;
+
+        impl ProxyPlugin for MeteringPlugin {
+            fn name(&self) -> &str {
+                "metering"
+            }
+
+            fn on_log(&self, ctx: &mut ProxyContext) {
+                // Simulate metering: store a billing record in ctx data
+                let variant = ctx.selected_variant.clone();
+                let status = ctx.response_status.unwrap_or(0);
+                ctx.set("billing_record", format!("{}:{}", variant, status));
+            }
+        }
+
+        let mut chain = ProxyPluginChain::new();
+        chain.add(Box::new(MeteringPlugin));
+
+        let mut ctx = ProxyContext::new();
+        ctx.selected_variant = "gpt4-fast".to_string();
+        ctx.response_status = Some(200);
+        chain.process_log(&mut ctx);
+
+        assert_eq!(
+            ctx.get::<String>("billing_record"),
+            Some(&"gpt4-fast:200".to_string())
+        );
+    }
+
+    #[test]
+    fn test_process_log_multi_plugin_order() {
+        struct AppendPlugin {
+            tag: String,
+        }
+
+        impl ProxyPlugin for AppendPlugin {
+            fn name(&self) -> &str {
+                "append"
+            }
+
+            fn on_log(&self, ctx: &mut ProxyContext) {
+                let current = ctx.get::<String>("log_order").cloned().unwrap_or_default();
+                ctx.set("log_order", format!("{}{}", current, self.tag));
+            }
+        }
+
+        let mut chain = ProxyPluginChain::new();
+        chain.add(Box::new(AppendPlugin { tag: "A".into() }));
+        chain.add(Box::new(AppendPlugin { tag: "B".into() }));
+        chain.add(Box::new(AppendPlugin { tag: "C".into() }));
+
+        let mut ctx = ProxyContext::new();
+        chain.process_log(&mut ctx);
+
+        // on_log runs in order (same as request)
+        assert_eq!(ctx.get::<String>("log_order"), Some(&"ABC".to_string()));
+    }
+
+    #[test]
+    fn test_process_log_disabled_plugin_skipped() {
+        struct CounterPlugin;
+
+        impl ProxyPlugin for CounterPlugin {
+            fn name(&self) -> &str {
+                "counter"
+            }
+
+            fn on_log(&self, ctx: &mut ProxyContext) {
+                let count = ctx.get::<u32>("count").copied().unwrap_or(0);
+                ctx.set("count", count + 1);
+            }
+        }
+
+        let mut chain = ProxyPluginChain::new();
+        chain.add(Box::new(CounterPlugin));
+
+        // Rename for set_enabled — need named plugin
+        struct NamedCounter(String);
+        impl ProxyPlugin for NamedCounter {
+            fn name(&self) -> &str {
+                &self.0
+            }
+            fn on_log(&self, ctx: &mut ProxyContext) {
+                let count = ctx.get::<u32>("count").copied().unwrap_or(0);
+                ctx.set("count", count + 1);
+            }
+        }
+
+        let mut chain2 = ProxyPluginChain::new();
+        chain2.add(Box::new(NamedCounter("a".into())));
+        chain2.add(Box::new(NamedCounter("b".into())));
+        chain2.set_enabled("b", false);
+
+        let mut ctx = ProxyContext::new();
+        chain2.process_log(&mut ctx);
+        assert_eq!(ctx.get::<u32>("count"), Some(&1));
     }
 }

@@ -56,9 +56,8 @@ impl ConfigSource for FileSource {
     }
 
     fn load(&self) -> Result<PrismConfig, ConfigError> {
-        let content = std::fs::read_to_string(&self.path).map_err(|e| {
-            ConfigError::NotFound(format!("{}: {}", self.path.display(), e))
-        })?;
+        let content = std::fs::read_to_string(&self.path)
+            .map_err(|e| ConfigError::NotFound(format!("{}: {}", self.path.display(), e)))?;
 
         // Expand environment variables
         let expanded = expand_env_vars(&content);

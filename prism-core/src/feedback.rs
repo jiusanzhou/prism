@@ -134,8 +134,8 @@ impl FeedbackCollector {
 
     /// Record an outcome
     pub fn record(&self, report: &OutcomeReport) {
-        let tokens = report.prompt_tokens.unwrap_or(0) as u64
-            + report.completion_tokens.unwrap_or(0) as u64;
+        let tokens =
+            report.prompt_tokens.unwrap_or(0) as u64 + report.completion_tokens.unwrap_or(0) as u64;
 
         let record = OutcomeRecord {
             success: report.success,

@@ -8,11 +8,10 @@ use crate::plugins::affinity::AffinityPlugin;
 use crate::plugins::canary::CanaryPlugin;
 use crate::plugins::capability_filter::CapabilityFilterPlugin;
 use crate::plugins::cost_scorer::CostScorerPlugin;
-use crate::plugins::geo_proximity::GeoProximityPlugin;
 use crate::plugins::feedback_scorer::FeedbackScorerPlugin;
+use crate::plugins::geo_proximity::GeoProximityPlugin;
 use crate::plugins::health_filter::HealthFilterPlugin;
 use crate::plugins::inference_load::InferenceLoadPlugin;
-use crate::plugins::strategy_scorer::StrategyScorerPlugin;
 use crate::plugins::latency_scorer::LatencyScorerPlugin;
 use crate::plugins::pinned_model::PinnedModelPlugin;
 use crate::plugins::prefix_affinity::PrefixAffinityPlugin;
@@ -20,6 +19,7 @@ use crate::plugins::protocol_filter::ProtocolFilterPlugin;
 use crate::plugins::quality_scorer::QualityScorerPlugin;
 use crate::plugins::quota_aware::QuotaAwarePlugin;
 use crate::plugins::specialty_scorer::SpecialtyScorerPlugin;
+use crate::plugins::strategy_scorer::StrategyScorerPlugin;
 use crate::plugins::weighted::WeightedPlugin;
 use crate::registry::{InMemoryRegistry, ModelRegistryTrait};
 use crate::selector::*;
@@ -338,10 +338,7 @@ impl PrismRouter {
 
     pub fn plan_hedging(&self, request: &RouteRequest) -> Result<Vec<String>, RouterError> {
         let profile = self.analyzer.analyze(&request.messages);
-        let strategy = request
-            .strategy
-            .as_ref()
-            .unwrap_or(&self.default_strategy);
+        let strategy = request.strategy.as_ref().unwrap_or(&self.default_strategy);
 
         let pool_ids = match strategy {
             ModelSelectionStrategy::Auto { pool_ids, .. } => pool_ids.clone(),
@@ -366,14 +363,11 @@ impl PrismRouter {
         };
 
         let ranked_indices = self.l1.select(&candidates, &ctx)?;
-        let ranked: Vec<&ModelCandidate> =
-            ranked_indices.iter().map(|&i| &candidates[i]).collect();
+        let ranked: Vec<&ModelCandidate> = ranked_indices.iter().map(|&i| &candidates[i]).collect();
 
         let max_parallel = self.get_hedging_max_parallel();
 
-        Ok(self
-            .resilience
-            .plan_hedging(&ranked, max_parallel))
+        Ok(self.resilience.plan_hedging(&ranked, max_parallel))
     }
 
     /// Try to extract hedging max_parallel. Defaults to 2.
@@ -382,10 +376,7 @@ impl PrismRouter {
     }
 
     /// Get all candidates for a given strategy (resolves pools).
-    fn get_strategy_candidates(
-        &self,
-        strategy: &ModelSelectionStrategy,
-    ) -> Vec<ModelCandidate> {
+    fn get_strategy_candidates(&self, strategy: &ModelSelectionStrategy) -> Vec<ModelCandidate> {
         let pool_ids = match strategy {
             ModelSelectionStrategy::Auto { pool_ids, .. } => pool_ids.clone(),
             _ => None,

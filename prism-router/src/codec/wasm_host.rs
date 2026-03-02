@@ -228,12 +228,7 @@ impl HostState {
     // ── Buffer accessors ──
 
     /// Get buffer bytes by type, with start/length range.
-    pub fn get_buffer(
-        &self,
-        buffer_type_raw: i32,
-        start: usize,
-        length: usize,
-    ) -> Option<Vec<u8>> {
+    pub fn get_buffer(&self, buffer_type_raw: i32, start: usize, length: usize) -> Option<Vec<u8>> {
         let buf = match BufferType::from_i32(buffer_type_raw)? {
             BufferType::HttpRequestBody => &self.request_body,
             BufferType::HttpResponseBody => &self.response_body,
@@ -325,8 +320,7 @@ fn deserialize_header_map(data: &[u8]) -> Option<Vec<(String, String)>> {
             return None;
         }
         let key_size = u32::from_le_bytes(data[offset..offset + 4].try_into().ok()?) as usize;
-        let value_size =
-            u32::from_le_bytes(data[offset + 4..offset + 8].try_into().ok()?) as usize;
+        let value_size = u32::from_le_bytes(data[offset + 4..offset + 8].try_into().ok()?) as usize;
         sizes.push((key_size, value_size));
         offset += 8;
     }
@@ -398,9 +392,7 @@ impl WasmProxyPlugin {
     }
 
     /// Register all proxy-wasm host functions on the linker.
-    fn register_host_functions(
-        linker: &mut Linker<Arc<Mutex<HostState>>>,
-    ) -> Result<(), String> {
+    fn register_host_functions(linker: &mut Linker<Arc<Mutex<HostState>>>) -> Result<(), String> {
         // ── proxy_log ──
         linker
             .func_wrap(
@@ -487,15 +479,13 @@ impl WasmProxyPlugin {
                     if ptr_ptr + 4 > mem_data.len() {
                         return Status::BadArgument as i32;
                     }
-                    mem_data[ptr_ptr..ptr_ptr + 4]
-                        .copy_from_slice(&data_offset.to_le_bytes());
+                    mem_data[ptr_ptr..ptr_ptr + 4].copy_from_slice(&data_offset.to_le_bytes());
 
                     let offset = data_offset as usize;
                     if offset + serialized.len() > mem_data.len() {
                         return Status::BadArgument as i32;
                     }
-                    mem_data[offset..offset + serialized.len()]
-                        .copy_from_slice(&serialized);
+                    mem_data[offset..offset + serialized.len()].copy_from_slice(&serialized);
 
                     Status::Ok as i32
                 },
@@ -546,15 +536,13 @@ impl WasmProxyPlugin {
                             if offset + val_bytes.len() > mem_data.len() {
                                 return Status::BadArgument as i32;
                             }
-                            mem_data[offset..offset + val_bytes.len()]
-                                .copy_from_slice(val_bytes);
+                            mem_data[offset..offset + val_bytes.len()].copy_from_slice(val_bytes);
 
                             let vp = return_value_ptr as usize;
                             if vp + 4 > mem_data.len() {
                                 return Status::BadArgument as i32;
                             }
-                            mem_data[vp..vp + 4]
-                                .copy_from_slice(&data_offset.to_le_bytes());
+                            mem_data[vp..vp + 4].copy_from_slice(&data_offset.to_le_bytes());
 
                             let vs = return_value_size as usize;
                             if vs + 4 > mem_data.len() {
@@ -725,8 +713,7 @@ impl WasmProxyPlugin {
                     if sp + 4 > mem_data.len() {
                         return Status::BadArgument as i32;
                     }
-                    mem_data[sp..sp + 4]
-                        .copy_from_slice(&(buf_data.len() as u32).to_le_bytes());
+                    mem_data[sp..sp + 4].copy_from_slice(&(buf_data.len() as u32).to_le_bytes());
 
                     Status::Ok as i32
                 },
@@ -760,12 +747,7 @@ impl WasmProxyPlugin {
 
                     let state = caller.data().clone();
                     let result = if let Ok(mut s) = state.lock() {
-                        if s.set_buffer(
-                            buffer_type,
-                            start as usize,
-                            length as usize,
-                            &data,
-                        ) {
+                        if s.set_buffer(buffer_type, start as usize, length as usize, &data) {
                             Status::Ok as i32
                         } else {
                             Status::BadArgument as i32
@@ -826,15 +808,13 @@ impl WasmProxyPlugin {
                             if vp + 4 > mem_data.len() {
                                 return Status::BadArgument as i32;
                             }
-                            mem_data[vp..vp + 4]
-                                .copy_from_slice(&data_offset.to_le_bytes());
+                            mem_data[vp..vp + 4].copy_from_slice(&data_offset.to_le_bytes());
 
                             let vs = return_value_size as usize;
                             if vs + 4 > mem_data.len() {
                                 return Status::BadArgument as i32;
                             }
-                            mem_data[vs..vs + 4]
-                                .copy_from_slice(&(val.len() as u32).to_le_bytes());
+                            mem_data[vs..vs + 4].copy_from_slice(&(val.len() as u32).to_le_bytes());
 
                             Status::Ok as i32
                         }
@@ -976,8 +956,8 @@ impl ProxyPlugin for WasmProxyPlugin {
     }
 
     fn on_config(&mut self, config: &serde_json::Value) -> Result<(), String> {
-        self.config_bytes = serde_json::to_vec(config)
-            .map_err(|e| format!("Failed to serialize config: {}", e))?;
+        self.config_bytes =
+            serde_json::to_vec(config).map_err(|e| format!("Failed to serialize config: {}", e))?;
 
         // Create a temporary instance to call proxy_on_configure
         let state = Arc::new(Mutex::new(HostState::new()));
@@ -1037,8 +1017,8 @@ impl ProxyPlugin for WasmProxyPlugin {
         }
 
         // Call proxy_on_request_headers
-        let action = if let Ok(on_headers) = instance
-            .get_typed_func::<(i32, i32, i32), i32>(&mut store, "proxy_on_request_headers")
+        let action = if let Ok(on_headers) =
+            instance.get_typed_func::<(i32, i32, i32), i32>(&mut store, "proxy_on_request_headers")
         {
             let num_headers = {
                 let s = state.lock().unwrap();
@@ -1061,11 +1041,7 @@ impl ProxyPlugin for WasmProxyPlugin {
         action
     }
 
-    fn on_request_body(
-        &self,
-        ctx: &mut ProxyContext,
-        body: Vec<u8>,
-    ) -> Result<Vec<u8>, String> {
+    fn on_request_body(&self, ctx: &mut ProxyContext, body: Vec<u8>) -> Result<Vec<u8>, String> {
         let state = Arc::new(Mutex::new(HostState::new()));
         {
             let mut s = state.lock().unwrap();
@@ -1090,8 +1066,8 @@ impl ProxyPlugin for WasmProxyPlugin {
             s.request_body.len() as i32
         };
 
-        if let Ok(on_body) = instance
-            .get_typed_func::<(i32, i32, i32), i32>(&mut store, "proxy_on_request_body")
+        if let Ok(on_body) =
+            instance.get_typed_func::<(i32, i32, i32), i32>(&mut store, "proxy_on_request_body")
         {
             on_body
                 .call(&mut store, (STREAM_CONTEXT_ID, body_size, 1))
@@ -1128,11 +1104,8 @@ impl ProxyPlugin for WasmProxyPlugin {
         }
 
         // Call proxy_on_response_headers
-        let action = if let Ok(on_headers) = instance
-            .get_typed_func::<(i32, i32, i32), i32>(
-                &mut store,
-                "proxy_on_response_headers",
-            )
+        let action = if let Ok(on_headers) =
+            instance.get_typed_func::<(i32, i32, i32), i32>(&mut store, "proxy_on_response_headers")
         {
             let num_headers = {
                 let s = state.lock().unwrap();
@@ -1155,11 +1128,7 @@ impl ProxyPlugin for WasmProxyPlugin {
         action
     }
 
-    fn on_response_body(
-        &self,
-        ctx: &mut ProxyContext,
-        body: Vec<u8>,
-    ) -> Result<Vec<u8>, String> {
+    fn on_response_body(&self, ctx: &mut ProxyContext, body: Vec<u8>) -> Result<Vec<u8>, String> {
         let state = Arc::new(Mutex::new(HostState::new()));
         {
             let mut s = state.lock().unwrap();
@@ -1184,8 +1153,8 @@ impl ProxyPlugin for WasmProxyPlugin {
             s.response_body.len() as i32
         };
 
-        if let Ok(on_body) = instance
-            .get_typed_func::<(i32, i32, i32), i32>(&mut store, "proxy_on_response_body")
+        if let Ok(on_body) =
+            instance.get_typed_func::<(i32, i32, i32), i32>(&mut store, "proxy_on_response_body")
         {
             on_body
                 .call(&mut store, (STREAM_CONTEXT_ID, body_size, 1))
@@ -1461,10 +1430,7 @@ mod tests {
         state.request_body = b"hello world".to_vec();
 
         // Full read
-        assert_eq!(
-            state.get_buffer(0, 0, 11),
-            Some(b"hello world".to_vec())
-        );
+        assert_eq!(state.get_buffer(0, 0, 11), Some(b"hello world".to_vec()));
         // Partial read
         assert_eq!(state.get_buffer(0, 6, 5), Some(b"world".to_vec()));
         // Out of range read (clamped)
@@ -1561,8 +1527,7 @@ mod tests {
 
     #[test]
     fn test_wasm_plugin_on_config() {
-        let mut plugin =
-            WasmProxyPlugin::new("test-config", MINIMAL_WAT.as_bytes()).unwrap();
+        let mut plugin = WasmProxyPlugin::new("test-config", MINIMAL_WAT.as_bytes()).unwrap();
         let config = serde_json::json!({"model": "gpt-4", "temperature": 0.7});
         let result = plugin.on_config(&config);
         assert!(result.is_ok());
@@ -1575,8 +1540,7 @@ mod tests {
 
     #[test]
     fn test_wasm_on_request_headers_passthrough() {
-        let plugin =
-            WasmProxyPlugin::new("passthrough", MINIMAL_WAT.as_bytes()).unwrap();
+        let plugin = WasmProxyPlugin::new("passthrough", MINIMAL_WAT.as_bytes()).unwrap();
         let mut ctx = ProxyContext::new();
         ctx.request_headers
             .insert("content-type".to_string(), "application/json".to_string());
@@ -1604,8 +1568,7 @@ mod tests {
 
     #[test]
     fn test_wasm_on_request_headers_modifier() {
-        let plugin =
-            WasmProxyPlugin::new("modifier", HEADER_MODIFIER_WAT.as_bytes()).unwrap();
+        let plugin = WasmProxyPlugin::new("modifier", HEADER_MODIFIER_WAT.as_bytes()).unwrap();
         let mut ctx = ProxyContext::new();
         ctx.request_headers
             .insert("content-type".to_string(), "application/json".to_string());
@@ -1617,10 +1580,7 @@ mod tests {
             ctx.request_headers.get("x-wasm-processed"),
             Some(&"true".to_string())
         );
-        assert_eq!(
-            ctx.request_headers.get("x-added"),
-            Some(&"yes".to_string())
-        );
+        assert_eq!(ctx.request_headers.get("x-added"), Some(&"yes".to_string()));
         assert_eq!(
             ctx.request_headers.get("content-type"),
             Some(&"application/json".to_string())
@@ -1633,8 +1593,7 @@ mod tests {
 
     #[test]
     fn test_wasm_on_request_body_passthrough() {
-        let plugin =
-            WasmProxyPlugin::new("passthrough", MINIMAL_WAT.as_bytes()).unwrap();
+        let plugin = WasmProxyPlugin::new("passthrough", MINIMAL_WAT.as_bytes()).unwrap();
         let mut ctx = ProxyContext::new();
         let body = b"original body".to_vec();
 
@@ -1645,8 +1604,7 @@ mod tests {
 
     #[test]
     fn test_wasm_on_request_body_modifier() {
-        let plugin =
-            WasmProxyPlugin::new("body-mod", BODY_MODIFIER_WAT.as_bytes()).unwrap();
+        let plugin = WasmProxyPlugin::new("body-mod", BODY_MODIFIER_WAT.as_bytes()).unwrap();
         let mut ctx = ProxyContext::new();
         let body = b"original body data".to_vec();
 
@@ -1661,8 +1619,7 @@ mod tests {
 
     #[test]
     fn test_wasm_on_response_headers_passthrough() {
-        let plugin =
-            WasmProxyPlugin::new("passthrough", MINIMAL_WAT.as_bytes()).unwrap();
+        let plugin = WasmProxyPlugin::new("passthrough", MINIMAL_WAT.as_bytes()).unwrap();
         let mut ctx = ProxyContext::new();
         ctx.response_headers
             .insert("content-type".to_string(), "text/html".to_string());
@@ -1679,8 +1636,7 @@ mod tests {
 
     #[test]
     fn test_wasm_on_response_body_passthrough() {
-        let plugin =
-            WasmProxyPlugin::new("passthrough", MINIMAL_WAT.as_bytes()).unwrap();
+        let plugin = WasmProxyPlugin::new("passthrough", MINIMAL_WAT.as_bytes()).unwrap();
         let mut ctx = ProxyContext::new();
         let body = b"response body".to_vec();
 
@@ -1695,8 +1651,7 @@ mod tests {
 
     #[test]
     fn test_wasm_proxy_log() {
-        let plugin =
-            WasmProxyPlugin::new("logger", LOGGING_WAT.as_bytes()).unwrap();
+        let plugin = WasmProxyPlugin::new("logger", LOGGING_WAT.as_bytes()).unwrap();
         let mut ctx = ProxyContext::new();
 
         let action = plugin.on_request_headers(&mut ctx);
@@ -1705,27 +1660,22 @@ mod tests {
 
     #[test]
     fn test_wasm_proxy_log_captures_messages() {
-        let plugin =
-            WasmProxyPlugin::new("logger", LOGGING_WAT.as_bytes()).unwrap();
+        let plugin = WasmProxyPlugin::new("logger", LOGGING_WAT.as_bytes()).unwrap();
         let state = Arc::new(Mutex::new(HostState::new()));
 
         let (mut store, instance) = plugin.create_instance(state.clone()).unwrap();
 
         // Create context
-        if let Ok(create_ctx) = instance
-            .get_typed_func::<(i32, i32), ()>(&mut store, "proxy_on_context_create")
+        if let Ok(create_ctx) =
+            instance.get_typed_func::<(i32, i32), ()>(&mut store, "proxy_on_context_create")
         {
             let _ = create_ctx.call(&mut store, (ROOT_CONTEXT_ID, 0));
-            let _ =
-                create_ctx.call(&mut store, (STREAM_CONTEXT_ID, ROOT_CONTEXT_ID));
+            let _ = create_ctx.call(&mut store, (STREAM_CONTEXT_ID, ROOT_CONTEXT_ID));
         }
 
         // Call proxy_on_request_headers which triggers proxy_log
         let on_headers = instance
-            .get_typed_func::<(i32, i32, i32), i32>(
-                &mut store,
-                "proxy_on_request_headers",
-            )
+            .get_typed_func::<(i32, i32, i32), i32>(&mut store, "proxy_on_request_headers")
             .unwrap();
         let action = on_headers
             .call(&mut store, (STREAM_CONTEXT_ID, 0, 1))
@@ -1747,8 +1697,7 @@ mod tests {
     fn test_wasm_plugin_in_chain() {
         use super::super::chain::ProxyPluginChain;
 
-        let plugin =
-            WasmProxyPlugin::new("wasm-test", MINIMAL_WAT.as_bytes()).unwrap();
+        let plugin = WasmProxyPlugin::new("wasm-test", MINIMAL_WAT.as_bytes()).unwrap();
         let mut chain = ProxyPluginChain::new();
         chain.add(Box::new(plugin));
 
@@ -1760,9 +1709,7 @@ mod tests {
         assert_eq!(action, Action::Continue);
 
         let body = b"test body".to_vec();
-        let result = chain
-            .process_request_body(&mut ctx, body.clone())
-            .unwrap();
+        let result = chain.process_request_body(&mut ctx, body.clone()).unwrap();
         assert_eq!(result, body);
     }
 
@@ -1770,11 +1717,7 @@ mod tests {
     fn test_wasm_header_modifier_in_chain() {
         use super::super::chain::ProxyPluginChain;
 
-        let plugin = WasmProxyPlugin::new(
-            "wasm-modifier",
-            HEADER_MODIFIER_WAT.as_bytes(),
-        )
-        .unwrap();
+        let plugin = WasmProxyPlugin::new("wasm-modifier", HEADER_MODIFIER_WAT.as_bytes()).unwrap();
         let mut chain = ProxyPluginChain::new();
         chain.add(Box::new(plugin));
 
@@ -1789,10 +1732,7 @@ mod tests {
             ctx.request_headers.get("x-wasm-processed"),
             Some(&"true".to_string())
         );
-        assert_eq!(
-            ctx.request_headers.get("x-added"),
-            Some(&"yes".to_string())
-        );
+        assert_eq!(ctx.request_headers.get("x-added"), Some(&"yes".to_string()));
     }
 
     // ════════════════════════════════════
@@ -1819,7 +1759,11 @@ mod tests {
     fn test_openai_compat_wasm_loads() {
         let wasm_bytes = load_openai_compat_wasm();
         let plugin = WasmProxyPlugin::new("openai-compat", &wasm_bytes);
-        assert!(plugin.is_ok(), "Failed to load OpenAI compat WASM plugin: {:?}", plugin.err());
+        assert!(
+            plugin.is_ok(),
+            "Failed to load OpenAI compat WASM plugin: {:?}",
+            plugin.err()
+        );
     }
 
     #[test]
@@ -1947,8 +1891,7 @@ mod tests {
         // Process request body
         let req_body = br#"{"prompt":"Write a quicksort in Rust"}"#.to_vec();
         let transformed_body = chain.process_request_body(&mut ctx, req_body).unwrap();
-        let parsed: serde_json::Value =
-            serde_json::from_slice(&transformed_body).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&transformed_body).unwrap();
         assert!(parsed["messages"].is_array());
         let messages = parsed["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 1);
@@ -1969,8 +1912,7 @@ mod tests {
             br#"{"id":"chatcmpl-abc","choices":[{"message":{"content":"fn quicksort..."}}]}"#
                 .to_vec();
         let transformed_resp = chain.process_response_body(&mut ctx, resp_body).unwrap();
-        let parsed: serde_json::Value =
-            serde_json::from_slice(&transformed_resp).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&transformed_resp).unwrap();
         assert_eq!(parsed["prism_converted"], true);
         assert_eq!(parsed["id"], "chatcmpl-abc");
         assert!(parsed["choices"].is_array());

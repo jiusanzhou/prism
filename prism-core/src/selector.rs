@@ -94,8 +94,7 @@ impl ScoredL1Selector {
                     1.0 - (candidate.effective_pricing.cost_per_1m() / max_cost).min(1.0);
                 let quality_score = Self::estimate_quality(profile, candidate) as f64;
                 let latency_score = 1.0
-                    - (candidate.variant.performance.p50_latency_ms as f32 / max_latency)
-                        .min(1.0);
+                    - (candidate.variant.performance.p50_latency_ms as f32 / max_latency).min(1.0);
 
                 (cost_score as f32 * cost_weight)
                     + (quality_score as f32 * quality_weight)
@@ -152,12 +151,11 @@ impl ScoredL1Selector {
             QualityTier::C => 0.25,
         };
 
-        let specialty_bonus: f32 =
-            if candidate.model.specialties.contains(&profile.task_type) {
-                0.15
-            } else {
-                0.0
-            };
+        let specialty_bonus: f32 = if candidate.model.specialties.contains(&profile.task_type) {
+            0.15
+        } else {
+            0.0
+        };
 
         (tier_score + specialty_bonus).min(1.0_f32)
     }
@@ -218,8 +216,7 @@ impl L1ModelSelector for ScoredL1Selector {
                     crate::analyzer::ContextSize::Large => 32000,
                     crate::analyzer::ContextSize::XLarge => 128000,
                 };
-                indices
-                    .retain(|&i| candidates[i].model.capabilities.max_context_window >= min_ctx);
+                indices.retain(|&i| candidates[i].model.capabilities.max_context_window >= min_ctx);
 
                 if indices.is_empty() {
                     return Err(RouterError::AllFiltered {
@@ -230,13 +227,11 @@ impl L1ModelSelector for ScoredL1Selector {
                 let mut scored: Vec<(usize, f32)> = indices
                     .into_iter()
                     .map(|i| {
-                        let score =
-                            self.score_candidate(objective, ctx.profile, &candidates[i]);
+                        let score = self.score_candidate(objective, ctx.profile, &candidates[i]);
                         (i, score)
                     })
                     .collect();
-                scored
-                    .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                 scored.retain(|(_, s)| *s > 0.0);
 
                 if scored.is_empty() {
@@ -247,9 +242,7 @@ impl L1ModelSelector for ScoredL1Selector {
 
                 Ok(scored.into_iter().map(|(i, _)| i).collect())
             }
-            ModelSelectionStrategy::Cascade { .. } => {
-                Ok((0..candidates.len()).collect())
-            }
+            ModelSelectionStrategy::Cascade { .. } => Ok((0..candidates.len()).collect()),
         }
     }
 
@@ -316,8 +309,7 @@ impl L2ProviderSelector for DefaultL2Selector {
                 if let Some(rpm) = effective_rpm {
                     if rpm > 0 {
                         let rps_limit = rpm as f32 / 60.0;
-                        let utilisation =
-                            (c.variant.performance.current_qps / rps_limit).min(1.0);
+                        let utilisation = (c.variant.performance.current_qps / rps_limit).min(1.0);
                         bonus -= utilisation * 200.0;
                     }
                 }
@@ -742,10 +734,7 @@ pub struct DefaultL5Policy {
 }
 
 impl DefaultL5Policy {
-    pub fn new(
-        resilience_policy: ResiliencePolicy,
-        registry: Arc<InMemoryRegistry>,
-    ) -> Self {
+    pub fn new(resilience_policy: ResiliencePolicy, registry: Arc<InMemoryRegistry>) -> Self {
         Self {
             resilience_policy,
             registry,
@@ -843,12 +832,10 @@ impl L5ResiliencePolicy for DefaultL5Policy {
         }
 
         let should_retry = match error_type {
-            FailureType::HttpError(status) => {
-                policy.retry.retry_on.iter().any(|cond| match cond {
-                    RetryCondition::HttpStatus(statuses) => statuses.contains(status),
-                    _ => false,
-                })
-            }
+            FailureType::HttpError(status) => policy.retry.retry_on.iter().any(|cond| match cond {
+                RetryCondition::HttpStatus(statuses) => statuses.contains(status),
+                _ => false,
+            }),
             FailureType::Timeout => policy
                 .retry
                 .retry_on
@@ -879,11 +866,9 @@ impl L5ResiliencePolicy for DefaultL5Policy {
                 }
                 RetryScope::CrossProvider => {
                     let failed_prov = self.get_provider_for_variant(failed_variant_id);
-                    if let Some(alt_variant) = self.find_fallback_variant(
-                        failed_variant_id,
-                        failed_prov.as_deref(),
-                        true,
-                    ) {
+                    if let Some(alt_variant) =
+                        self.find_fallback_variant(failed_variant_id, failed_prov.as_deref(), true)
+                    {
                         Ok(RecoveryAction::Retry {
                             variant_id: alt_variant,
                             delay_ms: delay,
@@ -910,8 +895,7 @@ impl L5ResiliencePolicy for DefaultL5Policy {
                         }
                     }
                     FallbackTarget::Model(model_id) => {
-                        let candidates =
-                            self.registry.get_candidates_for_model(model_id);
+                        let candidates = self.registry.get_candidates_for_model(model_id);
                         for c in &candidates {
                             if c.variant.id != failed_variant_id {
                                 return Ok(RecoveryAction::Fallback {
@@ -998,10 +982,18 @@ impl Default for SelectorConfig {
     }
 }
 
-fn default_l1() -> String { "scored".into() }
-fn default_l2() -> String { "default".into() }
-fn default_l3() -> String { "affinity".into() }
-fn default_l4() -> String { "best".into() }
+fn default_l1() -> String {
+    "scored".into()
+}
+fn default_l2() -> String {
+    "default".into()
+}
+fn default_l3() -> String {
+    "affinity".into()
+}
+fn default_l4() -> String {
+    "best".into()
+}
 
 // ════════════════════════════════════════════════
 // Selector Factory
@@ -1012,7 +1004,10 @@ fn default_l4() -> String { "best".into() }
 /// Currently only `ScoredL1Selector` exists. The factory always returns it
 /// regardless of the name, since L1 strategy switching (Auto/Pinned/Cascade)
 /// is handled at the request level inside `ScoredL1Selector`.
-pub fn create_l1_selector(_name: &str, feedback: Arc<FeedbackCollector>) -> Box<dyn L1ModelSelector> {
+pub fn create_l1_selector(
+    _name: &str,
+    feedback: Arc<FeedbackCollector>,
+) -> Box<dyn L1ModelSelector> {
     Box::new(ScoredL1Selector::new(feedback))
 }
 

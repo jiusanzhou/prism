@@ -152,8 +152,8 @@ fn build_multi_provider_registry() -> InMemoryRegistry {
         },
         pricing_override: None,
         status: VariantStatus::Active,
-            base_url: None,
-            upstream_model_name: None,
+        base_url: None,
+        upstream_model_name: None,
     });
 
     reg.add_variant(ModelVariant {
@@ -181,8 +181,8 @@ fn build_multi_provider_registry() -> InMemoryRegistry {
             currency: "USD".into(),
         }),
         status: VariantStatus::Active,
-            base_url: None,
-            upstream_model_name: None,
+        base_url: None,
+        upstream_model_name: None,
     });
 
     reg.add_variant(ModelVariant {
@@ -195,14 +195,18 @@ fn build_multi_provider_registry() -> InMemoryRegistry {
         performance: ModelPerformance::default(),
         pricing_override: None,
         status: VariantStatus::Disabled,
-            base_url: None,
-            upstream_model_name: None,
+        base_url: None,
+        upstream_model_name: None,
     });
 
     reg.add_pool(ModelPool {
         id: "all".into(),
         name: "All".into(),
-        variants: vec!["claude@fast".into(), "claude@cheap".into(), "claude@down".into()],
+        variants: vec![
+            "claude@fast".into(),
+            "claude@cheap".into(),
+            "claude@down".into(),
+        ],
         selection_mode: SelectionMode::Scored,
         description: None,
     });
@@ -324,7 +328,11 @@ fn test_quota_aware_selection() {
         endpoint_id: "fast-ep".into(),
         auth: AuthConfig::default(),
         project_id: None,
-        rate_limit: Some(RateLimit { rpm: Some(100), tpm: None, concurrent: None }),
+        rate_limit: Some(RateLimit {
+            rpm: Some(100),
+            tpm: None,
+            concurrent: None,
+        }),
         billing_tag: None,
         weight: 1.0,
         status: HealthStatus::Healthy,
@@ -336,7 +344,11 @@ fn test_quota_aware_selection() {
         endpoint_id: "cheap-ep".into(),
         auth: AuthConfig::default(),
         project_id: None,
-        rate_limit: Some(RateLimit { rpm: Some(100), tpm: None, concurrent: None }),
+        rate_limit: Some(RateLimit {
+            rpm: Some(100),
+            tpm: None,
+            concurrent: None,
+        }),
         billing_tag: None,
         weight: 1.0,
         status: HealthStatus::Healthy,
@@ -388,8 +400,8 @@ fn test_quota_aware_selection() {
         },
         pricing_override: None,
         status: VariantStatus::Active,
-            base_url: None,
-            upstream_model_name: None,
+        base_url: None,
+        upstream_model_name: None,
     });
 
     // Cheap variant: current_qps = 0.08 (~5% of limit)
@@ -414,8 +426,8 @@ fn test_quota_aware_selection() {
         },
         pricing_override: None,
         status: VariantStatus::Active,
-            base_url: None,
-            upstream_model_name: None,
+        base_url: None,
+        upstream_model_name: None,
     });
 
     reg.add_pool(ModelPool {
@@ -449,7 +461,6 @@ fn test_geo_proximity_selection() {
         metadata: RouteMetadata {
             region: Some("us-east-1".into()),
             ..Default::default()
-            
         },
         analyze_context: None,
         required_protocol: None,
@@ -467,7 +478,6 @@ fn test_geo_proximity_selection() {
         metadata: RouteMetadata {
             region: Some("eu-west-1".into()),
             ..Default::default()
-            
         },
         analyze_context: None,
         required_protocol: None,

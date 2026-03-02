@@ -7,7 +7,7 @@
 #![cfg(feature = "wasm")]
 
 use prism_core::analyzer::{
-    AnalyzeContext, ChatMessage, RuleBasedAnalyzer, RequestAnalyzer, WasmAnalyzer,
+    AnalyzeContext, ChatMessage, RequestAnalyzer, RuleBasedAnalyzer, WasmAnalyzer,
 };
 use prism_core::types::TaskType;
 use std::collections::HashMap;
@@ -22,8 +22,7 @@ fn fixture_path() -> PathBuf {
 
 fn make_wasm_analyzer() -> WasmAnalyzer {
     let fallback = Box::new(RuleBasedAnalyzer);
-    WasmAnalyzer::from_file(&fixture_path(), fallback)
-        .expect("should load wasm module")
+    WasmAnalyzer::from_file(&fixture_path(), fallback).expect("should load wasm module")
 }
 
 fn msg(role: &str, content: &str) -> ChatMessage {
@@ -49,8 +48,7 @@ fn test_wasm_load_from_file() {
 fn test_wasm_load_from_bytes() {
     let bytes = std::fs::read(fixture_path()).expect("should read wasm file");
     let fallback = Box::new(RuleBasedAnalyzer);
-    let analyzer = WasmAnalyzer::from_bytes(&bytes, fallback)
-        .expect("should load wasm from bytes");
+    let analyzer = WasmAnalyzer::from_bytes(&bytes, fallback).expect("should load wasm from bytes");
     let profile = analyzer.analyze(&[msg("user", "hello")]);
     assert!(profile.complexity >= 0.0);
 }
@@ -62,9 +60,7 @@ fn test_wasm_load_from_bytes() {
 #[test]
 fn test_wasm_classifies_code() {
     let analyzer = make_wasm_analyzer();
-    let profile = analyzer.analyze(&[
-        msg("user", "Please write a Rust function to sort a vector"),
-    ]);
+    let profile = analyzer.analyze(&[msg("user", "Please write a Rust function to sort a vector")]);
     assert_eq!(profile.task_type, TaskType::CodeGeneration);
     assert!(profile.complexity >= 0.5);
     assert!(profile.requires_reasoning);
@@ -73,9 +69,10 @@ fn test_wasm_classifies_code() {
 #[test]
 fn test_wasm_classifies_reasoning() {
     let analyzer = make_wasm_analyzer();
-    let profile = analyzer.analyze(&[
-        msg("user", "Explain why the sky is blue and analyze the physics"),
-    ]);
+    let profile = analyzer.analyze(&[msg(
+        "user",
+        "Explain why the sky is blue and analyze the physics",
+    )]);
     assert_eq!(profile.task_type, TaskType::Reasoning);
     assert!(profile.requires_reasoning);
 }
@@ -92,27 +89,21 @@ fn test_wasm_classifies_simple_qa() {
 #[test]
 fn test_wasm_classifies_creative_writing() {
     let analyzer = make_wasm_analyzer();
-    let profile = analyzer.analyze(&[
-        msg("user", "Write a short story about a dragon"),
-    ]);
+    let profile = analyzer.analyze(&[msg("user", "Write a short story about a dragon")]);
     assert_eq!(profile.task_type, TaskType::Creative);
 }
 
 #[test]
 fn test_wasm_classifies_translation() {
     let analyzer = make_wasm_analyzer();
-    let profile = analyzer.analyze(&[
-        msg("user", "Translate this text to English: 你好世界"),
-    ]);
+    let profile = analyzer.analyze(&[msg("user", "Translate this text to English: 你好世界")]);
     assert_eq!(profile.task_type, TaskType::Translation);
 }
 
 #[test]
 fn test_wasm_classifies_math() {
     let analyzer = make_wasm_analyzer();
-    let profile = analyzer.analyze(&[
-        msg("user", "Calculate the integral of x^2 from 0 to 1"),
-    ]);
+    let profile = analyzer.analyze(&[msg("user", "Calculate the integral of x^2 from 0 to 1")]);
     assert_eq!(profile.task_type, TaskType::Math);
     assert!(profile.requires_reasoning);
 }
@@ -124,9 +115,7 @@ fn test_wasm_classifies_math() {
 #[test]
 fn test_wasm_detects_chinese() {
     let analyzer = make_wasm_analyzer();
-    let profile = analyzer.analyze(&[
-        msg("user", "请帮我写一段代码实现快速排序"),
-    ]);
+    let profile = analyzer.analyze(&[msg("user", "请帮我写一段代码实现快速排序")]);
     assert_eq!(profile.task_type, TaskType::CodeGeneration);
     // Token estimation should account for CJK
     assert!(profile.estimated_tokens > 0);
@@ -205,12 +194,11 @@ fn test_wasm_complexity_ordering() {
     let analyzer = make_wasm_analyzer();
 
     let simple = analyzer.analyze(&[msg("user", "hi")]);
-    let code = analyzer.analyze(&[
-        msg("user", "Write a Rust function implementing quicksort"),
-    ]);
-    let math = analyzer.analyze(&[
-        msg("user", "Calculate the derivative of sin(x^2) and prove it"),
-    ]);
+    let code = analyzer.analyze(&[msg("user", "Write a Rust function implementing quicksort")]);
+    let math = analyzer.analyze(&[msg(
+        "user",
+        "Calculate the derivative of sin(x^2) and prove it",
+    )]);
 
     // Math/code should be more complex than simple
     assert!(code.complexity > simple.complexity);

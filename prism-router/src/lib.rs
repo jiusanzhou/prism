@@ -7,8 +7,8 @@ pub mod config_watcher;
 pub mod metrics;
 pub mod plugin_loader;
 pub mod plugin_manager;
-pub mod unified_plugin;
 pub mod state;
+pub mod unified_plugin;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;
@@ -22,10 +22,10 @@ pub mod gen {
 }
 
 #[cfg(feature = "proxy")]
+pub mod access_log;
+#[cfg(feature = "proxy")]
 pub mod protocol;
 #[cfg(feature = "proxy")]
 pub mod proxy;
 #[cfg(feature = "proxy")]
 pub mod ratelimit;
-#[cfg(feature = "proxy")]
-pub mod access_log;

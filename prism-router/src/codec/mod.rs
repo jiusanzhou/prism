@@ -141,11 +141,7 @@ pub trait ProxyPlugin: Send + Sync {
     /// Phase 2: Request body arrived (full body for non-streaming).
     /// Can transform the body (e.g., OpenAI JSON → Anthropic JSON).
     /// Return the (potentially modified) body.
-    fn on_request_body(
-        &self,
-        _ctx: &mut ProxyContext,
-        body: Vec<u8>,
-    ) -> Result<Vec<u8>, String> {
+    fn on_request_body(&self, _ctx: &mut ProxyContext, body: Vec<u8>) -> Result<Vec<u8>, String> {
         Ok(body)
     }
 
@@ -156,11 +152,7 @@ pub trait ProxyPlugin: Send + Sync {
 
     /// Phase 4: Response body arrived (full body for non-streaming).
     /// Can transform the response body back to inbound protocol format.
-    fn on_response_body(
-        &self,
-        _ctx: &mut ProxyContext,
-        body: Vec<u8>,
-    ) -> Result<Vec<u8>, String> {
+    fn on_response_body(&self, _ctx: &mut ProxyContext, body: Vec<u8>) -> Result<Vec<u8>, String> {
         Ok(body)
     }
 
@@ -173,6 +165,11 @@ pub trait ProxyPlugin: Send + Sync {
     ) -> Result<Option<String>, String> {
         Ok(Some(chunk.to_string()))
     }
+
+    /// Phase 5: Called at request completion (logging phase).
+    /// Used for metering, billing, auditing — has access to the full ctx
+    /// including response status, duration, selected variant/provider/model, etc.
+    fn on_log(&self, _ctx: &mut ProxyContext) {}
 }
 
 // ════════════════════════════════════════════════

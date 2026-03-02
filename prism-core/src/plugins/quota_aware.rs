@@ -20,26 +20,13 @@ impl RoutingPlugin for QuotaAwarePlugin {
             .rate_limit
             .as_ref()
             .and_then(|rl| rl.rpm)
-            .or_else(|| {
-                candidate
-                    .endpoint
-                    .rate_limit
-                    .as_ref()
-                    .and_then(|rl| rl.rpm)
-            })
-            .or_else(|| {
-                candidate
-                    .provider
-                    .rate_limit
-                    .as_ref()
-                    .and_then(|rl| rl.rpm)
-            });
+            .or_else(|| candidate.endpoint.rate_limit.as_ref().and_then(|rl| rl.rpm))
+            .or_else(|| candidate.provider.rate_limit.as_ref().and_then(|rl| rl.rpm));
 
         match effective_rpm {
             Some(rpm) if rpm > 0 => {
                 let rps_limit = rpm as f32 / 60.0;
-                let utilisation =
-                    (candidate.variant.performance.current_qps / rps_limit).min(1.0);
+                let utilisation = (candidate.variant.performance.current_qps / rps_limit).min(1.0);
                 1.0 - utilisation
             }
             _ => 1.0, // no rate limit → full score

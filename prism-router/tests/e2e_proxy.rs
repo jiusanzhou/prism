@@ -650,10 +650,7 @@ mod proxy_tests {
 
         let (host, port) = if let Some(colon) = host_port.rfind(':') {
             let port_str = &host_port[colon + 1..];
-            (
-                &host_port[..colon],
-                port_str.parse::<u16>().unwrap_or(80),
-            )
+            (&host_port[..colon], port_str.parse::<u16>().unwrap_or(80))
         } else {
             (host_port, if use_tls { 443 } else { 80 })
         };
@@ -700,10 +697,7 @@ mod proxy_tests {
         );
 
         // The base mock-model variant should have no upstream_model_name
-        let base_variant = registry
-            .variants
-            .get("mock-model@mock-provider")
-            .unwrap();
+        let base_variant = registry.variants.get("mock-model@mock-provider").unwrap();
         assert!(base_variant.upstream_model_name.is_none());
     }
 

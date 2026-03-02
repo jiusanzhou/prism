@@ -424,7 +424,10 @@ impl ConfigurableRuleAnalyzer {
         messages: &[ChatMessage],
     ) -> Option<RequestProfile> {
         for rule in rules {
-            let keyword_match = rule.keywords.iter().any(|kw| text_lower.contains(kw.as_str()));
+            let keyword_match = rule
+                .keywords
+                .iter()
+                .any(|kw| text_lower.contains(kw.as_str()));
             let pattern_match = rule.patterns.iter().any(|re| re.is_match(text_lower));
 
             if keyword_match || pattern_match {
@@ -503,9 +506,7 @@ impl RequestAnalyzer for ConfigurableRuleAnalyzer {
         // Find matching scope and apply its rules
         for scope in &self.scopes {
             if Self::scope_matches(scope, ctx) {
-                if let Some(profile) =
-                    Self::try_match_rules(&scope.rules, &text_lower, messages)
-                {
+                if let Some(profile) = Self::try_match_rules(&scope.rules, &text_lower, messages) {
                     return profile;
                 }
             }
@@ -644,13 +645,10 @@ impl WasmAnalyzer {
     }
 
     /// Create a new WASM analyzer from raw bytes.
-    pub fn from_bytes(
-        bytes: &[u8],
-        fallback: Box<dyn RequestAnalyzer>,
-    ) -> Result<Self, String> {
+    pub fn from_bytes(bytes: &[u8], fallback: Box<dyn RequestAnalyzer>) -> Result<Self, String> {
         let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, bytes)
-            .map_err(|e| format!("wasm compile: {}", e))?;
+        let module =
+            wasmtime::Module::new(&engine, bytes).map_err(|e| format!("wasm compile: {}", e))?;
         Ok(Self {
             engine,
             module,
@@ -717,8 +715,8 @@ impl WasmAnalyzer {
         }
         let result_bytes = &mem_data[result_start..result_start + result_len];
 
-        let profile: RequestProfile =
-            serde_json::from_slice(result_bytes).map_err(|e| format!("wasm result parse: {}", e))?;
+        let profile: RequestProfile = serde_json::from_slice(result_bytes)
+            .map_err(|e| format!("wasm result parse: {}", e))?;
 
         Ok(profile)
     }
@@ -762,10 +760,7 @@ pub struct AnalyzerChain {
 
 impl AnalyzerChain {
     /// Create a new analyzer chain.
-    pub fn new(
-        analyzers: Vec<(String, Box<dyn RequestAnalyzer>)>,
-        first_definitive: bool,
-    ) -> Self {
+    pub fn new(analyzers: Vec<(String, Box<dyn RequestAnalyzer>)>, first_definitive: bool) -> Self {
         Self {
             analyzers,
             first_definitive,

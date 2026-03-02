@@ -114,10 +114,7 @@ mod tests {
     #[test]
     fn test_extract_model_from_body() {
         let body = br#"{"model": "gpt-4o", "messages": []}"#;
-        assert_eq!(
-            extract_model_from_body(body),
-            Some("gpt-4o".to_string())
-        );
+        assert_eq!(extract_model_from_body(body), Some("gpt-4o".to_string()));
 
         let body = br#"{"messages": []}"#;
         assert_eq!(extract_model_from_body(body), None);

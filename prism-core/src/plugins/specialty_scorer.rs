@@ -15,7 +15,11 @@ impl RoutingPlugin for SpecialtyScorerPlugin {
     }
 
     fn score(&self, state: &PluginState, candidate: &ModelCandidate) -> f32 {
-        if candidate.model.specialties.contains(&state.profile.task_type) {
+        if candidate
+            .model
+            .specialties
+            .contains(&state.profile.task_type)
+        {
             1.0
         } else {
             0.0

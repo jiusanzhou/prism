@@ -147,8 +147,8 @@ fn make_variant(
         },
         pricing_override: None,
         status: VariantStatus::Active,
-            base_url: None,
-            upstream_model_name: None,
+        base_url: None,
+        upstream_model_name: None,
     }
 }
 
@@ -186,8 +186,8 @@ fn make_variant_with_pricing(
             currency: "USD".into(),
         }),
         status: VariantStatus::Active,
-            base_url: None,
-            upstream_model_name: None,
+        base_url: None,
+        upstream_model_name: None,
     }
 }
 
@@ -278,9 +278,18 @@ fn test_lowest_latency_l2() {
 
     let result = selector.rerank(vec![&c1, &c2, &c3], &ctx);
 
-    assert_eq!(result[0].variant.id, "v2", "Lowest latency (100) should be first");
-    assert_eq!(result[1].variant.id, "v3", "Medium latency (300) should be second");
-    assert_eq!(result[2].variant.id, "v1", "Highest latency (500) should be last");
+    assert_eq!(
+        result[0].variant.id, "v2",
+        "Lowest latency (100) should be first"
+    );
+    assert_eq!(
+        result[1].variant.id, "v3",
+        "Medium latency (300) should be second"
+    );
+    assert_eq!(
+        result[2].variant.id, "v1",
+        "Highest latency (500) should be last"
+    );
 }
 
 #[test]
@@ -291,8 +300,8 @@ fn test_lowest_cost_l2() {
     let model = make_model("model-a");
 
     let v1 = make_variant_with_pricing("v1", "model-a", "ep", "acct", 200, 10.0, 20.0); // expensive
-    let v2 = make_variant_with_pricing("v2", "model-a", "ep", "acct", 200, 0.5, 1.0);   // cheapest
-    let v3 = make_variant_with_pricing("v3", "model-a", "ep", "acct", 200, 3.0, 6.0);   // medium
+    let v2 = make_variant_with_pricing("v2", "model-a", "ep", "acct", 200, 0.5, 1.0); // cheapest
+    let v3 = make_variant_with_pricing("v3", "model-a", "ep", "acct", 200, 3.0, 6.0); // medium
 
     let c1 = make_candidate(&v1, &model, &account, &endpoint, &provider);
     let c2 = make_candidate(&v2, &model, &account, &endpoint, &provider);
@@ -315,8 +324,8 @@ fn test_lowest_cost_l2() {
 fn test_priority_l2() {
     let provider = make_provider("prov");
     let ep1 = make_endpoint_with_priority("ep1", "prov", 10); // lowest priority number = highest priority
-    let ep2 = make_endpoint_with_priority("ep2", "prov", 1);  // highest priority
-    let ep3 = make_endpoint_with_priority("ep3", "prov", 5);  // medium priority
+    let ep2 = make_endpoint_with_priority("ep2", "prov", 1); // highest priority
+    let ep3 = make_endpoint_with_priority("ep3", "prov", 5); // medium priority
 
     let account = make_account("acct", "ep1");
     let model = make_model("model-a");
@@ -362,7 +371,6 @@ fn test_default_l2_geo() {
     let metadata = RouteMetadata {
         region: Some("eu-west-1".into()),
         ..Default::default()
-        
     };
     let strategy = ModelSelectionStrategy::default();
     let ctx = make_route_context(&profile, &metadata, &strategy);
@@ -458,9 +466,9 @@ fn test_least_load_l3() {
     let acct3 = make_account("acct3", "ep");
     let model = make_model("model-a");
 
-    let v1 = make_variant("v1", "model-a", "ep", "acct1", 200, 50.0);  // high load
-    let v2 = make_variant("v2", "model-a", "ep", "acct2", 200, 5.0);   // lowest load
-    let v3 = make_variant("v3", "model-a", "ep", "acct3", 200, 20.0);  // medium load
+    let v1 = make_variant("v1", "model-a", "ep", "acct1", 200, 50.0); // high load
+    let v2 = make_variant("v2", "model-a", "ep", "acct2", 200, 5.0); // lowest load
+    let v3 = make_variant("v3", "model-a", "ep", "acct3", 200, 20.0); // medium load
 
     let c1 = make_candidate(&v1, &model, &acct1, &endpoint, &provider);
     let c2 = make_candidate(&v2, &model, &acct2, &endpoint, &provider);
@@ -474,7 +482,10 @@ fn test_least_load_l3() {
     let ctx = make_route_context(&profile, &metadata, &strategy);
 
     let idx = selector.select(&candidates, &ctx).unwrap();
-    assert_eq!(idx, 1, "Should select candidate with lowest current_qps (5.0)");
+    assert_eq!(
+        idx, 1,
+        "Should select candidate with lowest current_qps (5.0)"
+    );
 }
 
 // ════════════════════════════════════════════════
@@ -583,9 +594,9 @@ fn build_three_provider_registry() -> InMemoryRegistry {
 
     // Three providers with different latencies and costs
     for (prov_id, latency, cost_in, cost_out) in [
-        ("fast-prov", 100u32, 5.0, 10.0),     // fast but expensive
-        ("medium-prov", 300u32, 2.5, 5.0),     // medium
-        ("slow-prov", 500u32, 0.5, 1.0),       // slow but cheap
+        ("fast-prov", 100u32, 5.0, 10.0),  // fast but expensive
+        ("medium-prov", 300u32, 2.5, 5.0), // medium
+        ("slow-prov", 500u32, 0.5, 1.0),   // slow but cheap
     ] {
         reg.add_provider(make_provider(prov_id));
         let ep_id = format!("{prov_id}-ep");
@@ -624,10 +635,10 @@ fn build_three_provider_registry() -> InMemoryRegistry {
 
 #[test]
 fn test_router_with_custom_l2_lowest_latency() {
-    use std::sync::Arc;
     use prism_core::plugin::PluginRegistry;
-    use prism_core::plugins::protocol_filter::ProtocolFilterPlugin;
     use prism_core::plugins::latency_scorer::LatencyScorerPlugin;
+    use prism_core::plugins::protocol_filter::ProtocolFilterPlugin;
+    use std::sync::Arc;
 
     let reg = build_three_provider_registry();
 
@@ -697,10 +708,7 @@ fn test_router_with_custom_l3_round_robin() {
     }
 
     // All decisions should be deterministic (same account every time)
-    assert!(
-        !accounts.is_empty(),
-        "Should produce routing decisions"
-    );
+    assert!(!accounts.is_empty(), "Should produce routing decisions");
     // With default plugins and identical candidates, scoring is deterministic
     // so we expect consistent selection
     assert_eq!(
@@ -712,8 +720,7 @@ fn test_router_with_custom_l3_round_robin() {
 #[test]
 fn test_router_with_custom_l2_lowest_cost() {
     let reg = build_three_provider_registry();
-    let router = PrismRouter::new(reg)
-        .with_l2(Box::new(LowestCostL2Selector));
+    let router = PrismRouter::new(reg).with_l2(Box::new(LowestCostL2Selector));
 
     let req = simple_request("Hello");
     let decision = router.route(&req).unwrap();
