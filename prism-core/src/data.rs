@@ -361,11 +361,7 @@ mod tests {
         let src = PerformanceDataSource::new();
         let perf = ModelPerformance::default();
         // Trying to store as Pricing kind — should be ignored
-        src.update(
-            MetricKind::Pricing,
-            "v1",
-            MetricValue::Performance(perf),
-        );
+        src.update(MetricKind::Pricing, "v1", MetricValue::Performance(perf));
         assert!(src.get(MetricKind::Performance, "v1").is_none());
         assert!(src.get(MetricKind::Pricing, "v1").is_none());
     }
@@ -448,7 +444,9 @@ mod tests {
         let layer = DataLayer::new();
         let src = Arc::new(PerformanceDataSource::new());
         layer.register(src);
-        assert!(layer.query(MetricKind::Performance, "nonexistent").is_none());
+        assert!(layer
+            .query(MetricKind::Performance, "nonexistent")
+            .is_none());
     }
 
     #[test]
@@ -481,12 +479,23 @@ mod tests {
             data: RwLock<HashMap<String, ModelPerformance>>,
         }
         impl DataSource for ExternalPerfSource {
-            fn name(&self) -> &str { "external:performance" }
-            fn tier(&self) -> DataTier { DataTier::External }
-            fn supported_metrics(&self) -> Vec<MetricKind> { vec![MetricKind::Performance] }
+            fn name(&self) -> &str {
+                "external:performance"
+            }
+            fn tier(&self) -> DataTier {
+                DataTier::External
+            }
+            fn supported_metrics(&self) -> Vec<MetricKind> {
+                vec![MetricKind::Performance]
+            }
             fn get(&self, kind: MetricKind, key: &str) -> Option<MetricValue> {
                 if kind == MetricKind::Performance {
-                    self.data.read().unwrap().get(key).cloned().map(MetricValue::Performance)
+                    self.data
+                        .read()
+                        .unwrap()
+                        .get(key)
+                        .cloned()
+                        .map(MetricValue::Performance)
                 } else {
                     None
                 }
@@ -543,12 +552,23 @@ mod tests {
             data: RwLock<HashMap<String, ModelPerformance>>,
         }
         impl DataSource for NamedPerfSource {
-            fn name(&self) -> &str { &self.name }
-            fn tier(&self) -> DataTier { DataTier::NearRealtime }
-            fn supported_metrics(&self) -> Vec<MetricKind> { vec![MetricKind::Performance] }
+            fn name(&self) -> &str {
+                &self.name
+            }
+            fn tier(&self) -> DataTier {
+                DataTier::NearRealtime
+            }
+            fn supported_metrics(&self) -> Vec<MetricKind> {
+                vec![MetricKind::Performance]
+            }
             fn get(&self, kind: MetricKind, key: &str) -> Option<MetricValue> {
                 if kind == MetricKind::Performance {
-                    self.data.read().unwrap().get(key).cloned().map(MetricValue::Performance)
+                    self.data
+                        .read()
+                        .unwrap()
+                        .get(key)
+                        .cloned()
+                        .map(MetricValue::Performance)
                 } else {
                     None
                 }

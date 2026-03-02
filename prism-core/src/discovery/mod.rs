@@ -21,7 +21,7 @@ pub use wasm_discovery::WasmDiscovery;
 
 use std::fmt;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use crate::types::*;
 
@@ -144,9 +144,7 @@ pub trait Discovery: Send + Sync {
         &self,
         _callback: Box<dyn Fn(DiscoveryEvent) + Send + Sync>,
     ) -> Result<(), DiscoveryError> {
-        Err(DiscoveryError::NotSupported(
-            "watch not supported".into(),
-        ))
+        Err(DiscoveryError::NotSupported("watch not supported".into()))
     }
 }
 
@@ -264,7 +262,9 @@ mod tests {
         }
 
         fn discover(&self) -> Result<DiscoveryResult, DiscoveryError> {
-            Err(DiscoveryError::ConnectionFailed("connection refused".into()))
+            Err(DiscoveryError::ConnectionFailed(
+                "connection refused".into(),
+            ))
         }
     }
 
@@ -404,7 +404,11 @@ mod tests {
                 endpoints: vec![make_endpoint("anthropic-ep", "anthropic")],
                 accounts: vec![make_account("anthropic-acct", "anthropic-ep")],
                 models: vec![make_model("claude-3", QualityTier::S)],
-                variants: vec![make_variant("claude-3@anthropic", "claude-3", "anthropic-ep")],
+                variants: vec![make_variant(
+                    "claude-3@anthropic",
+                    "claude-3",
+                    "anthropic-ep",
+                )],
                 pools: vec![make_pool("pool-b", vec!["claude-3@anthropic"])],
             },
         };

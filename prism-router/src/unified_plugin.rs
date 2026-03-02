@@ -292,9 +292,9 @@ mod wasm_analyze {
 }
 
 #[cfg(feature = "wasm")]
-use wasm_route::WasmRoutingPlugin;
-#[cfg(feature = "wasm")]
 use wasm_analyze::WasmAnalyzerPlugin;
+#[cfg(feature = "wasm")]
+use wasm_route::WasmRoutingPlugin;
 
 /// Which phases a plugin participates in.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -426,10 +426,7 @@ pub fn detect_capabilities(module_exports: &[String]) -> DetectedCapabilities {
 
 /// Validate that declared phases are supported by the WASM module's exports.
 /// Returns a list of phases that are declared but NOT supported.
-pub fn validate_phases(
-    declared: &[PluginPhase],
-    caps: &DetectedCapabilities,
-) -> Vec<PluginPhase> {
+pub fn validate_phases(declared: &[PluginPhase], caps: &DetectedCapabilities) -> Vec<PluginPhase> {
     let mut unsupported = Vec::new();
     for phase in declared {
         let supported = match phase {
@@ -534,12 +531,7 @@ impl PluginRegistry {
 
     /// Load a single WASM plugin and register it for its declared phases.
     #[allow(unused_variables)]
-    fn load_wasm_plugin(
-        &mut self,
-        desc: &PluginDescriptor,
-        path: &str,
-        result: &mut LoadResult,
-    ) {
+    fn load_wasm_plugin(&mut self, desc: &PluginDescriptor, path: &str, result: &mut LoadResult) {
         #[cfg(feature = "wasm")]
         {
             // Read WASM bytes
@@ -567,19 +559,14 @@ impl PluginRegistry {
                 }
             };
 
-            let exports: Vec<String> = module
-                .exports()
-                .map(|e| e.name().to_string())
-                .collect();
+            let exports: Vec<String> = module.exports().map(|e| e.name().to_string()).collect();
             let caps = detect_capabilities(&exports);
 
             // Validate declared phases
             let unsupported = validate_phases(&desc.phases, &caps);
             if !unsupported.is_empty() {
-                let phase_names: Vec<String> = unsupported
-                    .iter()
-                    .map(|p| format!("{:?}", p))
-                    .collect();
+                let phase_names: Vec<String> =
+                    unsupported.iter().map(|p| format!("{:?}", p)).collect();
                 result.errors.push((
                     desc.name.clone(),
                     format!(
@@ -595,20 +582,15 @@ impl PluginRegistry {
             for phase in &desc.phases {
                 match phase {
                     PluginPhase::Proxy => {
-                        match crate::codec::wasm_host::WasmProxyPlugin::new(
-                            &desc.name,
-                            &wasm_bytes,
-                        ) {
+                        match crate::codec::wasm_host::WasmProxyPlugin::new(&desc.name, &wasm_bytes)
+                        {
                             Ok(mut plugin) => {
                                 // Apply config if present
                                 if !desc.config.is_null() {
                                     if let Err(e) = plugin.on_config(&desc.config) {
                                         result.errors.push((
                                             desc.name.clone(),
-                                            format!(
-                                                "Proxy plugin config error: {}",
-                                                e
-                                            ),
+                                            format!("Proxy plugin config error: {}", e),
                                         ));
                                         continue;
                                     }
@@ -621,10 +603,7 @@ impl PluginRegistry {
                             Err(e) => {
                                 result.errors.push((
                                     desc.name.clone(),
-                                    format!(
-                                        "Failed to create proxy plugin: {}",
-                                        e
-                                    ),
+                                    format!("Failed to create proxy plugin: {}", e),
                                 ));
                             }
                         }
@@ -644,15 +623,11 @@ impl PluginRegistry {
                         registered_phases.push(phase.clone());
                     }
                     PluginPhase::Analyze => {
-                        let analyzer = WasmAnalyzerPlugin::new(
-                            &desc.name,
-                            engine.clone(),
-                            module.clone(),
-                        );
-                        result.analyzers.push((
-                            desc.name.clone(),
-                            Box::new(analyzer),
-                        ));
+                        let analyzer =
+                            WasmAnalyzerPlugin::new(&desc.name, engine.clone(), module.clone());
+                        result
+                            .analyzers
+                            .push((desc.name.clone(), Box::new(analyzer)));
                         registered_phases.push(phase.clone());
                     }
                 }
@@ -1036,10 +1011,7 @@ mod tests {
 
     #[test]
     fn test_detect_route_filter() {
-        let exports: Vec<String> = vec![
-            "memory".to_string(),
-            "prism_route_filter".to_string(),
-        ];
+        let exports: Vec<String> = vec!["memory".to_string(), "prism_route_filter".to_string()];
         let caps = detect_capabilities(&exports);
         assert!(!caps.has_proxy);
         assert!(caps.has_route);
@@ -1048,10 +1020,7 @@ mod tests {
 
     #[test]
     fn test_detect_route_score() {
-        let exports: Vec<String> = vec![
-            "memory".to_string(),
-            "prism_route_score".to_string(),
-        ];
+        let exports: Vec<String> = vec!["memory".to_string(), "prism_route_score".to_string()];
         let caps = detect_capabilities(&exports);
         assert!(!caps.has_proxy);
         assert!(caps.has_route);
@@ -1352,7 +1321,11 @@ mod tests {
                 .iter()
                 .filter(|(_, msg)| !msg.contains("not yet implemented"))
                 .collect();
-            assert!(proxy_errors.is_empty(), "Unexpected errors: {:?}", proxy_errors);
+            assert!(
+                proxy_errors.is_empty(),
+                "Unexpected errors: {:?}",
+                proxy_errors
+            );
         }
 
         #[test]
@@ -1444,7 +1417,11 @@ mod tests {
             // Analyze should also load successfully now
             assert_eq!(result.analyzers.len(), 1);
             assert_eq!(result.analyzers[0].0, "multi-phase");
-            assert!(result.errors.is_empty(), "Unexpected errors: {:?}", result.errors);
+            assert!(
+                result.errors.is_empty(),
+                "Unexpected errors: {:?}",
+                result.errors
+            );
         }
 
         #[test]
@@ -1474,7 +1451,9 @@ mod tests {
             let result = registry.load_all();
             assert!(result.proxy_plugins.is_empty());
             assert_eq!(result.errors.len(), 1);
-            assert!(result.errors[0].1.contains("missing exports for declared phases"));
+            assert!(result.errors[0]
+                .1
+                .contains("missing exports for declared phases"));
         }
 
         #[test]
@@ -1482,8 +1461,7 @@ mod tests {
             // Test that detect_capabilities works with real module exports
             let engine = wasmtime::Engine::default();
             let module = wasmtime::Module::new(&engine, MULTI_PHASE_WAT).unwrap();
-            let exports: Vec<String> =
-                module.exports().map(|e| e.name().to_string()).collect();
+            let exports: Vec<String> = module.exports().map(|e| e.name().to_string()).collect();
 
             let caps = detect_capabilities(&exports);
             assert!(caps.has_proxy);
@@ -1682,12 +1660,8 @@ mod tests {
 
             let engine = wasmtime::Engine::default();
             let module = wasmtime::Module::new(&engine, ROUTE_REJECT_WAT).unwrap();
-            let plugin = WasmRoutingPlugin::new(
-                "test-reject",
-                engine,
-                module,
-                vec![RouteStage::Filter],
-            );
+            let plugin =
+                WasmRoutingPlugin::new("test-reject", engine, module, vec![RouteStage::Filter]);
 
             let state = make_test_plugin_state();
             let candidate = make_test_candidate();
@@ -1701,12 +1675,8 @@ mod tests {
             let engine = wasmtime::Engine::default();
             let module = wasmtime::Module::new(&engine, ROUTE_WAT).unwrap();
             // Only Score stage declared — filter should default to true
-            let plugin = WasmRoutingPlugin::new(
-                "test-skip",
-                engine,
-                module,
-                vec![RouteStage::Score],
-            );
+            let plugin =
+                WasmRoutingPlugin::new("test-skip", engine, module, vec![RouteStage::Score]);
 
             let state = make_test_plugin_state();
             let candidate = make_test_candidate();

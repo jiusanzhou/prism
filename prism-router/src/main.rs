@@ -5,8 +5,8 @@ mod config_watcher;
 pub mod metrics;
 pub mod plugin_loader;
 pub mod plugin_manager;
-pub mod unified_plugin;
 mod state;
+pub mod unified_plugin;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;
@@ -20,13 +20,13 @@ mod gen {
 }
 
 #[cfg(feature = "proxy")]
+mod access_log;
+#[cfg(feature = "proxy")]
 mod protocol;
 #[cfg(feature = "proxy")]
 mod proxy;
 #[cfg(feature = "proxy")]
 pub mod ratelimit;
-#[cfg(feature = "proxy")]
-mod access_log;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -38,7 +38,7 @@ use axum::Router;
 use clap::Parser;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
-use tracing::{info, error};
+use tracing::{error, info};
 
 use crate::config::{build_registry, load_config};
 use crate::state::AppState;
@@ -145,9 +145,13 @@ async fn main() {
     // ── Collect features info for startup banner ──
     let mut features = vec!["http"];
     #[cfg(feature = "grpc")]
-    { features.push("grpc"); }
+    {
+        features.push("grpc");
+    }
     #[cfg(feature = "proxy")]
-    { features.push("proxy"); }
+    {
+        features.push("proxy");
+    }
 
     info!(
         "🚀 Prism Router starting — features: [{}]",
@@ -155,13 +159,14 @@ async fn main() {
     );
 
     // ── Start HTTP server ──
-    let http_listener = tokio::net::TcpListener::bind(http_addr).await.unwrap_or_else(|e| {
-        error!("Failed to bind HTTP to {}: {}", http_addr, e);
-        std::process::exit(1);
-    });
+    let http_listener = tokio::net::TcpListener::bind(http_addr)
+        .await
+        .unwrap_or_else(|e| {
+            error!("Failed to bind HTTP to {}: {}", http_addr, e);
+            std::process::exit(1);
+        });
     info!("  HTTP  → {}", http_addr);
-    let http_server = axum::serve(http_listener, app)
-        .with_graceful_shutdown(shutdown_signal());
+    let http_server = axum::serve(http_listener, app).with_graceful_shutdown(shutdown_signal());
 
     // ── Start gRPC server (if feature enabled) ──
     #[cfg(feature = "grpc")]
@@ -169,9 +174,9 @@ async fn main() {
         use crate::gen::prism_router_v1::router_service_server::RouterServiceServer;
         use crate::grpc::GrpcRouterService;
 
-        let grpc_addr_str = cli.grpc_listen.unwrap_or_else(|| {
-            format!("0.0.0.0:{}", config.server.grpc_port)
-        });
+        let grpc_addr_str = cli
+            .grpc_listen
+            .unwrap_or_else(|| format!("0.0.0.0:{}", config.server.grpc_port));
         let grpc_addr: SocketAddr = grpc_addr_str.parse().unwrap_or_else(|e| {
             error!("Invalid gRPC listen address '{}': {}", grpc_addr_str, e);
             std::process::exit(1);
@@ -195,25 +200,24 @@ async fn main() {
     let _proxy_handle = {
         let run_proxy = !cli.no_proxy;
         if run_proxy {
-            use std::sync::Arc;
             use crate::proxy::PrismProxy;
+            use std::sync::Arc;
 
-            let proxy_addr_str = cli.proxy_listen.unwrap_or_else(|| {
-                format!("0.0.0.0:{}", config.server.proxy_port)
-            });
+            let proxy_addr_str = cli
+                .proxy_listen
+                .unwrap_or_else(|| format!("0.0.0.0:{}", config.server.proxy_port));
             info!("  Proxy → {}", proxy_addr_str);
 
-            let prism_proxy = PrismProxy::new(Arc::clone(&state.router), Arc::clone(&state.metrics));
+            let prism_proxy =
+                PrismProxy::new(Arc::clone(&state.router), Arc::clone(&state.metrics));
 
             // Pingora runs in its own thread (blocking)
             let proxy_handle = std::thread::spawn(move || {
                 let mut server = pingora::prelude::Server::new(None).unwrap();
                 server.bootstrap();
 
-                let mut proxy_service = pingora::proxy::http_proxy_service(
-                    &server.configuration,
-                    prism_proxy,
-                );
+                let mut proxy_service =
+                    pingora::proxy::http_proxy_service(&server.configuration, prism_proxy);
                 proxy_service.add_tcp(&proxy_addr_str);
                 server.add_service(proxy_service);
                 server.run_forever();
@@ -232,7 +236,9 @@ async fn main() {
 
     // Wait for gRPC to finish
     #[cfg(feature = "grpc")]
-    { let _ = grpc_handle.await; }
+    {
+        let _ = grpc_handle.await;
+    }
 
     info!("Prism Router stopped");
 }

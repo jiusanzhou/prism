@@ -141,16 +141,28 @@ fn test_affinity_same_session_same_account() {
     let reg = build_multi_account_registry();
     let router = PrismRouter::new(reg);
 
-    let d1 = router.route(&request_with_session("Hello", "session-abc")).unwrap();
-    let d2 = router.route(&request_with_session("How are you?", "session-abc")).unwrap();
-    assert_eq!(d1.selected_account, d2.selected_account,
-        "Same session should route to same account");
+    let d1 = router
+        .route(&request_with_session("Hello", "session-abc"))
+        .unwrap();
+    let d2 = router
+        .route(&request_with_session("How are you?", "session-abc"))
+        .unwrap();
+    assert_eq!(
+        d1.selected_account, d2.selected_account,
+        "Same session should route to same account"
+    );
 
-    let d3 = router.route(&request_with_session("Write me a poem", "session-abc")).unwrap();
-    assert_eq!(d1.selected_account, d3.selected_account,
-        "Same session should always route to same account regardless of content");
+    let d3 = router
+        .route(&request_with_session("Write me a poem", "session-abc"))
+        .unwrap();
+    assert_eq!(
+        d1.selected_account, d3.selected_account,
+        "Same session should always route to same account regardless of content"
+    );
 
-    let d4 = router.route(&request_with_session("Hello", "session-xyz")).unwrap();
+    let d4 = router
+        .route(&request_with_session("Hello", "session-xyz"))
+        .unwrap();
     assert!(!d4.selected_account.is_empty());
 }
 
@@ -185,7 +197,11 @@ fn test_soft_affinity_migrates_on_overload() {
         endpoint_id: "vertex-us".into(),
         auth: AuthConfig::default(),
         project_id: None,
-        rate_limit: Some(RateLimit { rpm: Some(100), tpm: None, concurrent: None }),
+        rate_limit: Some(RateLimit {
+            rpm: Some(100),
+            tpm: None,
+            concurrent: None,
+        }),
         billing_tag: None,
         weight: 1.0,
         status: HealthStatus::Healthy,
@@ -197,7 +213,11 @@ fn test_soft_affinity_migrates_on_overload() {
         endpoint_id: "vertex-us".into(),
         auth: AuthConfig::default(),
         project_id: None,
-        rate_limit: Some(RateLimit { rpm: Some(100), tpm: None, concurrent: None }),
+        rate_limit: Some(RateLimit {
+            rpm: Some(100),
+            tpm: None,
+            concurrent: None,
+        }),
         billing_tag: None,
         weight: 1.0,
         status: HealthStatus::Healthy,
@@ -244,8 +264,8 @@ fn test_soft_affinity_migrates_on_overload() {
         },
         pricing_override: None,
         status: VariantStatus::Active,
-            base_url: None,
-            upstream_model_name: None,
+        base_url: None,
+        upstream_model_name: None,
     });
 
     reg.add_variant(ModelVariant {
@@ -269,8 +289,8 @@ fn test_soft_affinity_migrates_on_overload() {
         },
         pricing_override: None,
         status: VariantStatus::Active,
-            base_url: None,
-            upstream_model_name: None,
+        base_url: None,
+        upstream_model_name: None,
     });
 
     reg.add_pool(ModelPool {
@@ -286,13 +306,18 @@ fn test_soft_affinity_migrates_on_overload() {
     let mut found_migration = false;
     for i in 0..100 {
         let session = format!("test-session-{i}");
-        let decision = router.route(&request_with_session("Hello", &session)).unwrap();
+        let decision = router
+            .route(&request_with_session("Hello", &session))
+            .unwrap();
         if decision.selected_account == "project-available" {
             found_migration = true;
         }
     }
 
-    assert!(found_migration, "Soft affinity should migrate away from overloaded account");
+    assert!(
+        found_migration,
+        "Soft affinity should migrate away from overloaded account"
+    );
 }
 
 #[test]
@@ -327,7 +352,11 @@ fn test_hard_affinity_rejects_on_overload() {
             endpoint_id: "vertex-ep".into(),
             auth: AuthConfig::default(),
             project_id: None,
-            rate_limit: Some(RateLimit { rpm: Some(60), tpm: None, concurrent: None }),
+            rate_limit: Some(RateLimit {
+                rpm: Some(60),
+                tpm: None,
+                concurrent: None,
+            }),
             billing_tag: None,
             weight: 1.0,
             status: HealthStatus::Healthy,
@@ -391,9 +420,13 @@ fn test_hard_affinity_rejects_on_overload() {
 
     let router = PrismRouter::new(reg);
 
-    let decision = router.route(&request_with_session("Hello", "session-123")).unwrap();
-    assert!(!decision.selected_account.is_empty(),
-        "Should still route even when all accounts are overloaded (soft degradation)");
+    let decision = router
+        .route(&request_with_session("Hello", "session-123"))
+        .unwrap();
+    assert!(
+        !decision.selected_account.is_empty(),
+        "Should still route even when all accounts are overloaded (soft degradation)"
+    );
 }
 
 #[test]
@@ -445,8 +478,10 @@ fn test_cost_isolation_tenant_routing() {
         required_protocol: None,
     };
     let d1 = router.route(&req1).unwrap();
-    assert_eq!(d1.selected_account, "project-1",
-        "tenant team-1 should route to project-1");
+    assert_eq!(
+        d1.selected_account, "project-1",
+        "tenant team-1 should route to project-1"
+    );
 
     let req2 = RouteRequest {
         messages: vec![ChatMessage {
@@ -465,8 +500,10 @@ fn test_cost_isolation_tenant_routing() {
         required_protocol: None,
     };
     let d2 = router.route(&req2).unwrap();
-    assert_eq!(d2.selected_account, "project-2",
-        "tenant team-2 should route to project-2");
+    assert_eq!(
+        d2.selected_account, "project-2",
+        "tenant team-2 should route to project-2"
+    );
 
     let req3 = RouteRequest {
         messages: vec![ChatMessage {
@@ -485,6 +522,8 @@ fn test_cost_isolation_tenant_routing() {
         required_protocol: None,
     };
     let d3 = router.route(&req3).unwrap();
-    assert_eq!(d3.selected_account, "project-3",
-        "tenant team-3 should route to project-3");
+    assert_eq!(
+        d3.selected_account, "project-3",
+        "tenant team-3 should route to project-3"
+    );
 }

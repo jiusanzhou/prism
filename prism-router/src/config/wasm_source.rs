@@ -36,8 +36,8 @@ mod inner {
         }
 
         pub fn from_file(name: &str, path: &str) -> Result<Self, String> {
-            let bytes =
-                std::fs::read(path).map_err(|e| format!("Failed to read WASM file {}: {}", path, e))?;
+            let bytes = std::fs::read(path)
+                .map_err(|e| format!("Failed to read WASM file {}: {}", path, e))?;
             Self::new(name, &bytes)
         }
 

@@ -108,8 +108,8 @@ fn make_variant(
         },
         pricing_override: None,
         status: VariantStatus::Active,
-            base_url: None,
-            upstream_model_name: None,
+        base_url: None,
+        upstream_model_name: None,
     }
 }
 
@@ -136,7 +136,11 @@ fn build_test_registry() -> InMemoryRegistry {
     let mut gpt4o = make_model(
         "gpt-4o",
         QualityTier::S,
-        vec![TaskType::Reasoning, TaskType::CodeGeneration, TaskType::Creative],
+        vec![
+            TaskType::Reasoning,
+            TaskType::CodeGeneration,
+            TaskType::Creative,
+        ],
         2.5,
         10.0,
     );
@@ -145,7 +149,11 @@ fn build_test_registry() -> InMemoryRegistry {
     let mut claude = make_model(
         "claude-sonnet",
         QualityTier::S,
-        vec![TaskType::Reasoning, TaskType::CodeReview, TaskType::Creative],
+        vec![
+            TaskType::Reasoning,
+            TaskType::CodeReview,
+            TaskType::Creative,
+        ],
         3.0,
         15.0,
     );
@@ -155,7 +163,11 @@ fn build_test_registry() -> InMemoryRegistry {
     let gpt4o_mini = make_model(
         "gpt-4o-mini",
         QualityTier::A,
-        vec![TaskType::SimpleQA, TaskType::Translation, TaskType::Summarization],
+        vec![
+            TaskType::SimpleQA,
+            TaskType::Translation,
+            TaskType::Summarization,
+        ],
         0.15,
         0.6,
     );
@@ -163,7 +175,11 @@ fn build_test_registry() -> InMemoryRegistry {
     let mut ds_v3 = make_model(
         "deepseek-v3",
         QualityTier::A,
-        vec![TaskType::CodeGeneration, TaskType::Reasoning, TaskType::Math],
+        vec![
+            TaskType::CodeGeneration,
+            TaskType::Reasoning,
+            TaskType::Math,
+        ],
         0.27,
         1.1,
     );
@@ -184,11 +200,46 @@ fn build_test_registry() -> InMemoryRegistry {
     reg.add_model(ds_lite);
 
     // Variants
-    reg.add_variant(make_variant("gpt-4o@openai", "gpt-4o", "openai-ep", "openai-acct", 320, 1200));
-    reg.add_variant(make_variant("claude@anthropic", "claude-sonnet", "anthropic-ep", "anthropic-acct", 400, 1500));
-    reg.add_variant(make_variant("gpt-4o-mini@openai", "gpt-4o-mini", "openai-ep", "openai-acct", 150, 500));
-    reg.add_variant(make_variant("ds-v3@deepseek", "deepseek-v3", "deepseek-ep", "deepseek-acct", 280, 900));
-    reg.add_variant(make_variant("ds-lite@deepseek", "deepseek-lite", "deepseek-ep", "deepseek-acct", 80, 200));
+    reg.add_variant(make_variant(
+        "gpt-4o@openai",
+        "gpt-4o",
+        "openai-ep",
+        "openai-acct",
+        320,
+        1200,
+    ));
+    reg.add_variant(make_variant(
+        "claude@anthropic",
+        "claude-sonnet",
+        "anthropic-ep",
+        "anthropic-acct",
+        400,
+        1500,
+    ));
+    reg.add_variant(make_variant(
+        "gpt-4o-mini@openai",
+        "gpt-4o-mini",
+        "openai-ep",
+        "openai-acct",
+        150,
+        500,
+    ));
+    reg.add_variant(make_variant(
+        "ds-v3@deepseek",
+        "deepseek-v3",
+        "deepseek-ep",
+        "deepseek-acct",
+        280,
+        900,
+    ));
+    reg.add_variant(make_variant(
+        "ds-lite@deepseek",
+        "deepseek-lite",
+        "deepseek-ep",
+        "deepseek-acct",
+        80,
+        200,
+    ));
 
     // Pools
     reg.add_pool(ModelPool {
@@ -282,7 +333,9 @@ fn test_code_generation_routes_to_code_model() {
 fn test_reasoning_routes_to_tier1() {
     let reg = build_test_registry();
     let router = PrismRouter::new(reg).with_strategy(ModelSelectionStrategy::Auto {
-        objective: RoutingObjective::QualityFirst { max_latency_ms: None },
+        objective: RoutingObjective::QualityFirst {
+            max_latency_ms: None,
+        },
         pool_ids: None,
         required_capabilities: None,
     });
@@ -320,7 +373,14 @@ fn test_long_context_filters_small_window() {
     let mut small_model = make_model("tiny-model", QualityTier::S, vec![], 0.01, 0.01);
     small_model.capabilities.max_context_window = 2000;
     reg.add_model(small_model);
-    reg.add_variant(make_variant("tiny@openai", "tiny-model", "openai-ep", "openai-acct", 50, 100));
+    reg.add_variant(make_variant(
+        "tiny@openai",
+        "tiny-model",
+        "openai-ep",
+        "openai-acct",
+        50,
+        100,
+    ));
 
     let router = PrismRouter::new(reg);
 
@@ -456,7 +516,9 @@ fn test_slo_first_filters_high_latency() {
 fn test_pool_scoping() {
     let reg = build_test_registry();
     let router = PrismRouter::new(reg).with_strategy(ModelSelectionStrategy::Auto {
-        objective: RoutingObjective::QualityFirst { max_latency_ms: None },
+        objective: RoutingObjective::QualityFirst {
+            max_latency_ms: None,
+        },
         pool_ids: Some(vec!["tier-2".into()]),
         required_capabilities: None,
     });
@@ -482,7 +544,10 @@ fn test_decision_has_fallback_chain() {
     let decision = router.route(&req).unwrap();
 
     // Should have fallback candidates
-    assert!(!decision.fallback_chain.is_empty(), "fallback chain should not be empty");
+    assert!(
+        !decision.fallback_chain.is_empty(),
+        "fallback chain should not be empty"
+    );
 }
 
 #[test]

@@ -153,9 +153,8 @@ impl SlidingWindowCounter {
     /// Remove entries whose window has expired.
     fn cleanup(&self, max_window_secs: u64) {
         let now = Self::now_secs();
-        self.windows.retain(|_, (start, _, _)| {
-            now - *start < max_window_secs
-        });
+        self.windows
+            .retain(|_, (start, _, _)| now - *start < max_window_secs);
     }
 }
 
@@ -206,7 +205,7 @@ impl RateLimiter {
         Ok(())
     }
 
-        /// Resolve effective limits by checking overrides.
+    /// Resolve effective limits by checking overrides.
     /// Most-specific match wins (by match_headers count). Ties broken by declaration order.
     /// Returns (max_requests, max_tokens) with override values merged over defaults.
     fn resolve_limits(rule: &RateLimitRule, headers: &[(String, String)]) -> (u64, Option<u64>) {
@@ -279,12 +278,7 @@ impl RateLimiter {
 
     /// Clean up expired window entries.
     pub fn cleanup(&self) {
-        let max_window = self
-            .rules
-            .iter()
-            .map(|r| r.window_secs)
-            .max()
-            .unwrap_or(60);
+        let max_window = self.rules.iter().map(|r| r.window_secs).max().unwrap_or(60);
         self.counters.cleanup(max_window);
     }
 }
@@ -299,7 +293,12 @@ mod tests {
 
     // ── Helper ──
 
-    fn make_rule(name: &str, key_headers: Vec<&str>, window_secs: u64, max_requests: u64) -> RateLimitRule {
+    fn make_rule(
+        name: &str,
+        key_headers: Vec<&str>,
+        window_secs: u64,
+        max_requests: u64,
+    ) -> RateLimitRule {
         RateLimitRule {
             name: name.to_string(),
             key_headers: key_headers.into_iter().map(|s| s.to_string()).collect(),
@@ -349,7 +348,10 @@ mod tests {
         assert_eq!(rule.max_requests, 100);
         assert_eq!(rule.max_tokens, Some(10000));
         assert_eq!(rule.overrides.len(), 1);
-        assert_eq!(rule.overrides[0].match_headers.get("x-model"), Some(&"gpt-4".to_string()));
+        assert_eq!(
+            rule.overrides[0].match_headers.get("x-model"),
+            Some(&"gpt-4".to_string())
+        );
         assert_eq!(rule.overrides[0].max_requests, Some(200));
         assert_eq!(rule.overrides[0].max_tokens, Some(5000));
         assert!(!rule.enabled);
@@ -476,13 +478,17 @@ mod tests {
         let counter = SlidingWindowCounter::new();
 
         // First request — no tokens yet
-        assert!(counter.check_and_increment("test", 60, 100, Some(1000)).is_ok());
+        assert!(counter
+            .check_and_increment("test", 60, 100, Some(1000))
+            .is_ok());
 
         // Record 999 tokens
         counter.record_tokens("test", 999);
 
         // Still within limit
-        assert!(counter.check_and_increment("test", 60, 100, Some(1000)).is_ok());
+        assert!(counter
+            .check_and_increment("test", 60, 100, Some(1000))
+            .is_ok());
 
         // Record 1 more token → total 1000 = max_tokens
         counter.record_tokens("test", 1);
@@ -679,7 +685,11 @@ mod tests {
 
     // ── Override tests ──
 
-    fn make_override(match_headers: &[(&str, &str)], max_requests: Option<u64>, max_tokens: Option<u64>) -> RateLimitOverride {
+    fn make_override(
+        match_headers: &[(&str, &str)],
+        max_requests: Option<u64>,
+        max_tokens: Option<u64>,
+    ) -> RateLimitOverride {
         RateLimitOverride {
             match_headers: match_headers
                 .iter()
@@ -693,9 +703,7 @@ mod tests {
     #[test]
     fn test_override_exact_match() {
         let mut rule = make_rule("per-model", vec!["x-model"], 60, 100);
-        rule.overrides = vec![
-            make_override(&[("x-model", "gpt-4")], Some(200), None),
-        ];
+        rule.overrides = vec![make_override(&[("x-model", "gpt-4")], Some(200), None)];
 
         let limiter = RateLimiter::new(vec![rule]);
         let h = headers(&[("x-model", "gpt-4")]);
@@ -711,9 +719,7 @@ mod tests {
     fn test_override_partial_header_match() {
         // Rule keys on (x-model, x-app-id), override matches only x-model
         let mut rule = make_rule("model-app", vec!["x-model", "x-app-id"], 60, 100);
-        rule.overrides = vec![
-            make_override(&[("x-model", "claude-3")], Some(50), None),
-        ];
+        rule.overrides = vec![make_override(&[("x-model", "claude-3")], Some(50), None)];
 
         let limiter = RateLimiter::new(vec![rule]);
 
@@ -729,8 +735,8 @@ mod tests {
     fn test_override_same_specificity_first_wins() {
         let mut rule = make_rule("per-model", vec!["x-model"], 60, 100);
         rule.overrides = vec![
-            make_override(&[("x-model", "gpt-4")], Some(10), None),   // first match, 1 condition
-            make_override(&[("x-model", "gpt-4")], Some(200), None),  // same specificity, ignored
+            make_override(&[("x-model", "gpt-4")], Some(10), None), // first match, 1 condition
+            make_override(&[("x-model", "gpt-4")], Some(200), None), // same specificity, ignored
         ];
 
         let limiter = RateLimiter::new(vec![rule]);
@@ -746,9 +752,7 @@ mod tests {
     #[test]
     fn test_override_no_match_uses_default() {
         let mut rule = make_rule("per-model", vec!["x-model"], 60, 5);
-        rule.overrides = vec![
-            make_override(&[("x-model", "gpt-4")], Some(200), None),
-        ];
+        rule.overrides = vec![make_override(&[("x-model", "gpt-4")], Some(200), None)];
 
         let limiter = RateLimiter::new(vec![rule]);
 
@@ -803,7 +807,11 @@ mod tests {
         let mut rule = make_rule("model-app", vec!["x-model", "x-app-id"], 60, 100);
         rule.overrides = vec![
             // Must match both headers
-            make_override(&[("x-model", "gpt-4"), ("x-app-id", "app-b")], Some(200), None),
+            make_override(
+                &[("x-model", "gpt-4"), ("x-app-id", "app-b")],
+                Some(200),
+                None,
+            ),
         ];
 
         let limiter = RateLimiter::new(vec![rule]);
@@ -854,8 +862,12 @@ mod tests {
         // The more specific one should win regardless of order.
         let mut rule = make_rule("model-app", vec!["x-model", "x-app-id"], 60, 100);
         rule.overrides = vec![
-            make_override(&[("x-model", "gpt-4")], Some(150), None),                            // 1 condition
-            make_override(&[("x-model", "gpt-4"), ("x-app-id", "app-b")], Some(200), None),     // 2 conditions
+            make_override(&[("x-model", "gpt-4")], Some(150), None), // 1 condition
+            make_override(
+                &[("x-model", "gpt-4"), ("x-app-id", "app-b")],
+                Some(200),
+                None,
+            ), // 2 conditions
         ];
 
         let limiter = RateLimiter::new(vec![rule]);
@@ -873,8 +885,12 @@ mod tests {
         // Same as above but with more specific override listed FIRST.
         let mut rule = make_rule("model-app", vec!["x-model", "x-app-id"], 60, 100);
         rule.overrides = vec![
-            make_override(&[("x-model", "gpt-4"), ("x-app-id", "app-b")], Some(200), None),     // 2 conditions
-            make_override(&[("x-model", "gpt-4")], Some(150), None),                            // 1 condition
+            make_override(
+                &[("x-model", "gpt-4"), ("x-app-id", "app-b")],
+                Some(200),
+                None,
+            ), // 2 conditions
+            make_override(&[("x-model", "gpt-4")], Some(150), None), // 1 condition
         ];
 
         let limiter = RateLimiter::new(vec![rule]);
@@ -893,7 +909,11 @@ mod tests {
         let mut rule = make_rule("model-app", vec!["x-model", "x-app-id"], 60, 100);
         rule.overrides = vec![
             make_override(&[("x-model", "gpt-4")], Some(150), None),
-            make_override(&[("x-model", "gpt-4"), ("x-app-id", "app-b")], Some(200), None),
+            make_override(
+                &[("x-model", "gpt-4"), ("x-app-id", "app-b")],
+                Some(200),
+                None,
+            ),
         ];
 
         let limiter = RateLimiter::new(vec![rule]);
@@ -912,7 +932,11 @@ mod tests {
         rule.max_tokens = Some(2000);
         rule.overrides = vec![
             make_override(&[("x-model", "gpt-4")], Some(150), Some(1500)),
-            make_override(&[("x-model", "gpt-4"), ("x-app-id", "app-b")], Some(200), Some(3000)),
+            make_override(
+                &[("x-model", "gpt-4"), ("x-app-id", "app-b")],
+                Some(200),
+                Some(3000),
+            ),
             make_override(&[("x-model", "claude-3")], Some(50), None),
         ];
 

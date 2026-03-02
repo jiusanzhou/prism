@@ -82,10 +82,7 @@ pub trait ConfigSource: Send + Sync {
     }
 
     /// Watch for configuration changes (hot-reload foundation).
-    fn watch(
-        &self,
-        _callback: Box<dyn Fn(ConfigEvent) + Send + Sync>,
-    ) -> Result<(), ConfigError> {
+    fn watch(&self, _callback: Box<dyn Fn(ConfigEvent) + Send + Sync>) -> Result<(), ConfigError> {
         Err(ConfigError::NotSupported("watch not supported".into()))
     }
 }
@@ -148,9 +145,7 @@ impl ConfigSource for CompositeSource {
 
     fn load(&self) -> Result<PrismConfig, ConfigError> {
         if self.sources.is_empty() {
-            return Err(ConfigError::NotFound(
-                "no config sources registered".into(),
-            ));
+            return Err(ConfigError::NotFound("no config sources registered".into()));
         }
 
         // Load from lowest to highest priority; later overrides earlier.
@@ -393,10 +388,7 @@ mod tests {
         config.server.http_port = 3333;
         composite.add_source(
             ConfigPriority::File,
-            Box::new(MockSource {
-                name: "ok",
-                config,
-            }),
+            Box::new(MockSource { name: "ok", config }),
         );
 
         let loaded = composite.load().unwrap();

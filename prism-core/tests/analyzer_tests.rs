@@ -279,8 +279,14 @@ fn test_chain_first_definitive_wins() {
     let chain = AnalyzerChain::new(
         vec![
             ("simple".into(), Box::new(FixedAnalyzer(TaskType::SimpleQA))),
-            ("code".into(), Box::new(FixedAnalyzer(TaskType::CodeGeneration))),
-            ("reason".into(), Box::new(FixedAnalyzer(TaskType::Reasoning))),
+            (
+                "code".into(),
+                Box::new(FixedAnalyzer(TaskType::CodeGeneration)),
+            ),
+            (
+                "reason".into(),
+                Box::new(FixedAnalyzer(TaskType::Reasoning)),
+            ),
         ],
         true, // first_definitive
     );
@@ -309,7 +315,10 @@ fn test_chain_first_always_wins_when_not_definitive_mode() {
     let chain = AnalyzerChain::new(
         vec![
             ("first".into(), Box::new(FixedAnalyzer(TaskType::SimpleQA))),
-            ("second".into(), Box::new(FixedAnalyzer(TaskType::CodeGeneration))),
+            (
+                "second".into(),
+                Box::new(FixedAnalyzer(TaskType::CodeGeneration)),
+            ),
         ],
         false, // first always wins
     );

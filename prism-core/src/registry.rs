@@ -223,17 +223,16 @@ impl InMemoryRegistry {
         }
 
         // Overlay dynamic pricing from the data layer (if available).
-        let effective_pricing =
-            if let Some(MetricValue::Pricing(p)) =
-                self.data_layer.query(MetricKind::Pricing, &variant.id)
-            {
-                p
-            } else {
-                variant
-                    .pricing_override
-                    .clone()
-                    .unwrap_or_else(|| model.pricing.clone())
-            };
+        let effective_pricing = if let Some(MetricValue::Pricing(p)) =
+            self.data_layer.query(MetricKind::Pricing, &variant.id)
+        {
+            p
+        } else {
+            variant
+                .pricing_override
+                .clone()
+                .unwrap_or_else(|| model.pricing.clone())
+        };
 
         Some(ModelCandidate {
             variant: variant_clone,

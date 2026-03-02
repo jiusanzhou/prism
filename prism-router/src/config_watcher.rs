@@ -70,35 +70,36 @@ pub fn spawn_config_watcher(
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let mut watcher = match notify::recommended_watcher(
-            move |res: Result<notify::Event, notify::Error>| match res {
-                Ok(event) => {
-                    // Only trigger on modify/create events for our config file
-                    match event.kind {
-                        EventKind::Modify(_) | EventKind::Create(_) => {
-                            let is_our_file = event.paths.iter().any(|p| {
-                                p.file_name()
-                                    .map(|n| n.to_string_lossy() == config_filename)
-                                    .unwrap_or(false)
-                            });
-                            if is_our_file {
-                                let _ = tx_clone.try_send(());
+        let mut watcher =
+            match notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+                match res {
+                    Ok(event) => {
+                        // Only trigger on modify/create events for our config file
+                        match event.kind {
+                            EventKind::Modify(_) | EventKind::Create(_) => {
+                                let is_our_file = event.paths.iter().any(|p| {
+                                    p.file_name()
+                                        .map(|n| n.to_string_lossy() == config_filename)
+                                        .unwrap_or(false)
+                                });
+                                if is_our_file {
+                                    let _ = tx_clone.try_send(());
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
+                    }
+                    Err(e) => {
+                        warn!("File watcher error: {}", e);
                     }
                 }
+            }) {
+                Ok(w) => w,
                 Err(e) => {
-                    warn!("File watcher error: {}", e);
+                    error!("Failed to create file watcher: {}", e);
+                    return;
                 }
-            },
-        ) {
-            Ok(w) => w,
-            Err(e) => {
-                error!("Failed to create file watcher: {}", e);
-                return;
-            }
-        };
+            };
 
         if let Err(e) = watcher.watch(&watch_dir, RecursiveMode::NonRecursive) {
             error!("Failed to watch directory {:?}: {}", watch_dir, e);

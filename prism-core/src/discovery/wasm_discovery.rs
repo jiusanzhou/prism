@@ -88,15 +88,13 @@ impl WasmDiscovery {
 
     /// Load a WASM discovery plugin from a file path (convenience).
     pub fn from_file(name: &str, path: &str) -> Result<Self, String> {
-        let bytes = std::fs::read(path)
-            .map_err(|e| format!("Failed to read WASM file {}: {}", path, e))?;
+        let bytes =
+            std::fs::read(path).map_err(|e| format!("Failed to read WASM file {}: {}", path, e))?;
         Self::new(name, &bytes)
     }
 
     /// Register host functions on the linker.
-    fn register_host_functions(
-        linker: &mut Linker<Arc<Mutex<HostState>>>,
-    ) -> Result<(), String> {
+    fn register_host_functions(linker: &mut Linker<Arc<Mutex<HostState>>>) -> Result<(), String> {
         // ── proxy_log(level, msg_ptr, msg_len) -> status ──
         linker
             .func_wrap(
@@ -215,8 +213,7 @@ impl Discovery for WasmDiscovery {
                 let mem = instance
                     .get_memory(&mut store, "memory")
                     .ok_or_else(|| DiscoveryError::Other("no memory export".into()))?;
-                mem.data_mut(&mut store)
-                    [ptr as usize..ptr as usize + config_bytes.len()]
+                mem.data_mut(&mut store)[ptr as usize..ptr as usize + config_bytes.len()]
                     .copy_from_slice(config_bytes);
 
                 let result = init_fn

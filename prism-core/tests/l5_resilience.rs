@@ -144,8 +144,8 @@ fn build_resilience_registry() -> InMemoryRegistry {
         },
         pricing_override: None,
         status: VariantStatus::Active,
-            base_url: None,
-            upstream_model_name: None,
+        base_url: None,
+        upstream_model_name: None,
     });
 
     reg.add_variant(ModelVariant {
@@ -169,8 +169,8 @@ fn build_resilience_registry() -> InMemoryRegistry {
         },
         pricing_override: None,
         status: VariantStatus::Active,
-            base_url: None,
-            upstream_model_name: None,
+        base_url: None,
+        upstream_model_name: None,
     });
 
     reg.add_pool(ModelPool {
@@ -244,7 +244,10 @@ fn test_retry_on_failure() {
         .on_failure("primary-variant", FailureType::HttpError(500), 1)
         .unwrap();
     match &action {
-        RecoveryAction::Retry { variant_id, delay_ms } => {
+        RecoveryAction::Retry {
+            variant_id,
+            delay_ms,
+        } => {
             assert_eq!(variant_id, "primary-variant");
             assert_eq!(*delay_ms, 100);
         }
@@ -310,7 +313,10 @@ fn test_retry_cross_provider() {
                 "CrossProvider retry should select variant from different provider"
             );
         }
-        other => panic!("Expected Retry with cross-provider variant, got {:?}", other),
+        other => panic!(
+            "Expected Retry with cross-provider variant, got {:?}",
+            other
+        ),
     }
 }
 
@@ -326,9 +332,7 @@ fn test_fallback_to_backup_model() {
             retry_scope: RetryScope::SameVariant,
         },
         fallback: FallbackPolicy {
-            chain: vec![
-                FallbackTarget::Model("model-backup".into()),
-            ],
+            chain: vec![FallbackTarget::Model("model-backup".into())],
             allow_model_downgrade: true,
             notify_client: true,
         },
@@ -505,7 +509,10 @@ fn test_ttft_timeout_triggers_retry() {
         .on_failure("primary-variant", FailureType::TTFTTimeout, 1)
         .unwrap();
     match &action {
-        RecoveryAction::Retry { variant_id, delay_ms } => {
+        RecoveryAction::Retry {
+            variant_id,
+            delay_ms,
+        } => {
             assert_eq!(
                 variant_id, "backup-variant",
                 "TTFT timeout should retry with cross-provider variant"

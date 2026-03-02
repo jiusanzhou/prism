@@ -47,8 +47,7 @@ impl CodecRegistry {
 
     /// Register a chain for a specific provider.
     pub fn register_provider(&mut self, provider_id: &str, chain: ProxyPluginChain) {
-        self.provider_chains
-            .insert(provider_id.to_string(), chain);
+        self.provider_chains.insert(provider_id.to_string(), chain);
     }
 
     /// Register a chain for a protocol conversion pair.
@@ -58,10 +57,8 @@ impl CodecRegistry {
         outbound: &str,
         chain: ProxyPluginChain,
     ) {
-        self.protocol_chains.insert(
-            (inbound.to_string(), outbound.to_string()),
-            chain,
-        );
+        self.protocol_chains
+            .insert((inbound.to_string(), outbound.to_string()), chain);
     }
 
     /// Look up a chain: first try provider-specific, then protocol pair, then `None`.
@@ -81,12 +78,7 @@ impl CodecRegistry {
     }
 
     /// Check if any conversion chain is registered for this combination.
-    pub fn needs_conversion(
-        &self,
-        provider_id: &str,
-        inbound: &str,
-        outbound: &str,
-    ) -> bool {
+    pub fn needs_conversion(&self, provider_id: &str, inbound: &str, outbound: &str) -> bool {
         self.get_chain(provider_id, inbound, outbound).is_some()
     }
 }
@@ -168,11 +160,7 @@ mod tests {
     #[test]
     fn test_protocol_pair_lookup() {
         let mut registry = CodecRegistry::new();
-        registry.register_protocol_pair(
-            "openai",
-            "anthropic",
-            make_chain("openai-to-anthropic"),
-        );
+        registry.register_protocol_pair("openai", "anthropic", make_chain("openai-to-anthropic"));
 
         // No provider chain → falls back to protocol pair.
         let chain = registry.get_chain("unknown-provider", "openai", "anthropic");
@@ -197,18 +185,14 @@ mod tests {
             .get_chain("special-provider", "openai", "anthropic")
             .unwrap();
         let mut ctx = ProxyContext::new();
-        let result = chain
-            .process_request_body(&mut ctx, b"X".to_vec())
-            .unwrap();
+        let result = chain.process_request_body(&mut ctx, b"X".to_vec()).unwrap();
         assert_eq!(result, b"[special]X");
 
         // Different provider falls back to protocol pair.
         let chain = registry
             .get_chain("other-provider", "openai", "anthropic")
             .unwrap();
-        let result = chain
-            .process_request_body(&mut ctx, b"X".to_vec())
-            .unwrap();
+        let result = chain.process_request_body(&mut ctx, b"X".to_vec()).unwrap();
         assert_eq!(result, b"[generic]X");
     }
 
@@ -238,15 +222,11 @@ mod tests {
         let mut ctx = ProxyContext::new();
 
         let chain = registry.get_chain("p", "openai", "anthropic").unwrap();
-        let result = chain
-            .process_request_body(&mut ctx, b"X".to_vec())
-            .unwrap();
+        let result = chain.process_request_body(&mut ctx, b"X".to_vec()).unwrap();
         assert_eq!(result, b"[o2a]X");
 
         let chain = registry.get_chain("p", "anthropic", "openai").unwrap();
-        let result = chain
-            .process_request_body(&mut ctx, b"X".to_vec())
-            .unwrap();
+        let result = chain.process_request_body(&mut ctx, b"X".to_vec()).unwrap();
         assert_eq!(result, b"[a2o]X");
     }
 
@@ -267,7 +247,10 @@ mod tests {
         }));
         registry.set_global_chain(chain);
         assert!(registry.global_chain().is_some());
-        assert_eq!(registry.global_chain().unwrap().plugin_names(), vec!["global"]);
+        assert_eq!(
+            registry.global_chain().unwrap().plugin_names(),
+            vec!["global"]
+        );
     }
 
     #[test]

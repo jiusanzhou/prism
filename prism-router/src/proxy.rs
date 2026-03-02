@@ -43,7 +43,6 @@ pub struct ProxyContext {
     pub response_status: Option<u16>,
 
     // ── Codec plugin chain integration ──
-
     /// Codec plugin chain context (if protocol conversion is needed).
     /// This is the `codec::ProxyContext`, distinct from this Pingora `ProxyContext`.
     pub codec_ctx: Option<codec::ProxyContext>,
@@ -59,7 +58,6 @@ pub struct ProxyContext {
     pub upstream_model_name: Option<String>,
 
     // ── Access log fields ──
-
     /// HTTP method captured at request_filter time.
     pub request_method: String,
     /// Request URI path captured at request_filter time.
@@ -225,22 +223,10 @@ impl PrismProxy {
     fn init_codec_ctx(proxy_ctx: &mut ProxyContext) {
         let mut codec_ctx = codec::ProxyContext::new();
         codec_ctx.inbound_protocol = proxy_ctx.protocol.as_str().to_string();
-        codec_ctx.outbound_protocol = proxy_ctx
-            .outbound_protocol
-            .clone()
-            .unwrap_or_default();
-        codec_ctx.selected_provider = proxy_ctx
-            .selected_provider
-            .clone()
-            .unwrap_or_default();
-        codec_ctx.selected_model = proxy_ctx
-            .selected_model
-            .clone()
-            .unwrap_or_default();
-        codec_ctx.selected_variant = proxy_ctx
-            .selected_variant
-            .clone()
-            .unwrap_or_default();
+        codec_ctx.outbound_protocol = proxy_ctx.outbound_protocol.clone().unwrap_or_default();
+        codec_ctx.selected_provider = proxy_ctx.selected_provider.clone().unwrap_or_default();
+        codec_ctx.selected_model = proxy_ctx.selected_model.clone().unwrap_or_default();
+        codec_ctx.selected_variant = proxy_ctx.selected_variant.clone().unwrap_or_default();
         if let Some(ref base_url) = proxy_ctx.upstream_base_url {
             let host = base_url
                 .trim_start_matches("https://")
@@ -258,7 +244,7 @@ impl PrismProxy {
         proxy_ctx.request_body_buffer = Some(Vec::new());
         proxy_ctx.response_body_buffer = Some(Vec::new());
     }
-        /// Use reqwest to forward the request directly, bypassing Pingora's upstream connector.
+    /// Use reqwest to forward the request directly, bypassing Pingora's upstream connector.
     /// Kept as fallback for environments where Pingora's openssl feature is unavailable.
     #[allow(dead_code)]
     async fn reqwest_forward(
@@ -295,8 +281,14 @@ impl PrismProxy {
                 error!(error = %e, "Routing failed");
                 let header = pingora::http::ResponseHeader::build(503, None).unwrap();
                 let body = serde_json::json!({"error": e.to_string()});
-                session.write_response_header(Box::new(header), true).await.ok();
-                session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                session
+                    .write_response_header(Box::new(header), true)
+                    .await
+                    .ok();
+                session
+                    .write_response_body(Some(Bytes::from(body.to_string())), true)
+                    .await
+                    .ok();
                 return Ok(true);
             }
         };
@@ -307,7 +299,9 @@ impl PrismProxy {
 
         // Look up provider
         let provider = router.registry.providers.get(&decision.selected_provider);
-        let base_url = provider.map(|p| p.base_url.as_str()).unwrap_or("https://api.openai.com/v1");
+        let base_url = provider
+            .map(|p| p.base_url.as_str())
+            .unwrap_or("https://api.openai.com/v1");
 
         // Look up upstream_model_name
         if let Some(variant) = router.registry.variants.get(&decision.selected_variant) {
@@ -326,7 +320,8 @@ impl PrismProxy {
         };
 
         // Build upstream URL: rewrite /v1 prefix with base_path if needed
-        let upstream_path = if !base_path.is_empty() && (path.starts_with("/v1/") || path == "/v1") {
+        let upstream_path = if !base_path.is_empty() && (path.starts_with("/v1/") || path == "/v1")
+        {
             if base_path.ends_with("/v1") {
                 format!("{}{}", base_path, &path[3..])
             } else {
@@ -338,7 +333,11 @@ impl PrismProxy {
             path.clone()
         };
 
-        let scheme = if base_url.starts_with("https://") { "https" } else { "http" };
+        let scheme = if base_url.starts_with("https://") {
+            "https"
+        } else {
+            "http"
+        };
         let host = without_scheme.split('/').next().unwrap_or("localhost");
         let upstream_url = format!("{}://{}{}", scheme, host, upstream_path);
 
@@ -350,11 +349,15 @@ impl PrismProxy {
         );
 
         // Read request body
-        let body_bytes = session.read_request_body().await
-            .map_err(|e| pingora::Error::explain(
-                pingora::ErrorType::ReadError,
-                format!("read request body: {}", e),
-            ))?
+        let body_bytes = session
+            .read_request_body()
+            .await
+            .map_err(|e| {
+                pingora::Error::explain(
+                    pingora::ErrorType::ReadError,
+                    format!("read request body: {}", e),
+                )
+            })?
             .unwrap_or_default();
 
         // Optionally rewrite model name in body
@@ -387,14 +390,16 @@ impl PrismProxy {
             _ => reqwest::Method::POST,
         };
         let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .connect_timeout(std::time::Duration::from_secs(10))
-                .build()
-                .map_err(|e| pingora::Error::explain(
+            .timeout(std::time::Duration::from_secs(120))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| {
+                pingora::Error::explain(
                     pingora::ErrorType::InternalError,
                     format!("create http client: {}", e),
-                ))?;
-            let mut req = client.request(req_method, &upstream_url);
+                )
+            })?;
+        let mut req = client.request(req_method, &upstream_url);
 
         // Forward content-type
         if let Some(ct) = session.req_header().headers.get("content-type") {
@@ -427,8 +432,14 @@ impl PrismProxy {
                 error!(error = %e, "Upstream request failed");
                 let header = pingora::http::ResponseHeader::build(502, None).unwrap();
                 let body = serde_json::json!({"error": format!("upstream error: {}", e)});
-                session.write_response_header(Box::new(header), true).await.ok();
-                session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                session
+                    .write_response_header(Box::new(header), true)
+                    .await
+                    .ok();
+                session
+                    .write_response_body(Some(Bytes::from(body.to_string())), true)
+                    .await
+                    .ok();
                 return Ok(true);
             }
         };
@@ -444,11 +455,12 @@ impl PrismProxy {
             .unwrap_or(false);
 
         // Build response header
-        let mut header = pingora::http::ResponseHeader::build(status, None)
-            .map_err(|e| pingora::Error::explain(
+        let mut header = pingora::http::ResponseHeader::build(status, None).map_err(|e| {
+            pingora::Error::explain(
                 pingora::ErrorType::InternalError,
                 format!("build response header: {:?}", e),
-            ))?;
+            )
+        })?;
 
         for (name, value) in resp_headers.iter() {
             if name == "transfer-encoding" || name == "content-length" {
@@ -466,22 +478,30 @@ impl PrismProxy {
         if is_streaming {
             // Stream response chunks
             let _ = header.insert_header("transfer-encoding", "chunked");
-            session.write_response_header(Box::new(header), false).await
-                .map_err(|e| pingora::Error::explain(
-                    pingora::ErrorType::WriteError,
-                    format!("write response header: {}", e),
-                ))?;
+            session
+                .write_response_header(Box::new(header), false)
+                .await
+                .map_err(|e| {
+                    pingora::Error::explain(
+                        pingora::ErrorType::WriteError,
+                        format!("write response header: {}", e),
+                    )
+                })?;
 
             let mut stream = upstream_resp.bytes_stream();
             use futures_util::StreamExt;
             while let Some(chunk) = stream.next().await {
                 match chunk {
                     Ok(data) => {
-                        session.write_response_body(Some(data), false).await
-                            .map_err(|e| pingora::Error::explain(
-                                pingora::ErrorType::WriteError,
-                                format!("write response chunk: {}", e),
-                            ))?;
+                        session
+                            .write_response_body(Some(data), false)
+                            .await
+                            .map_err(|e| {
+                                pingora::Error::explain(
+                                    pingora::ErrorType::WriteError,
+                                    format!("write response chunk: {}", e),
+                                )
+                            })?;
                     }
                     Err(e) => {
                         warn!(error = %e, "Stream chunk error");
@@ -492,22 +512,31 @@ impl PrismProxy {
             session.write_response_body(None, true).await.ok();
         } else {
             // Non-streaming: read full body and write at once
-            let resp_body = upstream_resp.bytes().await
-                .map_err(|e| pingora::Error::explain(
+            let resp_body = upstream_resp.bytes().await.map_err(|e| {
+                pingora::Error::explain(
                     pingora::ErrorType::ReadError,
                     format!("read upstream response: {}", e),
-                ))?;
+                )
+            })?;
 
-            session.write_response_header(Box::new(header), false).await
-                .map_err(|e| pingora::Error::explain(
-                    pingora::ErrorType::WriteError,
-                    format!("write response header: {}", e),
-                ))?;
-            session.write_response_body(Some(resp_body), true).await
-                .map_err(|e| pingora::Error::explain(
-                    pingora::ErrorType::WriteError,
-                    format!("write response body: {}", e),
-                ))?;
+            session
+                .write_response_header(Box::new(header), false)
+                .await
+                .map_err(|e| {
+                    pingora::Error::explain(
+                        pingora::ErrorType::WriteError,
+                        format!("write response header: {}", e),
+                    )
+                })?;
+            session
+                .write_response_body(Some(resp_body), true)
+                .await
+                .map_err(|e| {
+                    pingora::Error::explain(
+                        pingora::ErrorType::WriteError,
+                        format!("write response body: {}", e),
+                    )
+                })?;
         }
 
         let elapsed = ctx.request_start.elapsed();
@@ -572,9 +601,11 @@ impl PrismProxy {
                     Some(ctx.response_flags.join(","))
                 },
                 downstream_remote_address: ctx.downstream_remote_address.clone(),
-                request_duration_ms: ctx.request_body_received_at
+                request_duration_ms: ctx
+                    .request_body_received_at
                     .map(|t| t.duration_since(ctx.request_start).as_millis() as u64),
-                response_duration_ms: ctx.upstream_first_byte_at
+                response_duration_ms: ctx
+                    .upstream_first_byte_at
                     .map(|t| t.duration_since(ctx.request_start).as_millis() as u64),
                 upstream_request_attempt_count: Some(ctx.upstream_request_attempt_count),
                 emit_time: Utc::now(),
@@ -587,7 +618,9 @@ impl PrismProxy {
                 connection_termination_details: None,
                 response_code_details: ctx.response_code_details.clone(),
                 pool_name: None, // TODO: expose from router
-                request_id: ctx.request_headers_snapshot.iter()
+                request_id: ctx
+                    .request_headers_snapshot
+                    .iter()
                     .find(|(k, _)| k == "x-request-id")
                     .map(|(_, v)| v.clone()),
                 downstream_tls_version: None,
@@ -630,12 +663,20 @@ impl ProxyHttp for PrismProxy {
             .req_header()
             .headers
             .iter()
-            .map(|(k, v)| (k.as_str().to_lowercase(), v.to_str().unwrap_or("").to_string()))
+            .map(|(k, v)| {
+                (
+                    k.as_str().to_lowercase(),
+                    v.to_str().unwrap_or("").to_string(),
+                )
+            })
             .collect();
 
         // Capture request headers bytes
         ctx.request_headers_bytes = Some(
-            headers.iter().map(|(k, v)| k.len() as u64 + v.len() as u64 + 4).sum()
+            headers
+                .iter()
+                .map(|(k, v)| k.len() as u64 + v.len() as u64 + 4)
+                .sum(),
         );
         ctx.request_headers_snapshot = headers;
 
@@ -734,7 +775,6 @@ impl ProxyHttp for PrismProxy {
         Ok(false) // continue to Pingora upstream pipeline
     }
 
-
     /// Phase 2: Determine the upstream peer based on routing decision.
     async fn upstream_peer(
         &self,
@@ -777,10 +817,7 @@ impl ProxyHttp for PrismProxy {
                 }
 
                 // Look up the provider's base_url and protocols
-                let provider = router
-                    .registry
-                    .providers
-                    .get(&decision.selected_provider);
+                let provider = router.registry.providers.get(&decision.selected_provider);
 
                 let base_url = provider
                     .map(|p| p.base_url.as_str())
@@ -831,14 +868,13 @@ impl ProxyHttp for PrismProxy {
                     );
                 }
 
-                let (host, port, use_tls) =
-                    Self::parse_upstream(base_url).inspect_err(|_| {
-                        error!(
-                            provider = %decision.selected_provider,
-                            base_url = %base_url,
-                            "Failed to parse upstream URL"
-                        );
-                    })?;
+                let (host, port, use_tls) = Self::parse_upstream(base_url).inspect_err(|_| {
+                    error!(
+                        provider = %decision.selected_provider,
+                        base_url = %base_url,
+                        "Failed to parse upstream URL"
+                    );
+                })?;
 
                 info!(
                     variant = %decision.selected_variant,
@@ -885,10 +921,7 @@ impl ProxyHttp for PrismProxy {
             let without_scheme = base_url
                 .trim_start_matches("https://")
                 .trim_start_matches("http://");
-            let host = without_scheme
-                .split('/')
-                .next()
-                .unwrap_or("localhost");
+            let host = without_scheme.split('/').next().unwrap_or("localhost");
 
             // Extract path prefix from base_url (e.g. "/llm-serve/v1" from "https://host/llm-serve/v1")
             let base_path = if let Some(slash_pos) = without_scheme.find('/') {
@@ -924,22 +957,24 @@ impl ProxyHttp for PrismProxy {
                 }
             }
 
-            upstream_request
-                .insert_header("Host", host)
-                .map_err(|e| pingora::Error::explain(
+            upstream_request.insert_header("Host", host).map_err(|e| {
+                pingora::Error::explain(
                     pingora::ErrorType::InternalError,
                     format!("header error: {:?}", e),
-                ))?;
+                )
+            })?;
         }
 
         // Set the Authorization header
         if let Some(ref auth) = ctx.upstream_auth {
             upstream_request
                 .insert_header("Authorization", auth.as_str())
-                .map_err(|e| pingora::Error::explain(
-                    pingora::ErrorType::InternalError,
-                    format!("header error: {:?}", e),
-                ))?;
+                .map_err(|e| {
+                    pingora::Error::explain(
+                        pingora::ErrorType::InternalError,
+                        format!("header error: {:?}", e),
+                    )
+                })?;
         }
 
         // Set custom headers (e.g. x-api-key for wanqing)
@@ -952,10 +987,12 @@ impl ProxyHttp for PrismProxy {
                             .unwrap_or(http::header::CONTENT_TYPE),
                         &value,
                     )
-                    .map_err(|e| pingora::Error::explain(
-                        pingora::ErrorType::InternalError,
-                        format!("custom header error: {:?}", e),
-                    ))?;
+                    .map_err(|e| {
+                        pingora::Error::explain(
+                            pingora::ErrorType::InternalError,
+                            format!("custom header error: {:?}", e),
+                        )
+                    })?;
             }
         }
 
@@ -971,7 +1008,8 @@ impl ProxyHttp for PrismProxy {
                 codec_ctx.request_method = req_header.method.as_str().to_string();
                 for (name, value) in req_header.headers.iter() {
                     if let Ok(v) = value.to_str() {
-                        codec_ctx.request_headers
+                        codec_ctx
+                            .request_headers
                             .insert(name.as_str().to_string(), v.to_string());
                     }
                 }
@@ -987,7 +1025,9 @@ impl ProxyHttp for PrismProxy {
                 let inbound = ctx.protocol.as_str();
                 let outbound = ctx.outbound_protocol.as_deref().unwrap_or("");
 
-                if let Some(chain) = self.codec_registry.get_chain(provider_id, inbound, outbound)
+                if let Some(chain) = self
+                    .codec_registry
+                    .get_chain(provider_id, inbound, outbound)
                 {
                     let action = chain.process_request_headers(codec_ctx);
 
@@ -1020,8 +1060,8 @@ impl ProxyHttp for PrismProxy {
 
                         // Override auth if plugin changed it
                         if let Some(auth) = modified_auth {
-                            let _ = upstream_request
-                                .insert_header("Authorization".to_string(), &auth);
+                            let _ =
+                                upstream_request.insert_header("Authorization".to_string(), &auth);
                         }
 
                         debug!("Codec plugin chain processed request headers");
@@ -1101,8 +1141,9 @@ impl ProxyHttp for PrismProxy {
                 let inbound = ctx.protocol.as_str();
                 let outbound = ctx.outbound_protocol.as_deref().unwrap_or("");
 
-                if let Some(chain) =
-                    self.codec_registry.get_chain(provider_id, inbound, outbound)
+                if let Some(chain) = self
+                    .codec_registry
+                    .get_chain(provider_id, inbound, outbound)
                 {
                     if let Some(ref mut codec_ctx) = ctx.codec_ctx {
                         match chain.process_request_body(codec_ctx, full_body) {
@@ -1150,7 +1191,9 @@ impl ProxyHttp for PrismProxy {
                 global_ctx.response_status = Some(upstream_response.status.as_u16());
                 for (name, value) in upstream_response.headers.iter() {
                     if let Ok(v) = value.to_str() {
-                        global_ctx.response_headers.insert(name.as_str().to_string(), v.to_string());
+                        global_ctx
+                            .response_headers
+                            .insert(name.as_str().to_string(), v.to_string());
                     }
                 }
                 global_chain.process_response_headers(global_ctx);
@@ -1165,7 +1208,10 @@ impl ProxyHttp for PrismProxy {
         let inbound = ctx.protocol.as_str();
         let outbound = ctx.outbound_protocol.as_deref().unwrap_or("");
 
-        if let Some(chain) = self.codec_registry.get_chain(provider_id, inbound, outbound) {
+        if let Some(chain) = self
+            .codec_registry
+            .get_chain(provider_id, inbound, outbound)
+        {
             if let Some(ref mut codec_ctx) = ctx.codec_ctx {
                 // Copy upstream response headers into codec context
                 codec_ctx.response_status = Some(upstream_response.status.as_u16());
@@ -1228,7 +1274,8 @@ impl ProxyHttp for PrismProxy {
                     let outbound = ctx.outbound_protocol.as_deref().unwrap_or("");
 
                     if let Some(chain) =
-                        self.codec_registry.get_chain(provider_id, inbound, outbound)
+                        self.codec_registry
+                            .get_chain(provider_id, inbound, outbound)
                     {
                         if let Some(ref mut codec_ctx) = ctx.codec_ctx {
                             match chain.process_response_stream_chunk(codec_ctx, chunk_str) {
@@ -1265,7 +1312,8 @@ impl ProxyHttp for PrismProxy {
                     let outbound = ctx.outbound_protocol.as_deref().unwrap_or("");
 
                     if let Some(chain) =
-                        self.codec_registry.get_chain(provider_id, inbound, outbound)
+                        self.codec_registry
+                            .get_chain(provider_id, inbound, outbound)
                     {
                         if let Some(ref mut codec_ctx) = ctx.codec_ctx {
                             match chain.process_response_body(codec_ctx, full_body) {
@@ -1377,7 +1425,12 @@ impl ProxyHttp for PrismProxy {
                 .map(|r| {
                     r.headers
                         .iter()
-                        .map(|(k, v)| (k.as_str().to_lowercase(), v.to_str().unwrap_or("").to_string()))
+                        .map(|(k, v)| {
+                            (
+                                k.as_str().to_lowercase(),
+                                v.to_str().unwrap_or("").to_string(),
+                            )
+                        })
                         .collect()
                 })
                 .unwrap_or_default();
@@ -1417,9 +1470,11 @@ impl ProxyHttp for PrismProxy {
                     Some(ctx.response_flags.join(","))
                 },
                 downstream_remote_address: ctx.downstream_remote_address.clone(),
-                request_duration_ms: ctx.request_body_received_at
+                request_duration_ms: ctx
+                    .request_body_received_at
                     .map(|t| t.duration_since(ctx.request_start).as_millis() as u64),
-                response_duration_ms: ctx.upstream_first_byte_at
+                response_duration_ms: ctx
+                    .upstream_first_byte_at
                     .map(|t| t.duration_since(ctx.request_start).as_millis() as u64),
                 upstream_request_attempt_count: Some(ctx.upstream_request_attempt_count),
                 emit_time: Utc::now(),
@@ -1431,13 +1486,14 @@ impl ProxyHttp for PrismProxy {
                     total.saturating_sub(ttfb_ms)
                 }),
                 upstream_protocol: ctx.outbound_protocol.clone(),
-                downstream_local_address: session.server_addr()
-                    .map(|a| a.to_string()),
+                downstream_local_address: session.server_addr().map(|a| a.to_string()),
                 upstream_transport_failure_reason: ctx.upstream_transport_failure_reason.clone(),
                 connection_termination_details: ctx.connection_termination_details.clone(),
                 response_code_details: ctx.response_code_details.clone(),
                 pool_name: None, // TODO: expose from router
-                request_id: ctx.request_headers_snapshot.iter()
+                request_id: ctx
+                    .request_headers_snapshot
+                    .iter()
                     .find(|(k, _)| k == "x-request-id")
                     .map(|(_, v)| v.clone()),
                 downstream_tls_version: None, // TODO: expose from Pingora TLS info
@@ -1457,7 +1513,7 @@ mod tests {
     use crate::codec::chain::ProxyPluginChain;
     use crate::codec::registry::CodecRegistry;
     use crate::codec::{Action, ProxyPlugin as CodecProxyPlugin};
-    use crate::ratelimit::{RateLimiter, RateLimitRule};
+    use crate::ratelimit::{RateLimitRule, RateLimiter};
 
     // ── ProxyContext tests ──
 
@@ -1503,8 +1559,14 @@ mod tests {
             ..Default::default()
         };
 
-        ctx.request_body_buffer.as_mut().unwrap().extend_from_slice(b"request");
-        ctx.response_body_buffer.as_mut().unwrap().extend_from_slice(b"response");
+        ctx.request_body_buffer
+            .as_mut()
+            .unwrap()
+            .extend_from_slice(b"request");
+        ctx.response_body_buffer
+            .as_mut()
+            .unwrap()
+            .extend_from_slice(b"response");
 
         assert_eq!(ctx.request_body_buffer.as_ref().unwrap(), b"request");
         assert_eq!(ctx.response_body_buffer.as_ref().unwrap(), b"response");
@@ -1521,7 +1583,9 @@ mod tests {
         let proxy = PrismProxy::new(router, metrics);
 
         // Empty registry should not need conversion for anything
-        assert!(!proxy.codec_registry.needs_conversion("any", "openai", "anthropic"));
+        assert!(!proxy
+            .codec_registry
+            .needs_conversion("any", "openai", "anthropic"));
     }
 
     #[test]
@@ -1533,14 +1597,14 @@ mod tests {
         let mut codec_reg = CodecRegistry::new();
         codec_reg.register_protocol_pair("openai", "anthropic", ProxyPluginChain::new());
 
-        let proxy = PrismProxy::with_codec_registry(
-            router,
-            metrics,
-            Arc::new(codec_reg),
-        );
+        let proxy = PrismProxy::with_codec_registry(router, metrics, Arc::new(codec_reg));
 
-        assert!(proxy.codec_registry.needs_conversion("any", "openai", "anthropic"));
-        assert!(!proxy.codec_registry.needs_conversion("any", "anthropic", "openai"));
+        assert!(proxy
+            .codec_registry
+            .needs_conversion("any", "openai", "anthropic"));
+        assert!(!proxy
+            .codec_registry
+            .needs_conversion("any", "anthropic", "openai"));
     }
 
     // ── init_codec_ctx tests ──
@@ -1712,11 +1776,15 @@ mod tests {
         codec_ctx.inbound_protocol = "openai".to_string();
         codec_ctx.outbound_protocol = "anthropic".to_string();
 
-        let chain = registry.get_chain("any-provider", "openai", "anthropic").unwrap();
+        let chain = registry
+            .get_chain("any-provider", "openai", "anthropic")
+            .unwrap();
 
         // Test request body transformation
         let body = br#"{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}"#.to_vec();
-        let result = chain.process_request_body(&mut codec_ctx, body.clone()).unwrap();
+        let result = chain
+            .process_request_body(&mut codec_ctx, body.clone())
+            .unwrap();
         assert!(result.starts_with(b"[openai2anthropic:req]"));
         assert!(result.ends_with(&body));
     }
@@ -1807,11 +1875,15 @@ mod tests {
         let chain = registry.get_chain("any", "openai", "anthropic").unwrap();
 
         // Request: A → B (in order)
-        let result = chain.process_request_body(&mut codec_ctx, b"X".to_vec()).unwrap();
+        let result = chain
+            .process_request_body(&mut codec_ctx, b"X".to_vec())
+            .unwrap();
         assert_eq!(result, b"[B:req][A:req]X");
 
         // Response: B → A (reverse order)
-        let result = chain.process_response_body(&mut codec_ctx, b"Y".to_vec()).unwrap();
+        let result = chain
+            .process_response_body(&mut codec_ctx, b"Y".to_vec())
+            .unwrap();
         assert_eq!(result, b"[A:resp][B:resp]Y");
     }
 
@@ -1848,7 +1920,10 @@ mod tests {
         let proxy = PrismProxy::new(router, metrics).with_rate_limiter(limiter.clone());
         assert!(proxy.rate_limiter.is_some());
         assert_eq!(proxy.rate_limiter.as_ref().unwrap().rules().len(), 1);
-        assert_eq!(proxy.rate_limiter.as_ref().unwrap().rules()[0].name, "global");
+        assert_eq!(
+            proxy.rate_limiter.as_ref().unwrap().rules()[0].name,
+            "global"
+        );
     }
 
     #[test]
@@ -1866,7 +1941,9 @@ mod tests {
             .with_rate_limiter(limiter);
 
         assert!(proxy.rate_limiter.is_some());
-        assert!(proxy.codec_registry.needs_conversion("any", "openai", "anthropic"));
+        assert!(proxy
+            .codec_registry
+            .needs_conversion("any", "openai", "anthropic"));
     }
 
     // ── upstream_model_name rewrite tests ──
@@ -1919,6 +1996,9 @@ mod tests {
             upstream_model_name: Some("deepseek-reasoner".to_string()),
             ..Default::default()
         };
-        assert_eq!(ctx.upstream_model_name, Some("deepseek-reasoner".to_string()));
+        assert_eq!(
+            ctx.upstream_model_name,
+            Some("deepseek-reasoner".to_string())
+        );
     }
 }

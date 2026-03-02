@@ -338,7 +338,10 @@ mod tests {
         let chain = ProxyPluginChain::new();
         let mut ctx = ProxyContext::new();
         let body = b"hello".to_vec();
-        assert_eq!(chain.process_request_body(&mut ctx, body.clone()).unwrap(), body);
+        assert_eq!(
+            chain.process_request_body(&mut ctx, body.clone()).unwrap(),
+            body
+        );
     }
 
     #[test]
@@ -424,9 +427,7 @@ mod tests {
         chain.add(Box::new(NamedMockPlugin::new("C")));
 
         let mut ctx = ProxyContext::new();
-        let result = chain
-            .process_request_body(&mut ctx, b"X".to_vec())
-            .unwrap();
+        let result = chain.process_request_body(&mut ctx, b"X".to_vec()).unwrap();
         // A prefixes [A], then B prefixes [B], then C prefixes [C]
         assert_eq!(result, b"[C][B][A]X");
     }
@@ -545,9 +546,7 @@ mod tests {
         chain.set_enabled("B", false);
 
         let mut ctx = ProxyContext::new();
-        let result = chain
-            .process_request_body(&mut ctx, b"X".to_vec())
-            .unwrap();
+        let result = chain.process_request_body(&mut ctx, b"X".to_vec()).unwrap();
         assert_eq!(result, b"[A]X");
     }
 
@@ -561,9 +560,7 @@ mod tests {
         chain.set_enabled("B", true);
 
         let mut ctx = ProxyContext::new();
-        let result = chain
-            .process_request_body(&mut ctx, b"X".to_vec())
-            .unwrap();
+        let result = chain.process_request_body(&mut ctx, b"X".to_vec()).unwrap();
         assert_eq!(result, b"[B][A]X");
     }
 
@@ -677,15 +674,11 @@ mod tests {
 
         let body = b"unchanged".to_vec();
         assert_eq!(
-            chain
-                .process_request_body(&mut ctx, body.clone())
-                .unwrap(),
+            chain.process_request_body(&mut ctx, body.clone()).unwrap(),
             body
         );
         assert_eq!(
-            chain
-                .process_response_body(&mut ctx, body.clone())
-                .unwrap(),
+            chain.process_response_body(&mut ctx, body.clone()).unwrap(),
             body
         );
         assert_eq!(chain.process_response_headers(&mut ctx), Action::Continue);
@@ -748,9 +741,7 @@ mod tests {
             }
 
             fn on_log(&self, ctx: &mut ProxyContext) {
-                let current = ctx.get::<String>("log_order")
-                    .cloned()
-                    .unwrap_or_default();
+                let current = ctx.get::<String>("log_order").cloned().unwrap_or_default();
                 ctx.set("log_order", format!("{}{}", current, self.tag));
             }
         }
@@ -788,7 +779,9 @@ mod tests {
         // Rename for set_enabled — need named plugin
         struct NamedCounter(String);
         impl ProxyPlugin for NamedCounter {
-            fn name(&self) -> &str { &self.0 }
+            fn name(&self) -> &str {
+                &self.0
+            }
             fn on_log(&self, ctx: &mut ProxyContext) {
                 let count = ctx.get::<u32>("count").copied().unwrap_or(0);
                 ctx.set("count", count + 1);

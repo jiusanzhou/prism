@@ -32,7 +32,11 @@ impl std::fmt::Display for LoadError {
             LoadError::NotFound(msg) => write!(f, "not found: {}", msg),
             LoadError::NetworkError(msg) => write!(f, "network error: {}", msg),
             LoadError::ChecksumMismatch { expected, actual } => {
-                write!(f, "checksum mismatch: expected {}, got {}", expected, actual)
+                write!(
+                    f,
+                    "checksum mismatch: expected {}, got {}",
+                    expected, actual
+                )
             }
             LoadError::IoError(msg) => write!(f, "io error: {}", msg),
             LoadError::OciError(msg) => write!(f, "oci error: {}", msg),
@@ -89,15 +93,11 @@ impl PluginLoader {
     ) -> Result<ResolvedPlugin, LoadError> {
         match source {
             PluginSourceConfig::Wasm { wasm } => self.load_file(name, wasm),
-            PluginSourceConfig::Url { url, sha256 } => {
-                self.load_url(name, url, sha256.as_deref())
-            }
-            PluginSourceConfig::Oci { oci, digest } => {
-                self.load_oci(name, oci, digest.as_deref())
-            }
-            PluginSourceConfig::Builtin { .. } => {
-                Err(LoadError::Other("builtin plugins don't have WASM bytes".into()))
-            }
+            PluginSourceConfig::Url { url, sha256 } => self.load_url(name, url, sha256.as_deref()),
+            PluginSourceConfig::Oci { oci, digest } => self.load_oci(name, oci, digest.as_deref()),
+            PluginSourceConfig::Builtin { .. } => Err(LoadError::Other(
+                "builtin plugins don't have WASM bytes".into(),
+            )),
         }
     }
 
@@ -409,8 +409,7 @@ mod tests {
 
     #[test]
     fn test_parse_oci_reference_latest() {
-        let (registry, repo, tag) =
-            parse_oci_reference("registry.example.com/my-plugin").unwrap();
+        let (registry, repo, tag) = parse_oci_reference("registry.example.com/my-plugin").unwrap();
         assert_eq!(registry, "registry.example.com");
         assert_eq!(repo, "my-plugin");
         assert_eq!(tag, "latest");
@@ -418,8 +417,7 @@ mod tests {
 
     #[test]
     fn test_parse_oci_reference_nested_repo() {
-        let (registry, repo, tag) =
-            parse_oci_reference("docker.io/library/nginx:alpine").unwrap();
+        let (registry, repo, tag) = parse_oci_reference("docker.io/library/nginx:alpine").unwrap();
         assert_eq!(registry, "docker.io");
         assert_eq!(repo, "library/nginx");
         assert_eq!(tag, "alpine");
@@ -560,10 +558,7 @@ mod tests {
             .to_string(),
             "checksum mismatch: expected aaa, got bbb"
         );
-        assert_eq!(
-            LoadError::IoError("io".into()).to_string(),
-            "io error: io"
-        );
+        assert_eq!(LoadError::IoError("io".into()).to_string(), "io error: io");
         assert_eq!(
             LoadError::OciError("oci".into()).to_string(),
             "oci error: oci"

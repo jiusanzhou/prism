@@ -77,11 +77,7 @@ pub trait RoutingPlugin: Send + Sync {
 
     // ═══ Reserve: resource reservation after selection ═══
     /// Called after a candidate is selected. Can fail to trigger Unreserve.
-    fn reserve(
-        &self,
-        _state: &PluginState,
-        _selected: &ModelCandidate,
-    ) -> Result<(), RouterError> {
+    fn reserve(&self, _state: &PluginState, _selected: &ModelCandidate) -> Result<(), RouterError> {
         Ok(())
     }
 

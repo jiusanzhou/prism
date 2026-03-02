@@ -26,7 +26,7 @@ impl RoutingPlugin for WeightedPlugin {
         let w = candidate.variant.weight.max(0.001); // avoid log(0)
         let mut rng = rand::thread_rng();
         let u: f64 = rng.gen::<f64>().max(1e-15); // avoid log(0)
-        // Gumbel-max: ln(w) - ln(-ln(u))
+                                                  // Gumbel-max: ln(w) - ln(-ln(u))
         let gumbel = -((-u.ln()).ln());
         ((w as f64).ln() + gumbel) as f32
     }

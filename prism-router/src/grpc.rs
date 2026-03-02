@@ -139,9 +139,7 @@ impl RouterService for GrpcRouterService {
         let mut responses = Vec::with_capacity(batch.requests.len());
 
         for req in batch.requests {
-            let result = self
-                .route(Request::new(req))
-                .await;
+            let result = self.route(Request::new(req)).await;
             match result {
                 Ok(resp) => responses.push(resp.into_inner()),
                 Err(status) => return Err(status),
@@ -157,7 +155,8 @@ impl RouterService for GrpcRouterService {
     ) -> Result<Response<pb::ReportResponse>, Status> {
         let report = request.into_inner();
 
-        let success = report.status_code >= 200 && report.status_code < 400 && report.error.is_none();
+        let success =
+            report.status_code >= 200 && report.status_code < 400 && report.error.is_none();
 
         // Record into metrics collector for DataLayer feedback loop
         self.state.metrics.record(RequestRecord {
@@ -605,13 +604,18 @@ mod tests {
     async fn test_grpc_route_metadata_passthrough() {
         let svc = test_service();
         let mut req = simple_route_request();
-        req.metadata.insert("x-request-id".to_string(), "abc-123".to_string());
-        req.metadata.insert("x-tenant".to_string(), "acme".to_string());
+        req.metadata
+            .insert("x-request-id".to_string(), "abc-123".to_string());
+        req.metadata
+            .insert("x-tenant".to_string(), "acme".to_string());
 
         let resp = svc.route(Request::new(req)).await.unwrap();
         let body = resp.into_inner();
 
-        assert_eq!(body.response_metadata.get("x-request-id").unwrap(), "abc-123");
+        assert_eq!(
+            body.response_metadata.get("x-request-id").unwrap(),
+            "abc-123"
+        );
         assert_eq!(body.response_metadata.get("x-tenant").unwrap(), "acme");
     }
 
@@ -630,7 +634,10 @@ mod tests {
     #[tokio::test]
     async fn test_grpc_upstream_auth_headers() {
         let svc = test_service();
-        let resp = svc.route(Request::new(simple_route_request())).await.unwrap();
+        let resp = svc
+            .route(Request::new(simple_route_request()))
+            .await
+            .unwrap();
         let upstream = resp.into_inner().upstream.unwrap();
 
         assert_eq!(

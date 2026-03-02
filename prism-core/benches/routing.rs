@@ -114,7 +114,12 @@ fn make_variant(model_id: &str, provider_id: &str, latency: u32) -> ModelVariant
 /// Build a registry with N providers × M models = N*M variants
 fn build_registry(num_providers: usize, num_models: usize) -> InMemoryRegistry {
     let mut reg = InMemoryRegistry::new();
-    let tiers = [QualityTier::S, QualityTier::A, QualityTier::B, QualityTier::C];
+    let tiers = [
+        QualityTier::S,
+        QualityTier::A,
+        QualityTier::B,
+        QualityTier::C,
+    ];
 
     for i in 0..num_providers {
         let prov_id = format!("provider-{i}");
@@ -175,8 +180,9 @@ fn complex_request() -> RouteRequest {
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),
-                content: "You are an expert software architect specializing in distributed systems."
-                    .to_string(),
+                content:
+                    "You are an expert software architect specializing in distributed systems."
+                        .to_string(),
             },
             ChatMessage {
                 role: "user".to_string(),

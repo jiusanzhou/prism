@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use super::{ConfigError, ConfigSource, PrismConfig, ProviderConfig};
+use std::collections::HashMap;
 
 /// Environment variable configuration source.
 ///
@@ -87,16 +87,18 @@ impl ConfigSource for EnvSource {
                     let provider_id = remainder[..pos].to_lowercase();
                     let field = &remainder[pos + 1..];
 
-                    let entry = config.providers.entry(provider_id).or_insert_with(|| {
-                        ProviderConfig {
-                            provider_type: None,
-                            api_key: None,
-                            base_url: String::new(),
-                            timeout_ms: None,
-                            protocols: vec![],
-                            headers: HashMap::new(),
-                        }
-                    });
+                    let entry =
+                        config
+                            .providers
+                            .entry(provider_id)
+                            .or_insert_with(|| ProviderConfig {
+                                provider_type: None,
+                                api_key: None,
+                                base_url: String::new(),
+                                timeout_ms: None,
+                                protocols: vec![],
+                                headers: HashMap::new(),
+                            });
 
                     match field {
                         "URL" | "BASEURL" => {
@@ -133,7 +135,10 @@ mod tests {
 
     #[test]
     fn test_env_source_provider() {
-        std::env::set_var("PRISM_ENV2_PROVIDER_OPENAI_BASEURL", "https://api.openai.com/v1");
+        std::env::set_var(
+            "PRISM_ENV2_PROVIDER_OPENAI_BASEURL",
+            "https://api.openai.com/v1",
+        );
         std::env::set_var("PRISM_ENV2_PROVIDER_OPENAI_APIKEY", "sk-test");
         let source = EnvSource::with_prefix("PRISM_ENV2_");
         let config = source.load().unwrap();

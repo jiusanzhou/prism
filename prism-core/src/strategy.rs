@@ -20,9 +20,7 @@ pub enum RoutingObjective {
         budget_per_request: Option<f64>,
     },
     /// Best quality regardless of cost
-    QualityFirst {
-        max_latency_ms: Option<u32>,
-    },
+    QualityFirst { max_latency_ms: Option<u32> },
     /// Weighted composite
     Balanced {
         cost_weight: f32,
@@ -30,9 +28,7 @@ pub enum RoutingObjective {
         latency_weight: f32,
     },
     /// Plug-in scorer
-    Custom {
-        scorer_id: String,
-    },
+    Custom { scorer_id: String },
 }
 
 impl Default for RoutingObjective {
@@ -98,7 +94,9 @@ pub enum ProviderSelectionStrategy {
     #[default]
     LowestLatency,
     WeightedRoundRobin,
-    GeoProximity { region_preferences: Vec<String> },
+    GeoProximity {
+        region_preferences: Vec<String>,
+    },
     QuotaAware,
     Scored {
         cost_weight: f32,
@@ -125,9 +123,16 @@ pub enum AffinityKeySource {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AffinityStrategy {
     None,
-    ConsistentHash { key_source: AffinityKeySource },
-    Soft { key_source: AffinityKeySource, max_load_ratio: f32 },
-    Hard { key_source: AffinityKeySource },
+    ConsistentHash {
+        key_source: AffinityKeySource,
+    },
+    Soft {
+        key_source: AffinityKeySource,
+        max_load_ratio: f32,
+    },
+    Hard {
+        key_source: AffinityKeySource,
+    },
 }
 
 /// Persisted binding (would be stored in Redis in production)
@@ -147,7 +152,9 @@ pub enum AccountSelectionStrategy {
         fallback: Box<AccountSelectionStrategy>,
     },
     QuotaBalanced,
-    LoadBalanced { algorithm: LoadBalanceAlgorithm },
+    LoadBalanced {
+        algorithm: LoadBalanceAlgorithm,
+    },
     CostIsolation {
         tenant_key: AffinityKeySource,
         tenant_account_map: HashMap<String, String>,
@@ -190,9 +197,14 @@ pub enum PerformanceMetric {
 /// How the final variant is chosen
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum VariantSelectionStrategy {
-    BestPerformance { metric: PerformanceMetric },
+    BestPerformance {
+        metric: PerformanceMetric,
+    },
     Weighted,
-    Canary { canary_variant_id: String, canary_pct: f32 },
+    Canary {
+        canary_variant_id: String,
+        canary_pct: f32,
+    },
     #[default]
     Default,
 }

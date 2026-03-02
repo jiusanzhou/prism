@@ -7,7 +7,9 @@ use prism_core::types::*;
 
 use prism_router::codec::chain::ProxyPluginChain;
 use prism_router::codec::registry::CodecRegistry;
-use prism_router::codec::{Action, ProxyContext as CodecProxyContext, ProxyPlugin as CodecProxyPlugin};
+use prism_router::codec::{
+    Action, ProxyContext as CodecProxyContext, ProxyPlugin as CodecProxyPlugin,
+};
 use prism_router::metrics::{MetricsCollector, RequestLabels, RequestRecord};
 use prism_router::ratelimit::{RateLimitOverride, RateLimitRule, RateLimiter};
 use prism_router::state::AppState;
@@ -98,7 +100,12 @@ fn build_registry(n_providers: usize, n_models: usize) -> InMemoryRegistry {
             metadata: Default::default(),
         });
     }
-    let tiers = [QualityTier::S, QualityTier::A, QualityTier::B, QualityTier::C];
+    let tiers = [
+        QualityTier::S,
+        QualityTier::A,
+        QualityTier::B,
+        QualityTier::C,
+    ];
     let mut variant_ids = Vec::new();
     for j in 0..n_models {
         let mid = format!("model-{j}");
@@ -120,7 +127,10 @@ fn build_registry(n_providers: usize, n_models: usize) -> InMemoryRegistry {
 }
 
 fn headers(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 // ════════════════════════════════════════════════
@@ -133,7 +143,9 @@ struct BenchCodecPlugin {
 
 impl BenchCodecPlugin {
     fn new(name: &str) -> Self {
-        Self { name: name.to_string() }
+        Self {
+            name: name.to_string(),
+        }
     }
 }
 
@@ -143,11 +155,16 @@ impl CodecProxyPlugin for BenchCodecPlugin {
     }
 
     fn on_request_headers(&self, ctx: &mut CodecProxyContext) -> Action {
-        ctx.request_headers.insert("x-converted".to_string(), "true".to_string());
+        ctx.request_headers
+            .insert("x-converted".to_string(), "true".to_string());
         Action::Continue
     }
 
-    fn on_request_body(&self, _ctx: &mut CodecProxyContext, body: Vec<u8>) -> Result<Vec<u8>, String> {
+    fn on_request_body(
+        &self,
+        _ctx: &mut CodecProxyContext,
+        body: Vec<u8>,
+    ) -> Result<Vec<u8>, String> {
         // Simulate JSON body transformation: parse + rebuild
         if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&body) {
             json["_converted"] = serde_json::Value::Bool(true);
@@ -161,7 +178,11 @@ impl CodecProxyPlugin for BenchCodecPlugin {
         Action::Continue
     }
 
-    fn on_response_body(&self, _ctx: &mut CodecProxyContext, body: Vec<u8>) -> Result<Vec<u8>, String> {
+    fn on_response_body(
+        &self,
+        _ctx: &mut CodecProxyContext,
+        body: Vec<u8>,
+    ) -> Result<Vec<u8>, String> {
         if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&body) {
             json["_converted_back"] = serde_json::Value::Bool(true);
             Ok(serde_json::to_vec(&json).unwrap_or(body))
@@ -236,7 +257,11 @@ fn bench_ratelimit(c: &mut Criterion) {
             status_code: 429,
             message: "Rate limit exceeded".to_string(),
         }]);
-        let h = headers(&[("x-model", "gpt-4o"), ("x-app-id", "app-1"), ("x-region", "us-east")]);
+        let h = headers(&[
+            ("x-model", "gpt-4o"),
+            ("x-app-id", "app-1"),
+            ("x-region", "us-east"),
+        ]);
         b.iter(|| black_box(limiter.check(&h)));
     });
 
@@ -384,16 +409,12 @@ fn bench_codec_chain(c: &mut Criterion) {
         ("medium/2KB", &medium_body),
         ("large/10KB", &large_body),
     ] {
-        group.bench_with_input(
-            BenchmarkId::new("request_body", label),
-            body,
-            |b, body| {
-                let mut chain = ProxyPluginChain::new();
-                chain.add(Box::new(BenchCodecPlugin::new("converter")));
-                let mut ctx = CodecProxyContext::new();
-                b.iter(|| black_box(chain.process_request_body(&mut ctx, body.clone())));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("request_body", label), body, |b, body| {
+            let mut chain = ProxyPluginChain::new();
+            chain.add(Box::new(BenchCodecPlugin::new("converter")));
+            let mut ctx = CodecProxyContext::new();
+            b.iter(|| black_box(chain.process_request_body(&mut ctx, body.clone())));
+        });
     }
 
     // Response body transformation
@@ -402,16 +423,12 @@ fn bench_codec_chain(c: &mut Criterion) {
         ("medium/2KB", &medium_body),
         ("large/10KB", &large_body),
     ] {
-        group.bench_with_input(
-            BenchmarkId::new("response_body", label),
-            body,
-            |b, body| {
-                let mut chain = ProxyPluginChain::new();
-                chain.add(Box::new(BenchCodecPlugin::new("converter")));
-                let mut ctx = CodecProxyContext::new();
-                b.iter(|| black_box(chain.process_response_body(&mut ctx, body.clone())));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("response_body", label), body, |b, body| {
+            let mut chain = ProxyPluginChain::new();
+            chain.add(Box::new(BenchCodecPlugin::new("converter")));
+            let mut ctx = CodecProxyContext::new();
+            b.iter(|| black_box(chain.process_response_body(&mut ctx, body.clone())));
+        });
     }
 
     // SSE stream chunk processing
@@ -435,7 +452,11 @@ fn bench_codec_chain(c: &mut Criterion) {
     // Registry lookup
     group.bench_function("registry_lookup/protocol_pair", |b| {
         let mut registry = CodecRegistry::new();
-        for (inp, out) in [("openai", "anthropic"), ("anthropic", "openai"), ("openai", "gemini")] {
+        for (inp, out) in [
+            ("openai", "anthropic"),
+            ("anthropic", "openai"),
+            ("openai", "gemini"),
+        ] {
             let mut chain = ProxyPluginChain::new();
             chain.add(Box::new(BenchCodecPlugin::new("conv")));
             registry.register_protocol_pair(inp, out, chain);
@@ -510,7 +531,10 @@ fn bench_config_hotreload(c: &mut Criterion) {
     for (providers, models) in [(3, 3), (5, 5), (10, 10), (20, 20)] {
         let total = providers * models;
         group.bench_with_input(
-            BenchmarkId::new("registry_rebuild", format!("{providers}p×{models}m={total}v")),
+            BenchmarkId::new(
+                "registry_rebuild",
+                format!("{providers}p×{models}m={total}v"),
+            ),
             &(providers, models),
             |b, &(p, m)| {
                 b.iter(|| {
@@ -763,59 +787,57 @@ fn bench_e2e_proxy_pipeline(c: &mut Criterion) {
         let metrics = MetricsCollector::new(1000);
 
         // Request body for codec processing
-        let request_body = br#"{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}],"stream":false}"#.to_vec();
+        let request_body =
+            br#"{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}],"stream":false}"#
+                .to_vec();
         let response_body = br#"{"id":"chatcmpl-abc","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"Hi there!"},"index":0}]}"#.to_vec();
         let rate_limit_headers = headers(&[("x-model", "gpt-4o")]);
 
         let label = format!("{actual}_variants");
 
         // Full pipeline: ratelimit check → route → codec request → codec response → metrics record
-        group.bench_with_input(
-            BenchmarkId::new("full_pipeline", &label),
-            &(),
-            |b, _| {
-                let req = simple_route_request();
-                b.iter(|| {
-                    // 1. Rate limit check
-                    let _ = black_box(limiter.check(&rate_limit_headers));
+        group.bench_with_input(BenchmarkId::new("full_pipeline", &label), &(), |b, _| {
+            let req = simple_route_request();
+            b.iter(|| {
+                // 1. Rate limit check
+                let _ = black_box(limiter.check(&rate_limit_headers));
 
-                    // 2. Route
-                    let decision = router.route(&req).unwrap();
+                // 2. Route
+                let decision = router.route(&req).unwrap();
 
-                    // 3. Codec: transform request body
-                    let mut codec_ctx = CodecProxyContext::new();
-                    let _ = black_box(codec_chain.process_request_headers(&mut codec_ctx));
-                    let _ = black_box(codec_chain.process_request_body(&mut codec_ctx, request_body.clone()));
+                // 3. Codec: transform request body
+                let mut codec_ctx = CodecProxyContext::new();
+                let _ = black_box(codec_chain.process_request_headers(&mut codec_ctx));
+                let _ = black_box(
+                    codec_chain.process_request_body(&mut codec_ctx, request_body.clone()),
+                );
 
-                    // 4. Codec: transform response body
-                    let _ = black_box(codec_chain.process_response_headers(&mut codec_ctx));
-                    let _ = black_box(codec_chain.process_response_body(&mut codec_ctx, response_body.clone()));
+                // 4. Codec: transform response body
+                let _ = black_box(codec_chain.process_response_headers(&mut codec_ctx));
+                let _ = black_box(
+                    codec_chain.process_response_body(&mut codec_ctx, response_body.clone()),
+                );
 
-                    // 5. Record metrics
-                    metrics.record(RequestRecord {
-                        variant_id: decision.selected_variant.clone(),
-                        latency_ms: 150,
-                        ttft_ms: Some(50),
-                        success: true,
-                        input_tokens: Some(100),
-                        output_tokens: Some(200),
-                        timestamp: Instant::now(),
-                    });
-
-                    black_box(decision)
+                // 5. Record metrics
+                metrics.record(RequestRecord {
+                    variant_id: decision.selected_variant.clone(),
+                    latency_ms: 150,
+                    ttft_ms: Some(50),
+                    success: true,
+                    input_tokens: Some(100),
+                    output_tokens: Some(200),
+                    timestamp: Instant::now(),
                 });
-            },
-        );
+
+                black_box(decision)
+            });
+        });
 
         // Route-only (for comparison)
-        group.bench_with_input(
-            BenchmarkId::new("route_only", &label),
-            &(),
-            |b, _| {
-                let req = simple_route_request();
-                b.iter(|| black_box(router.route(&req).unwrap()));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("route_only", &label), &(), |b, _| {
+            let req = simple_route_request();
+            b.iter(|| black_box(router.route(&req).unwrap()));
+        });
     }
 
     group.finish();
