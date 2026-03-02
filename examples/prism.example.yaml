@@ -1,0 +1,266 @@
+# ════════════════════════════════════════════════════════════════
+# Prism Configuration Example
+# ════════════════════════════════════════════════════════════════
+# 
+# Prism is an AI model router — intelligent routing, load balancing,
+# protocol conversion, and observability for LLM API requests.
+#
+# Default config path: configs/prism.yaml
+# Override with: prism-router --config /path/to/config.yaml
+# ════════════════════════════════════════════════════════════════
+
+# ── Server ──────────────────────────────────────────────────────
+server:
+  listen: "0.0.0.0"
+  http_port: 8080        # REST API (health, metrics, admin)
+  grpc_port: 9090        # gRPC service
+  proxy_port: 8000       # LLM proxy endpoint (clients connect here)
+
+# ── Providers ───────────────────────────────────────────────────
+# Each provider is an LLM API endpoint (OpenAI, Anthropic, self-hosted, etc.)
+providers:
+  openai:
+    base_url: "https://api.openai.com/v1"
+    api_key: "${OPENAI_API_KEY}"       # env var substitution
+    protocols: ["openai"]
+    # timeout_ms: 30000
+
+  anthropic:
+    base_url: "https://api.anthropic.com/v1"
+    api_key: "${ANTHROPIC_API_KEY}"
+    protocols: ["anthropic"]
+
+  # Custom/self-hosted provider with custom auth headers
+  internal-llm:
+    base_url: "https://llm.internal.example.com/v1"
+    protocols: ["openai"]
+    headers:
+      x-api-key: "${INTERNAL_API_KEY}"
+      x-tenant-id: "team-alpha"
+
+  # Azure OpenAI example
+  # azure-openai:
+  #   base_url: "https://my-resource.openai.azure.com/openai/deployments/gpt-4o"
+  #   api_key: "${AZURE_OPENAI_KEY}"
+  #   protocols: ["openai"]
+
+# ── Models ──────────────────────────────────────────────────────
+# Model definitions with quality, capabilities, and pricing metadata.
+# Used by routing plugins to make intelligent decisions.
+models:
+  - id: gpt-4o
+    display_name: "GPT-4o"
+    quality_tier: premium
+    capabilities:
+      max_tokens: 128000
+      supports_streaming: true
+      supports_tools: true
+      supports_vision: true
+    pricing:
+      input_per_million: 2.50
+      output_per_million: 10.00
+    specialties: [CodeGeneration, Reasoning]
+
+  - id: gpt-4o-mini
+    display_name: "GPT-4o Mini"
+    quality_tier: standard
+    capabilities:
+      max_tokens: 128000
+      supports_streaming: true
+      supports_tools: true
+    pricing:
+      input_per_million: 0.15
+      output_per_million: 0.60
+    specialties: [SimpleQA, Translation]
+
+  - id: claude-3.5-sonnet
+    display_name: "Claude 3.5 Sonnet"
+    quality_tier: premium
+    capabilities:
+      max_tokens: 200000
+      supports_streaming: true
+      supports_tools: true
+    pricing:
+      input_per_million: 3.00
+      output_per_million: 15.00
+    specialties: [CodeGeneration, Reasoning, Creative]
+
+  - id: deepseek-r1
+    display_name: "DeepSeek R1"
+    quality_tier: standard
+    capabilities:
+      max_tokens: 64000
+      supports_streaming: true
+    pricing:
+      input_per_million: 0.55
+      output_per_million: 2.19
+    specialties: [Reasoning, Math]
+
+# ── Variants ────────────────────────────────────────────────────
+# A variant binds a model to a provider (and optionally an account).
+# Multiple variants of the same model enable load balancing and failover.
+variants:
+  - id: gpt4o-openai
+    model_id: gpt-4o
+    provider_id: openai
+    weight: 1.0
+
+  - id: gpt4o-mini-openai
+    model_id: gpt-4o-mini
+    provider_id: openai
+    weight: 1.0
+
+  - id: claude35-anthropic
+    model_id: claude-3.5-sonnet
+    provider_id: anthropic
+    weight: 1.0
+
+  - id: deepseek-r1-internal
+    model_id: deepseek-r1
+    provider_id: internal-llm
+    weight: 0.8
+    # Map to vendor-specific model name on upstream
+    upstream_model_name: "deepseek-reasoner"
+
+  # Multi-account example: two OpenAI accounts for the same model
+  # - id: gpt4o-openai-acct2
+  #   model_id: gpt-4o
+  #   provider_id: openai
+  #   account_id: "team-b"
+  #   weight: 0.5
+
+# ── Pools ───────────────────────────────────────────────────────
+# Group variants into pools for isolated routing domains.
+pools:
+  - id: default
+    name: "Default Pool"
+    variants:
+      - gpt4o-openai
+      - gpt4o-mini-openai
+      - claude35-anthropic
+      - deepseek-r1-internal
+
+  - id: premium-only
+    name: "Premium Models"
+    variants:
+      - gpt4o-openai
+      - claude35-anthropic
+
+# ── Routing ─────────────────────────────────────────────────────
+# Strategy: balanced (default), lowest_cost, highest_quality,
+#           lowest_latency, round_robin, weighted_random
+routing:
+  default_strategy: balanced
+  balanced:
+    cost_weight: 0.3
+    quality_weight: 0.5
+    latency_weight: 0.2
+
+# ── Rate Limiting ───────────────────────────────────────────────
+# Sliding window rate limiter with header-based keys and overrides.
+rate_limits:
+  # Global rate limit (all requests share one counter)
+  - name: global-rate-limit
+    key_headers: []
+    window_secs: 60
+    max_requests: 1000
+    enabled: true
+
+  # Per-API-key rate limit
+  - name: per-key-limit
+    key_headers: ["authorization"]
+    window_secs: 60
+    max_requests: 100
+    overrides:
+      # Premium keys get higher limits
+      - match_headers:
+          x-tier: "premium"
+        max_requests: 500
+      # Internal services are unlimited
+      - match_headers:
+          x-source: "internal"
+        max_requests: 999999
+
+# ── Codec (Protocol Conversion) ────────────────────────────────
+# Plugin chains for protocol conversion and cross-cutting concerns.
+codec:
+  default_inbound_protocol: openai
+
+  # Global chain — runs on ALL requests regardless of protocol.
+  # Use for metering, billing, security audit, token counting.
+  global_chain: []
+  # global_chain:
+  #   - usage-metering
+  #   - security-audit
+
+  # Provider-specific chains (higher priority than protocol pairs).
+  # provider_chains:
+  #   anthropic: [openai-to-anthropic]
+
+  # Protocol-pair chains.
+  # protocol_chains:
+  #   "openai:anthropic": [openai-to-anthropic-converter]
+
+# ── Plugins ─────────────────────────────────────────────────────
+# WASM or builtin plugins for routing, proxy, and analysis phases.
+# plugins:
+#   - name: openai-to-anthropic
+#     source:
+#       wasm: "./plugins/openai-compat.wasm"
+#     phases: ["proxy"]
+#     enabled: true
+#     priority: 100
+#     config:
+#       target_protocol: anthropic
+#
+#   - name: usage-metering
+#     source:
+#       wasm: "./plugins/metering.wasm"
+#     phases: ["proxy"]
+#     enabled: true
+#     config:
+#       billing_endpoint: "https://billing.internal/api/v1/usage"
+#
+#   - name: security-audit
+#     source:
+#       builtin: audit-logger
+#     phases: ["proxy"]
+#     enabled: true
+
+# ── Discovery ──────────────────────────────────────────────────
+# External discovery sources for dynamic provider/variant registration.
+# discoveries:
+#   - name: k8s-discovery
+#     type: wasm
+#     config:
+#       path: "./plugins/k8s-discovery.wasm"
+#       poll_interval_secs: 30
+
+# ── Access Log ──────────────────────────────────────────────────
+# Envoy-style configurable access logging with %COMMAND_OPERATOR% format.
+# 46 operators available — see docs for full list.
+access_log:
+  enabled: true
+  output: both                # stdout | file | both
+  file_path: /var/log/prism/access.log
+  format: json                # json | text
+
+  # JSON field selection (empty = all default fields).
+  # Uncomment to select specific fields:
+  # fields:
+  #   - "%START_TIME%"
+  #   - "%METHOD%"
+  #   - "%PATH%"
+  #   - "%RESPONSE_CODE%"
+  #   - "%RESPONSE_FLAGS%"
+  #   - "%DURATION_MS%"
+  #   - "%VARIANT%"
+  #   - "%PROVIDER%"
+  #   - "%MODEL%"
+  #   - "%DECISION_TIME_US%"
+  #   - "%DOWNSTREAM_REMOTE_ADDRESS%"
+  #   - "%REQUEST_ID%"
+  #   - "%ERROR%"
+
+  # Text format string (only used when format=text):
+  # text_format: "[%START_TIME%] \"%METHOD% %PATH%\" %RESPONSE_CODE% %RESPONSE_FLAGS% %DURATION_MS%ms variant=%VARIANT% provider=%PROVIDER% model=%MODEL% decision=%DECISION_TIME_US%us client=%DOWNSTREAM_REMOTE_ADDRESS% err=%ERROR%"
