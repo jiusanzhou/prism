@@ -417,6 +417,8 @@ mod tests {
                 timeout_ms: None,
                 protocols: vec![],
                 headers: std::collections::HashMap::new(),
+                circuit_breaker_threshold: 5,
+                circuit_breaker_recovery_secs: 30,
             },
         );
 
@@ -430,6 +432,8 @@ mod tests {
                 timeout_ms: None,
                 protocols: vec![],
                 headers: std::collections::HashMap::new(),
+                circuit_breaker_threshold: 5,
+                circuit_breaker_recovery_secs: 30,
             },
         );
 
