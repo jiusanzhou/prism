@@ -104,6 +104,8 @@ pub struct ProxyContext {
     pub global_codec_ctx: Option<codec::ProxyContext>,
     /// Number of upstream request attempts.
     pub upstream_request_attempt_count: u32,
+    /// Request ID (generated or from X-Request-ID header).
+    pub request_id: String,
 }
 
 impl Default for ProxyContext {
@@ -146,6 +148,7 @@ impl Default for ProxyContext {
             connection_termination_details: None,
             global_codec_ctx: None,
             upstream_request_attempt_count: 1,
+            request_id: String::new(),
         }
     }
 }
@@ -157,6 +160,10 @@ pub struct PrismProxy {
     pub codec_registry: Arc<CodecRegistry>,
     pub rate_limiter: Option<Arc<RateLimiter>>,
     pub access_logger: Option<Arc<AccessLogger>>,
+    /// Upstream request timeout in seconds.
+    pub request_timeout_secs: u64,
+    /// TCP keepalive interval in seconds (0 = disabled).
+    pub keepalive_secs: u64,
 }
 
 impl PrismProxy {
@@ -168,6 +175,8 @@ impl PrismProxy {
             codec_registry: Arc::new(CodecRegistry::new()),
             rate_limiter: None,
             access_logger: None,
+            request_timeout_secs: 300,
+            keepalive_secs: 60,
         }
     }
 
@@ -183,6 +192,8 @@ impl PrismProxy {
             codec_registry,
             rate_limiter: None,
             access_logger: None,
+            request_timeout_secs: 300,
+            keepalive_secs: 60,
         }
     }
 
@@ -195,6 +206,13 @@ impl PrismProxy {
     #[allow(dead_code)]
     pub fn with_access_logger(mut self, logger: Arc<AccessLogger>) -> Self {
         self.access_logger = Some(logger);
+        self
+    }
+
+    /// Set timeout configuration.
+    pub fn with_timeouts(mut self, request_timeout_secs: u64, keepalive_secs: u64) -> Self {
+        self.request_timeout_secs = request_timeout_secs;
+        self.keepalive_secs = keepalive_secs;
         self
     }
 
@@ -393,8 +411,9 @@ impl PrismProxy {
             _ => reqwest::Method::POST,
         };
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
+            .timeout(std::time::Duration::from_secs(self.request_timeout_secs))
             .connect_timeout(std::time::Duration::from_secs(10))
+            .tcp_keepalive(if self.keepalive_secs > 0 { Some(std::time::Duration::from_secs(self.keepalive_secs)) } else { None })
             .build()
             .map_err(|e| {
                 pingora::Error::explain(
@@ -621,11 +640,7 @@ impl PrismProxy {
                 connection_termination_details: None,
                 response_code_details: ctx.response_code_details.clone(),
                 pool_name: None,
-                request_id: ctx
-                    .request_headers_snapshot
-                    .iter()
-                    .find(|(k, _)| k == "x-request-id")
-                    .map(|(_, v)| v.clone()),
+                request_id: Some(ctx.request_id.clone()),
                 downstream_tls_version: None,
             };
             logger.log(&data);
@@ -682,6 +697,20 @@ impl ProxyHttp for PrismProxy {
                 .sum(),
         );
         ctx.request_headers_snapshot = headers;
+
+        // Generate or extract request ID
+        ctx.request_id = ctx
+            .request_headers_snapshot
+            .iter()
+            .find(|(k, _)| k == "x-request-id")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static COUNTER: AtomicU64 = AtomicU64::new(0);
+                let ts = ctx.request_start.elapsed().as_nanos() as u64;
+                let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+                format!("prism-{:x}-{:x}", ts, seq)
+            });
 
         debug!(
             path = %path,
@@ -899,7 +928,7 @@ impl ProxyHttp for PrismProxy {
 
                 let mut peer = HttpPeer::new((host, port), use_tls, host.to_string());
                 peer.options.connection_timeout = Some(std::time::Duration::from_secs(5));
-                peer.options.read_timeout = Some(std::time::Duration::from_secs(60));
+                peer.options.read_timeout = Some(std::time::Duration::from_secs(self.request_timeout_secs));
                 peer.options.write_timeout = Some(std::time::Duration::from_secs(10));
                 // Support HTTP/2 and HTTP/1.1 via ALPN negotiation
                 // Note: some upstream gateways close connection on H2,
@@ -1006,6 +1035,9 @@ impl ProxyHttp for PrismProxy {
                     })?;
             }
         }
+
+        // Forward X-Request-ID to upstream
+        let _ = upstream_request.insert_header("X-Request-ID", &ctx.request_id);
 
         // ── Codec: process request headers through plugin chain ──
         if ctx.needs_conversion {
@@ -1502,11 +1534,7 @@ impl ProxyHttp for PrismProxy {
                 connection_termination_details: ctx.connection_termination_details.clone(),
                 response_code_details: ctx.response_code_details.clone(),
                 pool_name: None,
-                request_id: ctx
-                    .request_headers_snapshot
-                    .iter()
-                    .find(|(k, _)| k == "x-request-id")
-                    .map(|(_, v)| v.clone()),
+                request_id: Some(ctx.request_id.clone()),
                 downstream_tls_version: None,
             };
             logger.log(&data);
@@ -1927,6 +1955,7 @@ mod tests {
             enabled: true,
             status_code: 429,
             message: "Rate limit exceeded".to_string(),
+            additional_windows: vec![],
         }]));
 
         let proxy = PrismProxy::new(router, metrics).with_rate_limiter(limiter.clone());

@@ -286,6 +286,37 @@ pub async fn health_handler(State(state): State<AppState>) -> impl IntoResponse 
     (StatusCode::OK, Json(response))
 }
 
+/// GET /readyz — readiness probe (Kubernetes-style)
+///
+/// Returns 200 when the router has at least one variant registered and config loaded.
+/// Returns 503 when not ready.
+pub async fn readyz_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let router = state.router();
+    let variant_count = router.registry.get_all_candidates().len();
+    let model_count = router.registry.models.len();
+
+    if variant_count > 0 && model_count > 0 {
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "ready",
+                "models": model_count,
+                "variants": variant_count,
+            })),
+        )
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "not_ready",
+                "reason": "no models or variants registered",
+                "models": model_count,
+                "variants": variant_count,
+            })),
+        )
+    }
+}
+
 /// GET /version — version info
 pub async fn version_handler() -> impl IntoResponse {
     let response = VersionResponse {

@@ -7,6 +7,7 @@
 
 pub mod chain;
 pub mod quota_recorder;
+pub mod auth;
 pub mod usage_extractor;
 pub mod registry;
 #[cfg(feature = "wasm")]
