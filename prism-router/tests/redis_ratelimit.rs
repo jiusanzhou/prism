@@ -245,3 +245,146 @@ async fn test_redis_shared_counter_across_instances() {
     assert!(limiter1.check(&h).is_err());
     assert!(limiter2.check(&h).is_err());
 }
+
+// ════════════════════════════════════════════════
+// Extended quota metric coverage
+// ════════════════════════════════════════════════
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_redis_quota_denied_fields() {
+    let backend = Arc::new(make_backend(DegradationPolicy::Local).await);
+    let rule = RateLimitRule {
+        name: "denied_fields".to_string(),
+        key_headers: vec![],
+        window_secs: 60,
+        max_requests: None,
+        max_tokens: None,
+        quotas: vec![Quota { metric: QuotaMetric::Requests, limit: 2 }],
+        overrides: vec![],
+        enabled: true,
+        status_code: 429,
+        message: "Rate limit exceeded".to_string(),
+    };
+    let limiter = RateLimiter::with_backend(vec![rule], backend);
+    let h = headers(&[]);
+    assert!(limiter.check(&h).is_ok());
+    assert!(limiter.check(&h).is_ok());
+    let denied = limiter.check(&h).unwrap_err();
+    assert_eq!(denied.rule_name, "denied_fields");
+    assert_eq!(denied.metric, QuotaMetric::Requests);
+    assert_eq!(denied.current, 2);
+    assert_eq!(denied.limit, 2);
+    assert!(denied.retry_after_secs.unwrap() > 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_redis_custom_metric() {
+    let backend = make_backend(DegradationPolicy::Local).await;
+    let custom = QuotaMetric::Custom("images".to_string());
+    let quotas = vec![Quota { metric: custom.clone(), limit: 5 }];
+    // Custom metrics are post-record, so check passes until we record enough
+    assert!(backend.check_quotas("custom_test", 60, &quotas).is_ok());
+    backend.record_metric("custom_test", &custom, 4);
+    assert!(backend.check_quotas("custom_test", 60, &quotas).is_ok());
+    backend.record_metric("custom_test", &custom, 1);
+    let err = backend.check_quotas("custom_test", 60, &quotas).unwrap_err();
+    assert_eq!(err.metric, QuotaMetric::Custom("images".to_string()));
+    assert_eq!(err.current, 5);
+    assert_eq!(err.limit, 5);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_redis_cost_micros() {
+    let backend = Arc::new(make_backend(DegradationPolicy::Local).await);
+    let rule = RateLimitRule {
+        name: "cost_test".to_string(),
+        key_headers: vec!["x-app".to_string()],
+        window_secs: 60,
+        max_requests: None,
+        max_tokens: None,
+        quotas: vec![
+            Quota { metric: QuotaMetric::Requests, limit: 1000 },
+            Quota { metric: QuotaMetric::CostMicros, limit: 100000 },
+        ],
+        overrides: vec![],
+        enabled: true,
+        status_code: 429,
+        message: "Cost limit exceeded".to_string(),
+    };
+    let limiter = RateLimiter::with_backend(vec![rule], backend);
+    let h = headers(&[("x-app", "app-1")]);
+    assert!(limiter.check(&h).is_ok());
+    limiter.record("cost_test", &h, &QuotaMetric::CostMicros, 99999);
+    assert!(limiter.check(&h).is_ok());
+    limiter.record("cost_test", &h, &QuotaMetric::CostMicros, 1);
+    let denied = limiter.check(&h).unwrap_err();
+    assert_eq!(denied.metric, QuotaMetric::CostMicros);
+    assert_eq!(denied.message, "Cost limit exceeded");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_redis_empty_quotas_always_passes() {
+    let backend = make_backend(DegradationPolicy::Local).await;
+    for _ in 0..100 {
+        assert!(backend.check_quotas("empty_quotas", 60, &[]).is_ok());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_redis_denied_metric_identifies_trigger() {
+    // When multiple metrics are configured, denied should report the specific one that triggered
+    let backend = make_backend(DegradationPolicy::Local).await;
+    let quotas = vec![
+        Quota { metric: QuotaMetric::Requests, limit: 1000 },
+        Quota { metric: QuotaMetric::InputTokens, limit: 100 },
+        Quota { metric: QuotaMetric::OutputTokens, limit: 200 },
+    ];
+    assert!(backend.check_quotas("metric_id", 60, &quotas).is_ok());
+    // Push input_tokens over limit
+    backend.record_metric("metric_id", &QuotaMetric::InputTokens, 100);
+    let err = backend.check_quotas("metric_id", 60, &quotas).unwrap_err();
+    assert_eq!(err.metric, QuotaMetric::InputTokens);
+    assert_eq!(err.current, 100);
+    assert_eq!(err.limit, 100);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_redis_override_quota_format() {
+    use prism_router::ratelimit::RateLimitOverride;
+    let backend = Arc::new(make_backend(DegradationPolicy::Local).await);
+    let rule = RateLimitRule {
+        name: "ovr_quota".to_string(),
+        key_headers: vec!["x-model".to_string()],
+        window_secs: 60,
+        max_requests: None,
+        max_tokens: None,
+        quotas: vec![
+            Quota { metric: QuotaMetric::Requests, limit: 100 },
+            Quota { metric: QuotaMetric::TotalTokens, limit: 50000 },
+        ],
+        overrides: vec![RateLimitOverride {
+            match_headers: [("x-model".to_string(), "gpt-4".to_string())].into(),
+            quotas: vec![Quota { metric: QuotaMetric::Requests, limit: 3 }],
+            max_requests: None,
+            max_tokens: None,
+        }],
+        enabled: true,
+        status_code: 429,
+        message: "Rate limit exceeded".to_string(),
+    };
+    let limiter = RateLimiter::with_backend(vec![rule], backend);
+    let h_gpt4 = headers(&[("x-model", "gpt-4")]);
+    let h_claude = headers(&[("x-model", "claude")]);
+
+    // gpt-4: override requests to 3
+    assert!(limiter.check(&h_gpt4).is_ok());
+    assert!(limiter.check(&h_gpt4).is_ok());
+    assert!(limiter.check(&h_gpt4).is_ok());
+    assert!(limiter.check(&h_gpt4).is_err());
+
+    // claude: default 100
+    for _ in 0..100 {
+        assert!(limiter.check(&h_claude).is_ok());
+    }
+    assert!(limiter.check(&h_claude).is_err());
+}
