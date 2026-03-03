@@ -72,8 +72,6 @@ pub enum CommandOperator {
     RouteCandidates,
     /// Upstream response time (time to first byte) in ms
     UpstreamResponseTimeMs,
-    /// Whether the request used the reqwest fallback path
-    ReqwestFallback,
     /// Response flags — short codes for error/termination reasons (e.g. RL, NR, UF, UC, UT)
     ResponseFlags,
     /// Downstream (client) remote address (ip:port)
@@ -143,7 +141,6 @@ impl CommandOperator {
             Self::RouteScore => "route_score".into(),
             Self::RouteCandidates => "route_candidates".into(),
             Self::UpstreamResponseTimeMs => "upstream_response_time_ms".into(),
-            Self::ReqwestFallback => "reqwest_fallback".into(),
             Self::ResponseFlags => "response_flags".into(),
             Self::DownstreamRemoteAddress => "downstream_remote_address".into(),
             Self::RequestDurationMs => "request_duration_ms".into(),
@@ -184,7 +181,6 @@ impl CommandOperator {
             Self::RouteStrategy,
             Self::RouteCandidates,
             Self::UpstreamResponseTimeMs,
-            Self::ReqwestFallback,
             Self::ResponseFlags,
             Self::DownstreamRemoteAddress,
             Self::RequestDurationMs,
@@ -349,7 +345,6 @@ fn parse_operator(token: &str) -> Option<CommandOperator> {
         "ROUTE_SCORE" => Some(CommandOperator::RouteScore),
         "ROUTE_CANDIDATES" => Some(CommandOperator::RouteCandidates),
         "UPSTREAM_RESPONSE_TIME_MS" => Some(CommandOperator::UpstreamResponseTimeMs),
-        "REQWEST_FALLBACK" => Some(CommandOperator::ReqwestFallback),
         "RESPONSE_FLAGS" => Some(CommandOperator::ResponseFlags),
         "DOWNSTREAM_REMOTE_ADDRESS" => Some(CommandOperator::DownstreamRemoteAddress),
         "REQUEST_DURATION_MS" => Some(CommandOperator::RequestDurationMs),
@@ -417,7 +412,6 @@ pub struct AccessLogData {
     pub route_score: Option<f64>,
     pub route_candidates: Option<u32>,
     pub upstream_response_time_ms: Option<u64>,
-    pub reqwest_fallback: bool,
     /// Response flags — short codes like RL (rate limited), NR (no route),
     /// UF (upstream failure), UC (upstream connection termination),
     /// UT (upstream timeout), DC (downstream disconnect).
@@ -486,7 +480,6 @@ impl Default for AccessLogData {
             route_score: None,
             route_candidates: None,
             upstream_response_time_ms: None,
-            reqwest_fallback: false,
             response_flags: None,
             downstream_remote_address: None,
             request_duration_ms: None,
@@ -554,7 +547,6 @@ fn resolve_text(op: &CommandOperator, data: &AccessLogData) -> Option<String> {
         CommandOperator::UpstreamResponseTimeMs => {
             data.upstream_response_time_ms.map(|v| v.to_string())
         }
-        CommandOperator::ReqwestFallback => Some(data.reqwest_fallback.to_string()),
         CommandOperator::ResponseFlags => data.response_flags.clone(),
         CommandOperator::DownstreamRemoteAddress => data.downstream_remote_address.clone(),
         CommandOperator::RequestDurationMs => data.request_duration_ms.map(|v| v.to_string()),
@@ -684,7 +676,6 @@ fn resolve_json(op: &CommandOperator, data: &AccessLogData) -> Value {
             Some(v) => Value::Number(v.into()),
             None => Value::Null,
         },
-        CommandOperator::ReqwestFallback => Value::Bool(data.reqwest_fallback),
         CommandOperator::ResponseFlags => match &data.response_flags {
             Some(v) => Value::String(v.clone()),
             None => Value::Null,
@@ -946,7 +937,6 @@ mod tests {
             route_score: Some(0.8523),
             route_candidates: Some(5),
             upstream_response_time_ms: Some(1100),
-            reqwest_fallback: false,
             response_flags: None,
             downstream_remote_address: Some("10.0.1.5:52431".into()),
             request_duration_ms: Some(12),
@@ -1091,7 +1081,6 @@ mod tests {
             "ROUTE_SCORE",
             "ROUTE_CANDIDATES",
             "UPSTREAM_RESPONSE_TIME_MS",
-            "REQWEST_FALLBACK",
             "RESPONSE_FLAGS",
             "DOWNSTREAM_REMOTE_ADDRESS",
             "REQUEST_DURATION_MS",
@@ -1221,12 +1210,10 @@ mod tests {
         data.response_code = 502;
         data.error = Some("upstream connection refused".into());
         data.upstream_response_time_ms = None;
-        data.reqwest_fallback = true;
         let text = logger.format_text(&data);
         assert!(text.contains("502"));
         assert!(text.contains("err=upstream connection refused"));
         assert!(text.contains("upstream_ms=-"));
-        assert!(text.contains("fallback=true"));
     }
 
     // ── JSON Formatting ──
@@ -1257,7 +1244,6 @@ mod tests {
         assert_eq!(parsed["route_strategy"], "weighted_round_robin");
         assert_eq!(parsed["route_candidates"], 5);
         assert_eq!(parsed["upstream_response_time_ms"], 1100);
-        assert_eq!(parsed["reqwest_fallback"], false);
         assert_eq!(parsed["ratelimit_matched"], false);
         assert_eq!(parsed["error"], Value::Null);
     }
@@ -1361,7 +1347,6 @@ mod tests {
         assert!(parsed["streaming"].is_boolean());
         assert!(parsed["conversion"].is_boolean());
         assert!(parsed["ratelimit_matched"].is_boolean());
-        assert!(parsed["reqwest_fallback"].is_boolean());
     }
 
     #[test]
