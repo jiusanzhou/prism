@@ -289,9 +289,14 @@ async fn main() {
             if let Some(logger) = access_logger {
                 prism_proxy = prism_proxy.with_access_logger(logger);
             }
+            prism_proxy = prism_proxy.with_timeouts(
+                config.server.request_timeout_secs,
+                config.server.keepalive_secs,
+            );
             let prism_proxy = prism_proxy;
 
-            // Pingora runs in its own thread (blocking)
+            // Pingora runs in its own thread
+            let shutdown_timeout = config.server.shutdown_timeout_secs;
             let proxy_handle = std::thread::spawn(move || {
                 let mut server = pingora::prelude::Server::new(None).unwrap();
                 server.bootstrap();
@@ -300,6 +305,12 @@ async fn main() {
                     pingora::proxy::http_proxy_service(&server.configuration, prism_proxy);
                 proxy_service.add_tcp(&proxy_addr_str);
                 server.add_service(proxy_service);
+
+                // Pingora's run_forever() blocks; graceful shutdown is handled
+                // at the process level via SIGTERM → Pingora intercepts signals.
+                // The shutdown_timeout_secs config is available for future
+                // drain period customization.
+                let _ = shutdown_timeout;
                 server.run_forever();
             });
             Some(proxy_handle)

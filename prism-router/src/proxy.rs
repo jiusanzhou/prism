@@ -160,6 +160,10 @@ pub struct PrismProxy {
     pub codec_registry: Arc<CodecRegistry>,
     pub rate_limiter: Option<Arc<RateLimiter>>,
     pub access_logger: Option<Arc<AccessLogger>>,
+    /// Upstream request timeout in seconds.
+    pub request_timeout_secs: u64,
+    /// TCP keepalive interval in seconds (0 = disabled).
+    pub keepalive_secs: u64,
 }
 
 impl PrismProxy {
@@ -171,6 +175,8 @@ impl PrismProxy {
             codec_registry: Arc::new(CodecRegistry::new()),
             rate_limiter: None,
             access_logger: None,
+            request_timeout_secs: 300,
+            keepalive_secs: 60,
         }
     }
 
@@ -186,6 +192,8 @@ impl PrismProxy {
             codec_registry,
             rate_limiter: None,
             access_logger: None,
+            request_timeout_secs: 300,
+            keepalive_secs: 60,
         }
     }
 
@@ -198,6 +206,13 @@ impl PrismProxy {
     #[allow(dead_code)]
     pub fn with_access_logger(mut self, logger: Arc<AccessLogger>) -> Self {
         self.access_logger = Some(logger);
+        self
+    }
+
+    /// Set timeout configuration.
+    pub fn with_timeouts(mut self, request_timeout_secs: u64, keepalive_secs: u64) -> Self {
+        self.request_timeout_secs = request_timeout_secs;
+        self.keepalive_secs = keepalive_secs;
         self
     }
 
@@ -396,8 +411,9 @@ impl PrismProxy {
             _ => reqwest::Method::POST,
         };
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
+            .timeout(std::time::Duration::from_secs(self.request_timeout_secs))
             .connect_timeout(std::time::Duration::from_secs(10))
+            .tcp_keepalive(if self.keepalive_secs > 0 { Some(std::time::Duration::from_secs(self.keepalive_secs)) } else { None })
             .build()
             .map_err(|e| {
                 pingora::Error::explain(
@@ -912,7 +928,7 @@ impl ProxyHttp for PrismProxy {
 
                 let mut peer = HttpPeer::new((host, port), use_tls, host.to_string());
                 peer.options.connection_timeout = Some(std::time::Duration::from_secs(5));
-                peer.options.read_timeout = Some(std::time::Duration::from_secs(60));
+                peer.options.read_timeout = Some(std::time::Duration::from_secs(self.request_timeout_secs));
                 peer.options.write_timeout = Some(std::time::Duration::from_secs(10));
                 // Support HTTP/2 and HTTP/1.1 via ALPN negotiation
                 // Note: some upstream gateways close connection on H2,
