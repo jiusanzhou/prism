@@ -246,6 +246,16 @@ fn merge_configs(base: PrismConfig, overlay: PrismConfig) -> PrismConfig {
         } else {
             base.access_log
         },
+        auth: if overlay.auth.enabled {
+            overlay.auth
+        } else {
+            base.auth
+        },
+        concurrency_limits: if overlay.concurrency_limits.is_empty() {
+            base.concurrency_limits
+        } else {
+            overlay.concurrency_limits
+        },
     }
 }
 
