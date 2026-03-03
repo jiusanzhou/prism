@@ -575,6 +575,25 @@ impl PrismProxy {
             });
         }
 
+        // Auto-record extracted usage to rate limiter
+        if let (Some(ref limiter), Some(ref usage)) = (&self.rate_limiter, &ctx.extracted_usage) {
+            let rl_headers: Vec<(String, String)> = ctx.request_headers_snapshot.clone();
+            for rule in limiter.rules() {
+                if !rule.enabled {
+                    continue;
+                }
+                if let Some(pt) = usage.prompt_tokens {
+                    limiter.record(&rule.name, &rl_headers, &crate::ratelimit::QuotaMetric::InputTokens, pt);
+                }
+                if let Some(ct) = usage.completion_tokens {
+                    limiter.record(&rule.name, &rl_headers, &crate::ratelimit::QuotaMetric::OutputTokens, ct);
+                }
+                if let Some(tt) = usage.total_tokens {
+                    limiter.record(&rule.name, &rl_headers, &crate::ratelimit::QuotaMetric::TotalTokens, tt);
+                }
+            }
+        }
+
         // Access log for reqwest path (logging() phase won't fire for early-return)
         if let Some(ref logger) = self.access_logger {
             let data = AccessLogData {
@@ -1436,6 +1455,25 @@ impl ProxyHttp for PrismProxy {
                 // Update final status info before on_log
                 global_ctx.response_status = Some(status);
                 global_chain.process_log(global_ctx);
+            }
+        }
+
+        // Auto-record extracted usage to rate limiter
+        if let (Some(ref limiter), Some(ref usage)) = (&self.rate_limiter, &ctx.extracted_usage) {
+            let rl_headers: Vec<(String, String)> = ctx.request_headers_snapshot.clone();
+            for rule in limiter.rules() {
+                if !rule.enabled {
+                    continue;
+                }
+                if let Some(pt) = usage.prompt_tokens {
+                    limiter.record(&rule.name, &rl_headers, &crate::ratelimit::QuotaMetric::InputTokens, pt);
+                }
+                if let Some(ct) = usage.completion_tokens {
+                    limiter.record(&rule.name, &rl_headers, &crate::ratelimit::QuotaMetric::OutputTokens, ct);
+                }
+                if let Some(tt) = usage.total_tokens {
+                    limiter.record(&rule.name, &rl_headers, &crate::ratelimit::QuotaMetric::TotalTokens, tt);
+                }
             }
         }
 
