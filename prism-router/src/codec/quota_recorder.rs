@@ -8,6 +8,7 @@
 //! that were used for rate limit key construction. These are passed via the
 //! `ProxyContext.data` map.
 
+#![cfg(feature = "proxy")]
 use std::sync::Arc;
 
 use super::{ProxyContext, ProxyPlugin};

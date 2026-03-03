@@ -7,6 +7,7 @@
 //! This plugin runs `on_response_stream_chunk` and checks accumulated tokens
 //! against the rate limiter's quotas in real-time.
 
+#![cfg(feature = "proxy")]
 use std::sync::Arc;
 
 use super::{ProxyContext, ProxyPlugin};
