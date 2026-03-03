@@ -29,5 +29,3 @@ pub mod protocol;
 pub mod proxy;
 #[cfg(feature = "proxy")]
 pub mod ratelimit;
-#[cfg(feature = "proxy")]
-pub mod usage;
