@@ -160,6 +160,7 @@ pub struct PrismProxy {
 }
 
 impl PrismProxy {
+    #[allow(dead_code)]
     pub fn new(router: Arc<ArcSwap<PrismRouter>>, metrics: Arc<MetricsCollector>) -> Self {
         Self {
             router,
