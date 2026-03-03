@@ -220,6 +220,7 @@ fn bench_ratelimit(c: &mut Criterion) {
             enabled: true,
             status_code: 429,
             message: "Rate limit exceeded".to_string(),
+            additional_windows: vec![],
         }]);
         b.iter(|| black_box(limiter.check(&headers(&[]))));
     });
@@ -237,6 +238,7 @@ fn bench_ratelimit(c: &mut Criterion) {
             enabled: true,
             status_code: 429,
             message: "Rate limit exceeded".to_string(),
+            additional_windows: vec![],
         }]);
         let h = headers(&[("x-model", "gpt-4o")]);
         b.iter(|| black_box(limiter.check(&h)));
@@ -259,6 +261,7 @@ fn bench_ratelimit(c: &mut Criterion) {
             enabled: true,
             status_code: 429,
             message: "Rate limit exceeded".to_string(),
+            additional_windows: vec![],
         }]);
         let h = headers(&[
             ("x-model", "gpt-4o"),
@@ -282,6 +285,7 @@ fn bench_ratelimit(c: &mut Criterion) {
                 enabled: true,
                 status_code: 429,
                 message: "Rate limit exceeded".to_string(),
+                additional_windows: vec![],
             })
             .collect();
         let limiter = RateLimiter::new(rules);
@@ -337,6 +341,7 @@ fn bench_ratelimit(c: &mut Criterion) {
             enabled: true,
             status_code: 429,
             message: "Rate limit exceeded".to_string(),
+            additional_windows: vec![],
         }]);
         let h = headers(&[("x-model", "gpt-4"), ("x-app-id", "premium-app")]);
         b.iter(|| black_box(limiter.check(&h)));
@@ -355,6 +360,7 @@ fn bench_ratelimit(c: &mut Criterion) {
             enabled: true,
             status_code: 429,
             message: "Rate limit exceeded".to_string(),
+            additional_windows: vec![],
         }]);
         // Pre-populate 1000 distinct keys
         for i in 0..1000 {
@@ -777,6 +783,7 @@ fn bench_e2e_proxy_pipeline(c: &mut Criterion) {
                 enabled: true,
                 status_code: 429,
                 message: "Rate limit exceeded".to_string(),
+                additional_windows: vec![],
             },
             RateLimitRule {
                 name: "per-model".to_string(),
@@ -789,6 +796,7 @@ fn bench_e2e_proxy_pipeline(c: &mut Criterion) {
                 enabled: true,
                 status_code: 429,
                 message: "Rate limit exceeded".to_string(),
+                additional_windows: vec![],
             },
         ]);
 
