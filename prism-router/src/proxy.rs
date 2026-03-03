@@ -612,7 +612,7 @@ impl PrismProxy {
                     .map(|t| t.duration_since(ctx.request_start).as_millis() as u64),
                 upstream_request_attempt_count: Some(ctx.upstream_request_attempt_count),
                 emit_time: Utc::now(),
-                request_headers_bytes: None, // TODO: capture
+                request_headers_bytes: Some(ctx.request_headers_snapshot.iter().map(|(k, v)| (k.len() + v.len() + 4) as u64).sum()),
                 response_headers_bytes: None,
                 response_tx_duration_ms: None,
                 upstream_protocol: ctx.outbound_protocol.clone(),
@@ -620,7 +620,7 @@ impl PrismProxy {
                 upstream_transport_failure_reason: None,
                 connection_termination_details: None,
                 response_code_details: ctx.response_code_details.clone(),
-                pool_name: None, // TODO: expose from router
+                pool_name: None,
                 request_id: ctx
                     .request_headers_snapshot
                     .iter()
@@ -1411,7 +1411,7 @@ impl ProxyHttp for PrismProxy {
             self.metrics.record(RequestRecord {
                 variant_id: variant_id.clone(),
                 latency_ms: elapsed.as_millis() as u64,
-                ttft_ms: None, // TODO: capture from streaming first byte
+                ttft_ms: ctx.upstream_first_byte_at.map(|t| t.duration_since(ctx.request_start).as_millis() as u64),
                 success: (200..400).contains(&status),
                 input_tokens: ctx.global_codec_ctx.as_ref().and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY)).and_then(|u| u.input_tokens.map(|v| v as u32)),
                 output_tokens: ctx.global_codec_ctx.as_ref().and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY)).and_then(|u| u.output_tokens.map(|v| v as u32)),
@@ -1470,10 +1470,10 @@ impl ProxyHttp for PrismProxy {
                 ratelimit_matched: ctx.ratelimit_matched,
                 ratelimit_rule: ctx.ratelimit_rule.clone(),
                 error: ctx.error_message.clone(),
-                route_strategy: None, // TODO: expose from router
+                route_strategy: None,
                 route_score: None,
                 route_candidates: None,
-                upstream_response_time_ms: None, // TODO: capture TTFB
+                upstream_response_time_ms: ctx.upstream_first_byte_at.map(|t| t.duration_since(ctx.request_start).as_millis() as u64),
                 reqwest_fallback: ctx.reqwest_fallback,
                 response_flags: if ctx.response_flags.is_empty() {
                     None
@@ -1501,13 +1501,13 @@ impl ProxyHttp for PrismProxy {
                 upstream_transport_failure_reason: ctx.upstream_transport_failure_reason.clone(),
                 connection_termination_details: ctx.connection_termination_details.clone(),
                 response_code_details: ctx.response_code_details.clone(),
-                pool_name: None, // TODO: expose from router
+                pool_name: None,
                 request_id: ctx
                     .request_headers_snapshot
                     .iter()
                     .find(|(k, _)| k == "x-request-id")
                     .map(|(_, v)| v.clone()),
-                downstream_tls_version: None, // TODO: expose from Pingora TLS info
+                downstream_tls_version: None,
             };
             logger.log(&data);
         }
