@@ -6,6 +6,8 @@
 //! Inspired by Higress ai-proxy / Envoy proxy-wasm filter chain.
 
 pub mod chain;
+pub mod quota_recorder;
+pub mod usage_extractor;
 pub mod registry;
 #[cfg(feature = "wasm")]
 pub mod wasm_host;

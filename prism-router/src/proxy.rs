@@ -19,7 +19,8 @@ use crate::codec::registry::CodecRegistry;
 use crate::metrics::{MetricsCollector, RequestRecord};
 use crate::protocol::LlmProtocol;
 use crate::ratelimit::RateLimiter;
-use crate::usage::{StreamingUsageAccumulator, TokenUsage};
+use crate::codec::usage_extractor::{ExtractedUsage, USAGE_KEY};
+use crate::codec::quota_recorder::{HEADERS_KEY, LIMITER_KEY};
 
 /// Per-request context stored across Pingora proxy phases.
 pub struct ProxyContext {
@@ -103,10 +104,6 @@ pub struct ProxyContext {
     pub global_codec_ctx: Option<codec::ProxyContext>,
     /// Number of upstream request attempts.
     pub upstream_request_attempt_count: u32,
-    /// Streaming usage accumulator for extracting token counts from SSE chunks.
-    pub usage_accumulator: StreamingUsageAccumulator,
-    /// Extracted token usage (populated at end of request).
-    pub extracted_usage: Option<TokenUsage>,
 }
 
 impl Default for ProxyContext {
@@ -149,8 +146,6 @@ impl Default for ProxyContext {
             connection_termination_details: None,
             global_codec_ctx: None,
             upstream_request_attempt_count: 1,
-            usage_accumulator: StreamingUsageAccumulator::new(),
-            extracted_usage: None,
         }
     }
 }
@@ -500,7 +495,6 @@ impl PrismProxy {
             while let Some(chunk) = stream.next().await {
                 match chunk {
                     Ok(data) => {
-                        ctx.usage_accumulator.feed_bytes(&data);
                         session
                             .write_response_body(Some(data), false)
                             .await
@@ -518,7 +512,6 @@ impl PrismProxy {
                 }
             }
             session.write_response_body(None, true).await.ok();
-            ctx.extracted_usage = ctx.usage_accumulator.finish();
         } else {
             // Non-streaming: read full body and write at once
             let resp_body = upstream_resp.bytes().await.map_err(|e| {
@@ -527,8 +520,6 @@ impl PrismProxy {
                     format!("read upstream response: {}", e),
                 )
             })?;
-
-            ctx.extracted_usage = crate::usage::extract_from_body(&resp_body);
 
             session
                 .write_response_header(Box::new(header), false)
@@ -569,29 +560,10 @@ impl PrismProxy {
                 latency_ms: elapsed.as_millis() as u64,
                 ttft_ms: None,
                 success: (200..400).contains(&status),
-                input_tokens: ctx.extracted_usage.as_ref().and_then(|u| u.prompt_tokens.map(|v| v as u32)),
-                output_tokens: ctx.extracted_usage.as_ref().and_then(|u| u.completion_tokens.map(|v| v as u32)),
+                input_tokens: ctx.global_codec_ctx.as_ref().and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY)).and_then(|u| u.input_tokens.map(|v| v as u32)),
+                output_tokens: ctx.global_codec_ctx.as_ref().and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY)).and_then(|u| u.output_tokens.map(|v| v as u32)),
                 timestamp: Instant::now(),
             });
-        }
-
-        // Auto-record extracted usage to rate limiter
-        if let (Some(ref limiter), Some(ref usage)) = (&self.rate_limiter, &ctx.extracted_usage) {
-            let rl_headers: Vec<(String, String)> = ctx.request_headers_snapshot.clone();
-            for rule in limiter.rules() {
-                if !rule.enabled {
-                    continue;
-                }
-                if let Some(pt) = usage.prompt_tokens {
-                    limiter.record(&rule.name, &rl_headers, &crate::ratelimit::QuotaMetric::InputTokens, pt);
-                }
-                if let Some(ct) = usage.completion_tokens {
-                    limiter.record(&rule.name, &rl_headers, &crate::ratelimit::QuotaMetric::OutputTokens, ct);
-                }
-                if let Some(tt) = usage.total_tokens {
-                    limiter.record(&rule.name, &rl_headers, &crate::ratelimit::QuotaMetric::TotalTokens, tt);
-                }
-            }
         }
 
         // Access log for reqwest path (logging() phase won't fire for early-return)
@@ -615,8 +587,8 @@ impl PrismProxy {
                 decision_time_us: ctx.decision_time_us,
                 request_headers: ctx.request_headers_snapshot.clone(),
                 response_headers: Vec::new(), // reqwest path doesn't easily expose response headers
-                input_tokens: ctx.extracted_usage.as_ref().and_then(|u| u.prompt_tokens),
-                output_tokens: ctx.extracted_usage.as_ref().and_then(|u| u.completion_tokens),
+                input_tokens: ctx.global_codec_ctx.as_ref().and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY)).and_then(|u| u.input_tokens),
+                output_tokens: ctx.global_codec_ctx.as_ref().and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY)).and_then(|u| u.output_tokens),
                 ratelimit_matched: ctx.ratelimit_matched,
                 ratelimit_rule: ctx.ratelimit_rule.clone(),
                 error: ctx.error_message.clone(),
@@ -726,6 +698,11 @@ impl ProxyHttp for PrismProxy {
                 global_ctx.request_headers.insert(k.clone(), v.clone());
             }
             let action = global_chain.process_request_headers(&mut global_ctx);
+            // Inject rate limiter and request headers for QuotaRecorderPlugin
+            if let Some(ref limiter) = self.rate_limiter {
+                global_ctx.set(LIMITER_KEY, Arc::clone(limiter));
+            }
+            global_ctx.set(HEADERS_KEY, ctx.request_headers_snapshot.clone());
             ctx.global_codec_ctx = Some(global_ctx);
             if action == codec::Action::Stop {
                 debug!("Global plugin chain stopped request at headers");
@@ -1288,14 +1265,6 @@ impl ProxyHttp for PrismProxy {
     where
         Self::CTX: Send + Sync,
     {
-        // Extract usage from all response body chunks
-        if let Some(ref chunk) = body {
-            ctx.usage_accumulator.feed_bytes(chunk);
-        }
-        if end_of_stream && ctx.extracted_usage.is_none() {
-            ctx.extracted_usage = ctx.usage_accumulator.finish();
-        }
-
         if !ctx.needs_conversion {
             return Ok(None);
         }
@@ -1443,8 +1412,8 @@ impl ProxyHttp for PrismProxy {
                 latency_ms: elapsed.as_millis() as u64,
                 ttft_ms: None, // TODO: capture from streaming first byte
                 success: (200..400).contains(&status),
-                input_tokens: ctx.extracted_usage.as_ref().and_then(|u| u.prompt_tokens.map(|v| v as u32)),
-                output_tokens: ctx.extracted_usage.as_ref().and_then(|u| u.completion_tokens.map(|v| v as u32)),
+                input_tokens: ctx.global_codec_ctx.as_ref().and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY)).and_then(|u| u.input_tokens.map(|v| v as u32)),
+                output_tokens: ctx.global_codec_ctx.as_ref().and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY)).and_then(|u| u.output_tokens.map(|v| v as u32)),
                 timestamp: Instant::now(),
             });
         }
@@ -1455,25 +1424,6 @@ impl ProxyHttp for PrismProxy {
                 // Update final status info before on_log
                 global_ctx.response_status = Some(status);
                 global_chain.process_log(global_ctx);
-            }
-        }
-
-        // Auto-record extracted usage to rate limiter
-        if let (Some(ref limiter), Some(ref usage)) = (&self.rate_limiter, &ctx.extracted_usage) {
-            let rl_headers: Vec<(String, String)> = ctx.request_headers_snapshot.clone();
-            for rule in limiter.rules() {
-                if !rule.enabled {
-                    continue;
-                }
-                if let Some(pt) = usage.prompt_tokens {
-                    limiter.record(&rule.name, &rl_headers, &crate::ratelimit::QuotaMetric::InputTokens, pt);
-                }
-                if let Some(ct) = usage.completion_tokens {
-                    limiter.record(&rule.name, &rl_headers, &crate::ratelimit::QuotaMetric::OutputTokens, ct);
-                }
-                if let Some(tt) = usage.total_tokens {
-                    limiter.record(&rule.name, &rl_headers, &crate::ratelimit::QuotaMetric::TotalTokens, tt);
-                }
             }
         }
 
@@ -1514,8 +1464,8 @@ impl ProxyHttp for PrismProxy {
                 decision_time_us: ctx.decision_time_us,
                 request_headers: ctx.request_headers_snapshot.clone(),
                 response_headers,
-                input_tokens: ctx.extracted_usage.as_ref().and_then(|u| u.prompt_tokens),
-                output_tokens: ctx.extracted_usage.as_ref().and_then(|u| u.completion_tokens),
+                input_tokens: ctx.global_codec_ctx.as_ref().and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY)).and_then(|u| u.input_tokens),
+                output_tokens: ctx.global_codec_ctx.as_ref().and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY)).and_then(|u| u.output_tokens),
                 ratelimit_matched: ctx.ratelimit_matched,
                 ratelimit_rule: ctx.ratelimit_rule.clone(),
                 error: ctx.error_message.clone(),

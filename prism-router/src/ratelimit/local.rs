@@ -120,9 +120,11 @@ impl RateLimitBackend for LocalBackend {
     }
 
     fn record_metric(&self, key: &str, metric: &QuotaMetric, value: u64) {
-        if let Some(mut entry) = self.windows.get_mut(key) {
-            entry.value_mut().increment(metric, value);
-        }
+        let mut entry = self
+            .windows
+            .entry(key.to_string())
+            .or_insert_with(|| WindowState::new(Self::now_secs()));
+        entry.value_mut().increment(metric, value);
     }
 
     fn cleanup(&self, max_window_secs: u64) {
