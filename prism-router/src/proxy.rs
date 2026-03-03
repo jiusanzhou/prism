@@ -106,6 +106,8 @@ pub struct ProxyContext {
     pub request_id: String,
     /// Fallback chain from routing decision for retry/failover.
     pub retry_fallback_chain: Vec<String>,
+    /// Active concurrency guards — dropped when request completes.
+    pub concurrency_guards: Vec<crate::ratelimit::concurrency::ConcurrencyGuard>,
 }
 
 impl Default for ProxyContext {
@@ -149,6 +151,7 @@ impl Default for ProxyContext {
             upstream_request_attempt_count: 1,
             request_id: String::new(),
             retry_fallback_chain: Vec::new(),
+            concurrency_guards: Vec::new(),
         }
     }
 }
@@ -160,6 +163,9 @@ pub struct PrismProxy {
     pub codec_registry: Arc<CodecRegistry>,
     pub rate_limiter: Option<Arc<RateLimiter>>,
     pub access_logger: Option<Arc<AccessLogger>>,
+    /// Concurrency limiter.
+    pub concurrency_limiter: Option<Arc<crate::ratelimit::concurrency::ConcurrencyLimiter>>,
+    /// Active concurrency guards for current requests (stored per-request in ctx).
     /// Upstream request timeout in seconds.
     pub request_timeout_secs: u64,
     /// TCP keepalive interval in seconds (0 = disabled).
@@ -175,6 +181,7 @@ impl PrismProxy {
             codec_registry: Arc::new(CodecRegistry::new()),
             rate_limiter: None,
             access_logger: None,
+            concurrency_limiter: None,
             request_timeout_secs: 300,
             keepalive_secs: 60,
         }
@@ -192,6 +199,7 @@ impl PrismProxy {
             codec_registry,
             rate_limiter: None,
             access_logger: None,
+            concurrency_limiter: None,
             request_timeout_secs: 300,
             keepalive_secs: 60,
         }
@@ -206,6 +214,12 @@ impl PrismProxy {
     #[allow(dead_code)]
     pub fn with_access_logger(mut self, logger: Arc<AccessLogger>) -> Self {
         self.access_logger = Some(logger);
+        self
+    }
+
+    /// Set concurrency limiter.
+    pub fn with_concurrency_limiter(mut self, limiter: Arc<crate::ratelimit::concurrency::ConcurrencyLimiter>) -> Self {
+        self.concurrency_limiter = Some(limiter);
         self
     }
 
@@ -426,9 +440,54 @@ impl ProxyHttp for PrismProxy {
             }
         }
 
-        // Try Pingora's native upstream connector first (requires "openssl" feature
-        // for proper HTTPS support). Pingora handles all upstream connections.
-        // is not working (e.g., missing TLS feature).
+        // Concurrency limit check — after rate limit, before routing
+        if let Some(ref concurrency_limiter) = self.concurrency_limiter {
+            let headers: Vec<(String, String)> = ctx
+                .request_headers_snapshot
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+
+            match concurrency_limiter.try_acquire(&headers) {
+                Ok(guards) => {
+                    ctx.concurrency_guards = guards;
+                }
+                Err(denied) => {
+                    warn!(rule = %denied.rule_name, current = %denied.current, limit = %denied.limit, "Concurrency limit exceeded");
+                    ctx.response_flags.push("CL".to_string());
+
+                    let header =
+                        pingora::http::ResponseHeader::build(denied.status_code, None).unwrap();
+                    let body = serde_json::json!({
+                        "error": {
+                            "type": "concurrency_limit_exceeded",
+                            "message": denied.message,
+                            "rule": denied.rule_name,
+                            "current": denied.current,
+                            "limit": denied.limit,
+                        }
+                    });
+
+                    session.set_keepalive(None);
+                    session
+                        .write_response_header(Box::new(header), true)
+                        .await
+                        .map_err(|e| {
+                            pingora::Error::explain(
+                                pingora::ErrorType::WriteError,
+                                format!("concurrency limit response error: {}", e),
+                            )
+                        })?;
+                    session
+                        .write_response_body(Some(Bytes::from(body.to_string())), true)
+                        .await
+                        .ok();
+
+                    return Ok(true);
+                }
+            }
+        }
+
         Ok(false) // continue to Pingora upstream pipeline
     }
 

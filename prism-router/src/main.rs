@@ -218,6 +218,21 @@ async fn main() {
 
                 let mut registry = CodecRegistry::new();
                 let mut global_chain = ProxyPluginChain::new();
+
+                // Auth plugin — must be first in chain (before routing/usage)
+                if config.auth.enabled && !config.auth.keys.is_empty() {
+                    use crate::codec::auth::ApiKeyAuthPlugin;
+                    let auth_plugin = ApiKeyAuthPlugin::with_keys(config.auth.keys.clone());
+                    global_chain.add(Box::new(auth_plugin));
+                    info!("  Auth → enabled ({} keys)", config.auth.keys.len());
+                }
+
+                // Retry plugin
+                {
+                    use crate::codec::retry::RetryPlugin;
+                    global_chain.add(Box::new(RetryPlugin::new()));
+                }
+
                 global_chain.add(Box::new(UsageExtractorPlugin::new()));
                 global_chain.add(Box::new(QuotaRecorderPlugin::new()));
                 registry.set_global_chain(global_chain);
@@ -260,6 +275,27 @@ async fn main() {
                 None
             };
 
+            // Build concurrency limiter from config
+            let concurrency_limiter = if !config.concurrency_limits.is_empty() {
+                use crate::ratelimit::concurrency::{ConcurrencyLimiter, ConcurrencyRule};
+                let rules: Vec<ConcurrencyRule> = config
+                    .concurrency_limits
+                    .iter()
+                    .map(|c| ConcurrencyRule {
+                        name: c.name.clone(),
+                        key_headers: c.key_headers.clone(),
+                        max_concurrent: c.max_concurrent,
+                        enabled: c.enabled,
+                        status_code: 429,
+                        message: "Too many concurrent requests".to_string(),
+                    })
+                    .collect();
+                info!("  Concurrency limiter → {} rules", rules.len());
+                Some(Arc::new(ConcurrencyLimiter::new(rules)))
+            } else {
+                None
+            };
+
             // Build access logger from config
             let access_logger = if config.access_log.enabled {
                 use crate::access_log::AccessLogger;
@@ -293,6 +329,9 @@ async fn main() {
                 config.server.request_timeout_secs,
                 config.server.keepalive_secs,
             );
+            if let Some(concurrency) = concurrency_limiter {
+                prism_proxy = prism_proxy.with_concurrency_limiter(concurrency);
+            }
             let prism_proxy = prism_proxy;
 
             // Pingora runs in its own thread

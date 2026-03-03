@@ -39,6 +39,14 @@ pub struct PrismConfig {
     /// Access log configuration.
     #[serde(default)]
     pub access_log: AccessLogConfig,
+
+    /// API key authentication configuration.
+    #[serde(default)]
+    pub auth: AuthConfig,
+
+    /// Concurrency limiting rules.
+    #[serde(default)]
+    pub concurrency_limits: Vec<ConcurrencyLimitConfig>,
 }
 
 /// Server-level configuration.
@@ -1054,4 +1062,56 @@ plugins:
             PluginSourceConfig::Builtin { .. }
         ));
     }
+}
+
+
+/// API key authentication configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuthConfig {
+    /// Whether authentication is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Header name to check (default: "authorization").
+    #[serde(default = "default_auth_header")]
+    pub header: String,
+    /// Valid API keys.
+    #[serde(default)]
+    pub keys: Vec<String>,
+    /// Prefix to strip before matching (e.g., "Bearer ").
+    #[serde(default = "default_strip_prefix")]
+    pub strip_prefix: Option<String>,
+    /// Paths that skip authentication.
+    #[serde(default = "default_skip_paths")]
+    pub skip_paths: Vec<String>,
+}
+
+fn default_auth_header() -> String {
+    "authorization".to_string()
+}
+
+fn default_strip_prefix() -> Option<String> {
+    Some("Bearer ".to_string())
+}
+
+fn default_skip_paths() -> Vec<String> {
+    vec!["/health".to_string(), "/readyz".to_string(), "/version".to_string()]
+}
+
+/// Concurrency limiting configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConcurrencyLimitConfig {
+    /// Rule name.
+    pub name: String,
+    /// Header names to build the concurrency key.
+    #[serde(default)]
+    pub key_headers: Vec<String>,
+    /// Maximum concurrent requests.
+    pub max_concurrent: u64,
+    /// Whether this rule is enabled.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
 }
