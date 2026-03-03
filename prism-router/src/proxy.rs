@@ -19,6 +19,7 @@ use crate::codec::registry::CodecRegistry;
 use crate::metrics::{MetricsCollector, RequestRecord};
 use crate::protocol::LlmProtocol;
 use crate::ratelimit::RateLimiter;
+use crate::usage::{StreamingUsageAccumulator, TokenUsage};
 
 /// Per-request context stored across Pingora proxy phases.
 pub struct ProxyContext {
@@ -102,6 +103,10 @@ pub struct ProxyContext {
     pub global_codec_ctx: Option<codec::ProxyContext>,
     /// Number of upstream request attempts.
     pub upstream_request_attempt_count: u32,
+    /// Streaming usage accumulator for extracting token counts from SSE chunks.
+    pub usage_accumulator: StreamingUsageAccumulator,
+    /// Extracted token usage (populated at end of request).
+    pub extracted_usage: Option<TokenUsage>,
 }
 
 impl Default for ProxyContext {
@@ -144,6 +149,8 @@ impl Default for ProxyContext {
             connection_termination_details: None,
             global_codec_ctx: None,
             upstream_request_attempt_count: 1,
+            usage_accumulator: StreamingUsageAccumulator::new(),
+            extracted_usage: None,
         }
     }
 }
@@ -493,6 +500,7 @@ impl PrismProxy {
             while let Some(chunk) = stream.next().await {
                 match chunk {
                     Ok(data) => {
+                        ctx.usage_accumulator.feed_bytes(&data);
                         session
                             .write_response_body(Some(data), false)
                             .await
@@ -510,6 +518,7 @@ impl PrismProxy {
                 }
             }
             session.write_response_body(None, true).await.ok();
+            ctx.extracted_usage = ctx.usage_accumulator.finish();
         } else {
             // Non-streaming: read full body and write at once
             let resp_body = upstream_resp.bytes().await.map_err(|e| {
@@ -518,6 +527,8 @@ impl PrismProxy {
                     format!("read upstream response: {}", e),
                 )
             })?;
+
+            ctx.extracted_usage = crate::usage::extract_from_body(&resp_body);
 
             session
                 .write_response_header(Box::new(header), false)
@@ -558,8 +569,8 @@ impl PrismProxy {
                 latency_ms: elapsed.as_millis() as u64,
                 ttft_ms: None,
                 success: (200..400).contains(&status),
-                input_tokens: None,
-                output_tokens: None,
+                input_tokens: ctx.extracted_usage.as_ref().and_then(|u| u.prompt_tokens.map(|v| v as u32)),
+                output_tokens: ctx.extracted_usage.as_ref().and_then(|u| u.completion_tokens.map(|v| v as u32)),
                 timestamp: Instant::now(),
             });
         }
@@ -585,8 +596,8 @@ impl PrismProxy {
                 decision_time_us: ctx.decision_time_us,
                 request_headers: ctx.request_headers_snapshot.clone(),
                 response_headers: Vec::new(), // reqwest path doesn't easily expose response headers
-                input_tokens: None,
-                output_tokens: None,
+                input_tokens: ctx.extracted_usage.as_ref().and_then(|u| u.prompt_tokens),
+                output_tokens: ctx.extracted_usage.as_ref().and_then(|u| u.completion_tokens),
                 ratelimit_matched: ctx.ratelimit_matched,
                 ratelimit_rule: ctx.ratelimit_rule.clone(),
                 error: ctx.error_message.clone(),
@@ -1258,6 +1269,14 @@ impl ProxyHttp for PrismProxy {
     where
         Self::CTX: Send + Sync,
     {
+        // Extract usage from all response body chunks
+        if let Some(ref chunk) = body {
+            ctx.usage_accumulator.feed_bytes(chunk);
+        }
+        if end_of_stream && ctx.extracted_usage.is_none() {
+            ctx.extracted_usage = ctx.usage_accumulator.finish();
+        }
+
         if !ctx.needs_conversion {
             return Ok(None);
         }
@@ -1405,8 +1424,8 @@ impl ProxyHttp for PrismProxy {
                 latency_ms: elapsed.as_millis() as u64,
                 ttft_ms: None, // TODO: capture from streaming first byte
                 success: (200..400).contains(&status),
-                input_tokens: None, // TODO: parse from response
-                output_tokens: None,
+                input_tokens: ctx.extracted_usage.as_ref().and_then(|u| u.prompt_tokens.map(|v| v as u32)),
+                output_tokens: ctx.extracted_usage.as_ref().and_then(|u| u.completion_tokens.map(|v| v as u32)),
                 timestamp: Instant::now(),
             });
         }
@@ -1457,8 +1476,8 @@ impl ProxyHttp for PrismProxy {
                 decision_time_us: ctx.decision_time_us,
                 request_headers: ctx.request_headers_snapshot.clone(),
                 response_headers,
-                input_tokens: None,  // TODO: parse from response
-                output_tokens: None, // TODO: parse from response
+                input_tokens: ctx.extracted_usage.as_ref().and_then(|u| u.prompt_tokens),
+                output_tokens: ctx.extracted_usage.as_ref().and_then(|u| u.completion_tokens),
                 ratelimit_matched: ctx.ratelimit_matched,
                 ratelimit_rule: ctx.ratelimit_rule.clone(),
                 error: ctx.error_message.clone(),
