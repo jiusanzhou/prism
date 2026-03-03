@@ -52,6 +52,15 @@ pub struct ServerConfig {
     pub grpc_port: u16,
     #[serde(default = "default_proxy_port")]
     pub proxy_port: u16,
+    /// Upstream request timeout in seconds (default: 300s for LLM).
+    #[serde(default = "default_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+    /// TCP keepalive interval in seconds (0 = disabled, default: 60).
+    #[serde(default = "default_keepalive_secs")]
+    pub keepalive_secs: u64,
+    /// Graceful shutdown timeout in seconds (default: 30).
+    #[serde(default = "default_shutdown_timeout_secs")]
+    pub shutdown_timeout_secs: u64,
 }
 
 impl Default for ServerConfig {
@@ -61,8 +70,23 @@ impl Default for ServerConfig {
             http_port: default_http_port(),
             grpc_port: default_grpc_port(),
             proxy_port: default_proxy_port(),
+            request_timeout_secs: default_request_timeout_secs(),
+            keepalive_secs: default_keepalive_secs(),
+            shutdown_timeout_secs: default_shutdown_timeout_secs(),
         }
     }
+}
+
+fn default_request_timeout_secs() -> u64 {
+    300
+}
+
+fn default_keepalive_secs() -> u64 {
+    60
+}
+
+fn default_shutdown_timeout_secs() -> u64 {
+    30
 }
 
 fn default_listen() -> String {

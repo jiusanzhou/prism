@@ -10,6 +10,7 @@
 pub mod backend;
 pub mod local;
 pub mod quota;
+pub mod concurrency;
 #[cfg(feature = "redis")]
 pub mod redis_backend;
 
@@ -21,6 +22,7 @@ use serde::{Deserialize, Serialize};
 pub use backend::RateLimitBackend;
 pub use local::LocalBackend;
 pub use quota::{Quota, QuotaDenied, QuotaMetric};
+pub use concurrency::{ConcurrencyDenied, ConcurrencyGuard, ConcurrencyLimiter, ConcurrencyRule};
 #[cfg(feature = "redis")]
 pub use redis_backend::{DegradationPolicy, RedisBackend, RedisConfig};
 
@@ -60,6 +62,15 @@ pub struct RateLimitOverride {
     pub max_tokens: Option<u64>,
 }
 
+/// Additional window definition for multi-window rate limiting.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WindowQuotas {
+    /// Window duration in seconds.
+    pub window_secs: u64,
+    /// Quotas for this window.
+    pub quotas: Vec<Quota>,
+}
+
 /// A single rate limit rule.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RateLimitRule {
@@ -68,8 +79,12 @@ pub struct RateLimitRule {
     /// Header names to extract and combine into the rate limit key.
     /// Empty = global rate limit (all requests share one key).
     pub key_headers: Vec<String>,
-    /// Time window in seconds.
+    /// Time window in seconds (primary window).
     pub window_secs: u64,
+    /// Additional windows for multi-window limiting.
+    /// Each entry is (window_secs, quotas). Evaluated independently.
+    #[serde(default)]
+    pub additional_windows: Vec<WindowQuotas>,
     /// Multi-metric quotas — the new way to configure limits.
     #[serde(default)]
     pub quotas: Vec<Quota>,
@@ -205,20 +220,38 @@ impl RateLimiter {
             let key = Self::build_key(rule, headers);
             let quotas = Self::resolve_quotas(rule, headers);
 
-            if quotas.is_empty() {
-                continue;
+            // Check primary window
+            if !quotas.is_empty() {
+                if let Err(denied) = self.backend.check_quotas(&key, rule.window_secs, &quotas) {
+                    return Err(RateLimitDenied {
+                        rule_name: rule.name.clone(),
+                        status_code: rule.status_code,
+                        message: rule.message.clone(),
+                        retry_after_secs: Some(denied.retry_after_secs),
+                        metric: denied.metric,
+                        current: denied.current,
+                        limit: denied.limit,
+                    });
+                }
             }
 
-            if let Err(denied) = self.backend.check_quotas(&key, rule.window_secs, &quotas) {
-                return Err(RateLimitDenied {
-                    rule_name: rule.name.clone(),
-                    status_code: rule.status_code,
-                    message: rule.message.clone(),
-                    retry_after_secs: Some(denied.retry_after_secs),
-                    metric: denied.metric,
-                    current: denied.current,
-                    limit: denied.limit,
-                });
+            // Check additional windows
+            for window in &rule.additional_windows {
+                if window.quotas.is_empty() {
+                    continue;
+                }
+                let window_key = format!("{}:w{}", key, window.window_secs);
+                if let Err(denied) = self.backend.check_quotas(&window_key, window.window_secs, &window.quotas) {
+                    return Err(RateLimitDenied {
+                        rule_name: rule.name.clone(),
+                        status_code: rule.status_code,
+                        message: rule.message.clone(),
+                        retry_after_secs: Some(denied.retry_after_secs),
+                        metric: denied.metric,
+                        current: denied.current,
+                        limit: denied.limit,
+                    });
+                }
             }
         }
 
@@ -277,6 +310,7 @@ impl RateLimiter {
     }
 
     /// Record a metric value for a specific rule + headers combination.
+    /// Records to both the primary window and all additional windows.
     pub fn record(
         &self,
         rule_name: &str,
@@ -287,6 +321,12 @@ impl RateLimiter {
         if let Some(rule) = self.rules.iter().find(|r| r.name == rule_name) {
             let key = Self::build_key(rule, headers);
             self.backend.record_metric(&key, metric, value);
+
+            // Also record to additional windows
+            for window in &rule.additional_windows {
+                let window_key = format!("{}:w{}", key, window.window_secs);
+                self.backend.record_metric(&window_key, metric, value);
+            }
         }
     }
 
@@ -357,6 +397,7 @@ mod tests {
             enabled: true,
             status_code: 429,
             message: "Rate limit exceeded".to_string(),
+            additional_windows: vec![],
         }
     }
 
@@ -377,6 +418,7 @@ mod tests {
             enabled: true,
             status_code: 429,
             message: "Rate limit exceeded".to_string(),
+            additional_windows: vec![],
         }
     }
 

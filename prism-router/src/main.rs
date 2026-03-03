@@ -130,6 +130,7 @@ async fn main() {
         .route("/v1/outcomes", post(api::outcomes_handler))
         .route("/admin/reload", post(api::reload_handler))
         .route("/health", get(api::health_handler))
+        .route("/readyz", get(api::readyz_handler))
         .route("/version", get(api::version_handler))
         .route("/metrics", get(api::metrics_handler))
         .layer(TraceLayer::new_for_http())
@@ -249,6 +250,7 @@ async fn main() {
                             .collect(),
                         enabled: rc.enabled,
                         status_code: 429,
+                        additional_windows: vec![],
                         message: "Rate limit exceeded".to_string(),
                     })
                     .collect();

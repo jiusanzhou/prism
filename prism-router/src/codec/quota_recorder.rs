@@ -104,6 +104,7 @@ mod tests {
             enabled: true,
             status_code: 429,
             message: "Rate limit exceeded".to_string(),
+            additional_windows: vec![],
         }
     }
 
