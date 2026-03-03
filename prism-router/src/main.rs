@@ -208,8 +208,86 @@ async fn main() {
                 .unwrap_or_else(|| format!("0.0.0.0:{}", config.server.proxy_port));
             info!("  Proxy → {}", proxy_addr_str);
 
-            let prism_proxy =
-                PrismProxy::new(Arc::clone(&state.router), Arc::clone(&state.metrics));
+            // Build codec registry with built-in plugins
+            let codec_registry = {
+                use crate::codec::chain::ProxyPluginChain;
+                use crate::codec::registry::CodecRegistry;
+                use crate::codec::usage_extractor::UsageExtractorPlugin;
+                use crate::codec::quota_recorder::QuotaRecorderPlugin;
+
+                let mut registry = CodecRegistry::new();
+                let mut global_chain = ProxyPluginChain::new();
+                global_chain.add(Box::new(UsageExtractorPlugin::new()));
+                global_chain.add(Box::new(QuotaRecorderPlugin::new()));
+                registry.set_global_chain(global_chain);
+                Arc::new(registry)
+            };
+
+            // Build rate limiter from config
+            let rate_limiter = if !config.rate_limits.is_empty() {
+                use crate::ratelimit::{RateLimitRule, RateLimiter};
+
+                let rules: Vec<RateLimitRule> = config
+                    .rate_limits
+                    .iter()
+                    .map(|rc| RateLimitRule {
+                        name: rc.name.clone(),
+                        key_headers: rc.key_headers.clone(),
+                        window_secs: rc.window_secs,
+                        max_requests: Some(rc.max_requests),
+                        max_tokens: rc.max_tokens,
+                        quotas: vec![],
+                        overrides: rc
+                            .overrides
+                            .iter()
+                            .map(|o| crate::ratelimit::RateLimitOverride {
+                                match_headers: o.match_headers.clone(),
+                                quotas: vec![],
+                                max_requests: o.max_requests,
+                                max_tokens: o.max_tokens,
+                            })
+                            .collect(),
+                        enabled: rc.enabled,
+                        status_code: 429,
+                        message: "Rate limit exceeded".to_string(),
+                    })
+                    .collect();
+                info!("  Rate limiter → {} rules", rules.len());
+                Some(Arc::new(RateLimiter::new(rules)))
+            } else {
+                None
+            };
+
+            // Build access logger from config
+            let access_logger = if config.access_log.enabled {
+                use crate::access_log::AccessLogger;
+                match AccessLogger::new(config.access_log.clone()) {
+                    Ok(logger) => {
+                        info!("  Access log → enabled (format: {:?})", config.access_log.format);
+                        Some(Arc::new(logger))
+                    }
+                    Err(e) => {
+                        error!("Failed to initialize access logger: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Assemble proxy
+            let mut prism_proxy = PrismProxy::with_codec_registry(
+                Arc::clone(&state.router),
+                Arc::clone(&state.metrics),
+                codec_registry,
+            );
+            if let Some(limiter) = rate_limiter {
+                prism_proxy = prism_proxy.with_rate_limiter(limiter);
+            }
+            if let Some(logger) = access_logger {
+                prism_proxy = prism_proxy.with_access_logger(logger);
+            }
+            let prism_proxy = prism_proxy;
 
             // Pingora runs in its own thread (blocking)
             let proxy_handle = std::thread::spawn(move || {
