@@ -395,32 +395,22 @@ impl Default for CodecConfig {
 // ── Access Log Configuration ──
 
 /// Access log output destination.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum AccessLogOutput {
+    #[default]
     Stdout,
     File,
     Both,
 }
 
-impl Default for AccessLogOutput {
-    fn default() -> Self {
-        Self::Stdout
-    }
-}
-
 /// Access log format.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum AccessLogFormat {
+    #[default]
     Json,
     Text,
-}
-
-impl Default for AccessLogFormat {
-    fn default() -> Self {
-        Self::Json
-    }
 }
 
 fn default_text_format() -> String {

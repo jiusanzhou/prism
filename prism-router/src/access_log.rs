@@ -1942,7 +1942,7 @@ mod tests {
         let json_str = logger.format_json(&data);
         let parsed: BTreeMap<String, Value> = serde_json::from_str(&json_str).unwrap();
 
-        for (_, v) in &parsed {
+        for v in parsed.values() {
             assert_eq!(*v, Value::Null);
         }
     }

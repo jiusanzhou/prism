@@ -213,8 +213,9 @@ fn bench_ratelimit(c: &mut Criterion) {
             name: "global".to_string(),
             key_headers: vec![],
             window_secs: 60,
-            max_requests: 1_000_000,
+            max_requests: Some(1_000_000),
             max_tokens: None,
+            quotas: vec![],
             overrides: vec![],
             enabled: true,
             status_code: 429,
@@ -229,8 +230,9 @@ fn bench_ratelimit(c: &mut Criterion) {
             name: "per-model".to_string(),
             key_headers: vec!["x-model".to_string()],
             window_secs: 60,
-            max_requests: 1_000_000,
+            max_requests: Some(1_000_000),
             max_tokens: None,
+            quotas: vec![],
             overrides: vec![],
             enabled: true,
             status_code: 429,
@@ -250,8 +252,9 @@ fn bench_ratelimit(c: &mut Criterion) {
                 "x-region".to_string(),
             ],
             window_secs: 60,
-            max_requests: 1_000_000,
+            max_requests: Some(1_000_000),
             max_tokens: None,
+            quotas: vec![],
             overrides: vec![],
             enabled: true,
             status_code: 429,
@@ -272,8 +275,9 @@ fn bench_ratelimit(c: &mut Criterion) {
                 name: format!("rule-{i}"),
                 key_headers: vec!["x-model".to_string()],
                 window_secs: 60,
-                max_requests: 1_000_000,
+                max_requests: Some(1_000_000),
                 max_tokens: None,
+                quotas: vec![],
                 overrides: vec![],
                 enabled: true,
                 status_code: 429,
@@ -291,18 +295,21 @@ fn bench_ratelimit(c: &mut Criterion) {
             name: "with-overrides".to_string(),
             key_headers: vec!["x-model".to_string(), "x-app-id".to_string()],
             window_secs: 60,
-            max_requests: 1_000_000,
+            max_requests: Some(1_000_000),
             max_tokens: None,
+            quotas: vec![],
             overrides: vec![
                 RateLimitOverride {
                     match_headers: [("x-model".to_string(), "gpt-4".to_string())].into(),
                     max_requests: Some(500),
                     max_tokens: None,
+                    quotas: vec![],
                 },
                 RateLimitOverride {
                     match_headers: [("x-model".to_string(), "claude-3".to_string())].into(),
                     max_requests: Some(300),
                     max_tokens: None,
+                    quotas: vec![],
                 },
                 RateLimitOverride {
                     match_headers: [
@@ -312,16 +319,19 @@ fn bench_ratelimit(c: &mut Criterion) {
                     .into(),
                     max_requests: Some(2000),
                     max_tokens: None,
+                    quotas: vec![],
                 },
                 RateLimitOverride {
                     match_headers: [("x-app-id".to_string(), "premium-app".to_string())].into(),
                     max_requests: Some(1500),
                     max_tokens: None,
+                    quotas: vec![],
                 },
                 RateLimitOverride {
                     match_headers: [("x-model".to_string(), "llama-3".to_string())].into(),
                     max_requests: Some(5000),
                     max_tokens: None,
+                    quotas: vec![],
                 },
             ],
             enabled: true,
@@ -338,8 +348,9 @@ fn bench_ratelimit(c: &mut Criterion) {
             name: "per-user".to_string(),
             key_headers: vec!["x-user-id".to_string()],
             window_secs: 60,
-            max_requests: 1_000_000,
+            max_requests: Some(1_000_000),
             max_tokens: None,
+            quotas: vec![],
             overrides: vec![],
             enabled: true,
             status_code: 429,
@@ -518,7 +529,7 @@ fn bench_config_hotreload(c: &mut Criterion) {
         let mut counter = 0u64;
         b.iter(|| {
             counter += 1;
-            if counter % 100 == 0 {
+            if counter.is_multiple_of(100) {
                 let new_registry = build_registry(5, 5);
                 state.swap_router(PrismRouter::new(new_registry));
             }
@@ -700,7 +711,7 @@ fn complex_route_request() -> prism_core::router::RouteRequest {
 fn build_large_registry(total_variants: usize) -> InMemoryRegistry {
     // Find a reasonable p×m decomposition
     let p = (total_variants as f64).sqrt().ceil() as usize;
-    let m = (total_variants + p - 1) / p; // ceil division
+    let m = total_variants.div_ceil(p);
     build_registry(p, m)
 }
 
@@ -759,8 +770,9 @@ fn bench_e2e_proxy_pipeline(c: &mut Criterion) {
                 name: "global".to_string(),
                 key_headers: vec![],
                 window_secs: 60,
-                max_requests: 10_000_000,
+                max_requests: Some(10_000_000),
                 max_tokens: None,
+                quotas: vec![],
                 overrides: vec![],
                 enabled: true,
                 status_code: 429,
@@ -770,8 +782,9 @@ fn bench_e2e_proxy_pipeline(c: &mut Criterion) {
                 name: "per-model".to_string(),
                 key_headers: vec!["x-model".to_string()],
                 window_secs: 60,
-                max_requests: 1_000_000,
+                max_requests: Some(1_000_000),
                 max_tokens: None,
+                quotas: vec![],
                 overrides: vec![],
                 enabled: true,
                 status_code: 429,

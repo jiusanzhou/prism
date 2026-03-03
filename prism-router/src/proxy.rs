@@ -1375,13 +1375,13 @@ impl ProxyHttp for PrismProxy {
             ctx.error_message = Some(format!("{}: {:?}", e, e.etype()));
             // Set response flags based on error type
             let flag = match e.etype() {
-                &pingora::ErrorType::ConnectTimedout => "UT",
-                &pingora::ErrorType::ConnectRefused => "UF",
-                &pingora::ErrorType::ConnectProxyFailure => "UF",
-                &pingora::ErrorType::ReadTimedout => "UT",
-                &pingora::ErrorType::WriteTimedout => "UT",
-                &pingora::ErrorType::ReadError => "UC",
-                &pingora::ErrorType::WriteError => "UC",
+                pingora::ErrorType::ConnectTimedout => "UT",
+                pingora::ErrorType::ConnectRefused => "UF",
+                pingora::ErrorType::ConnectProxyFailure => "UF",
+                pingora::ErrorType::ReadTimedout => "UT",
+                pingora::ErrorType::WriteTimedout => "UT",
+                pingora::ErrorType::ReadError => "UC",
+                pingora::ErrorType::WriteError => "UC",
                 _ => "UF",
             };
             if !ctx.response_flags.contains(&flag.to_string()) {
