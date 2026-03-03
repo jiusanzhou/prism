@@ -8,6 +8,8 @@
 
 pub mod backend;
 pub mod local;
+#[cfg(feature = "redis")]
+pub mod redis_backend;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,6 +18,8 @@ use serde::{Deserialize, Serialize};
 
 pub use backend::RateLimitBackend;
 pub use local::LocalBackend;
+#[cfg(feature = "redis")]
+pub use redis_backend::{DegradationPolicy, RedisBackend, RedisConfig};
 
 // ════════════════════════════════════════════════
 // Configuration
