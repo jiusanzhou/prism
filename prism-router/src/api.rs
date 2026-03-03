@@ -366,6 +366,64 @@ pub async fn reload_handler(State(state): State<AppState>) -> impl IntoResponse 
     }
 }
 
+
+/// POST /admin/config/validate — dry-run config validation
+///
+/// Accepts YAML body, parses it, validates structure, returns errors if any.
+/// Does NOT apply the config.
+pub async fn validate_config_handler(body: String) -> impl IntoResponse {
+    use crate::config::load_config_from_str;
+
+    match load_config_from_str(&body) {
+        Ok(config) => {
+            let providers_count = config.providers.len();
+            let models_count = config.models.len();
+            let variants_count = config.variants.len();
+            let rate_limits_count = config.rate_limits.len();
+
+            // Validate cross-references
+            let mut warnings = Vec::new();
+
+            // Check that variants reference valid providers and models
+            for variant in &config.variants {
+                if !config.providers.contains_key(&variant.provider_id) {
+                    warnings.push(format!(
+                        "variant '{}' references unknown provider '{}'",
+                        variant.id, variant.provider_id
+                    ));
+                }
+                if !config.models.iter().any(|m| m.id == variant.model_id) {
+                    warnings.push(format!(
+                        "variant '{}' references unknown model '{}'",
+                        variant.id, variant.model_id
+                    ));
+                }
+            }
+
+            // Check auth config
+            if config.auth.enabled && config.auth.keys.is_empty() {
+                warnings.push("auth is enabled but no keys configured".to_string());
+            }
+
+            let json = serde_json::json!({
+                "status": "valid",
+                "providers": providers_count,
+                "models": models_count,
+                "variants": variants_count,
+                "rate_limits": rate_limits_count,
+                "warnings": warnings,
+            });
+            (StatusCode::OK, Json(json))
+        }
+        Err(e) => {
+            let json = serde_json::json!({
+                "status": "invalid",
+                "error": e,
+            });
+            (StatusCode::BAD_REQUEST, Json(json))
+        }
+    }
+}
 // ──────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────

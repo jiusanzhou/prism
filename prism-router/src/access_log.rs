@@ -847,7 +847,29 @@ impl AccessLogger {
         self.write_line(&line);
     }
 
-    /// Format as text using pre-parsed segments.
+    /// Rotate log files: access.log → access.log.1 → access.log.2 → ...
+    fn rotate_file(path: &str, max_files: u32) {
+        // Remove the oldest file
+        let oldest = format!("{}.{}", path, max_files);
+        let _ = std::fs::remove_file(&oldest);
+
+        // Shift existing rotated files
+        for i in (1..max_files).rev() {
+            let from = if i == 1 {
+                path.to_string()
+            } else {
+                format!("{}.{}", path, i - 1)
+            };
+            let to = format!("{}.{}", path, i);
+            let _ = std::fs::rename(&from, &to);
+        }
+
+        // Rename current to .1
+        let _ = std::fs::rename(path, format!("{}.1", path));
+        tracing::info!(path = %path, "Access log rotated");
+    }
+
+ // Format as text using pre-parsed segments.
     pub fn format_text(&self, data: &AccessLogData) -> String {
         let mut out = String::with_capacity(256);
         for seg in &self.segments {
@@ -892,6 +914,31 @@ impl AccessLogger {
             if let Ok(mut w) = writer.lock() {
                 let _ = writeln!(w, "{}", line);
                 let _ = w.flush();
+
+                // Check rotation
+                if self.config.max_file_size_mb > 0 {
+                    if let Some(ref path) = self.config.file_path {
+                        if let Ok(meta) = std::fs::metadata(path) {
+                            let size_mb = meta.len() / (1024 * 1024);
+                            if size_mb >= self.config.max_file_size_mb {
+                                // Flush and drop the current writer, rotate, reopen
+                                drop(w);
+                                Self::rotate_file(path, self.config.max_files);
+                                // Reopen the file
+                                if let Ok(file) = OpenOptions::new()
+                                    .create(true)
+                                    .append(true)
+                                    .open(path)
+                                {
+                                    if let Ok(mut w2) = writer.lock() {
+                                        *w2 = BufWriter::new(file);
+                                    }
+                                }
+
+                            }
+                        }
+                    }
+                }
             }
         }
     }

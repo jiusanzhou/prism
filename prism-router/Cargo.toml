@@ -9,6 +9,7 @@ grpc = ["tonic", "prost", "prost-types"]
 proxy = ["pingora", "async-trait", "bytes"]
 wasm = ["wasmtime"]
 redis = ["dep:redis"]
+otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 
 [dependencies]
 prism-core = { path = "../prism-core" }
@@ -54,6 +55,12 @@ redis = { version = "0.27", features = ["tokio-comp", "connection-manager"], opt
 
 [build-dependencies]
 tonic-build = "0.12"
+
+# OpenTelemetry (feature-gated)
+opentelemetry = { version = "0.29", optional = true }
+opentelemetry_sdk = { version = "0.29", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.29", features = ["tonic"], optional = true }
+tracing-opentelemetry = { version = "0.30", optional = true }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

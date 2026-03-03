@@ -136,6 +136,15 @@ impl RateLimitBackend for LocalBackend {
     fn name(&self) -> &str {
         "local"
     }
+
+    fn peek(&self, key: &str, metric: &QuotaMetric) -> u64 {
+        if let Some(entry) = self.windows.get(key) {
+            let state = entry.value();
+            *state.counters.get(metric).unwrap_or(&0)
+        } else {
+            0
+        }
+    }
 }
 
 #[cfg(test)]
