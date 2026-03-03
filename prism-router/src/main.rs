@@ -75,14 +75,8 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "prism_router=info,tower_http=info".into()),
-        )
-        .with_target(false)
-        .init();
+    // Initialize tracing (with optional OpenTelemetry)
+    init_tracing();
 
     let cli = Cli::parse();
 
@@ -131,6 +125,7 @@ async fn main() {
         .route("/v1/route", post(api::route_handler))
         .route("/v1/outcomes", post(api::outcomes_handler))
         .route("/admin/reload", post(api::reload_handler))
+        .route("/admin/config/validate", post(api::validate_config_handler))
         .route("/health", get(api::health_handler))
         .route("/readyz", get(api::readyz_handler))
         .route("/version", get(api::version_handler))
@@ -236,6 +231,11 @@ async fn main() {
                 }
 
                 global_chain.add(Box::new(UsageExtractorPlugin::new()));
+                // Streaming quota enforcement — checks token usage during streaming
+                {
+                    use crate::codec::streaming_quota::StreamingQuotaPlugin;
+                    global_chain.add(Box::new(StreamingQuotaPlugin::new()));
+                }
                 global_chain.add(Box::new(QuotaRecorderPlugin::new()));
                 registry.set_global_chain(global_chain);
                 Arc::new(registry)
@@ -422,5 +422,57 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => { info!("Received Ctrl+C, shutting down..."); }
         _ = terminate => { info!("Received SIGTERM, shutting down..."); }
+    }
+}
+
+
+fn init_tracing() {
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "prism_router=info,tower_http=info".into());
+
+    #[cfg(feature = "otel")]
+    {
+        use opentelemetry::trace::TracerProvider;
+        use opentelemetry_sdk::runtime;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .unwrap_or_else(|_| "http://localhost:4317".to_string());
+
+        if let Ok(exporter) = opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(&otlp_endpoint)
+            .build()
+        {
+            let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+                .with_batch_exporter(exporter, runtime::Tokio)
+                .build();
+            let tracer = provider.tracer("prism-router");
+            let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(tracing_subscriber::fmt::layer().with_target(false))
+                .with(otel_layer)
+                .init();
+
+            info!("OpenTelemetry tracing enabled → {}", otlp_endpoint);
+        } else {
+            // OTLP init failed, fall back to plain tracing
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_target(false)
+                .init();
+            warn!("OpenTelemetry init failed, using plain tracing");
+        }
+    }
+
+    #[cfg(not(feature = "otel"))]
+    {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_target(false)
+            .init();
     }
 }

@@ -363,6 +363,16 @@ impl RateLimiter {
         &self.rules
     }
 
+    /// Build key for a rule + headers (public for streaming quota plugin).
+    pub fn build_key_for_rule(rule: &RateLimitRule, headers: &[(String, String)]) -> String {
+        Self::build_key(rule, headers)
+    }
+
+    /// Peek at the current value of a metric in the backend without incrementing.
+    pub fn peek(&self, key: &str, metric: &QuotaMetric) -> u64 {
+        self.backend.peek(key, metric)
+    }
+
     /// Clean up expired window entries.
     pub fn cleanup(&self) {
         let max_window = self.rules.iter().map(|r| r.window_secs).max().unwrap_or(60);

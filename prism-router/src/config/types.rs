@@ -494,6 +494,20 @@ pub struct AccessLogConfig {
     /// Each entry is a `%OPERATOR%` string. Empty = all default fields.
     #[serde(default)]
     pub fields: Vec<String>,
+    /// Maximum log file size in MB before rotation (default: 100).
+    #[serde(default = "default_max_file_size_mb")]
+    pub max_file_size_mb: u64,
+    /// Maximum number of rotated log files to keep (default: 5).
+    #[serde(default = "default_max_files")]
+    pub max_files: u32,
+}
+
+fn default_max_file_size_mb() -> u64 {
+    100
+}
+
+fn default_max_files() -> u32 {
+    5
 }
 
 impl Default for AccessLogConfig {
@@ -505,6 +519,8 @@ impl Default for AccessLogConfig {
             format: AccessLogFormat::default(),
             text_format: default_text_format(),
             fields: Vec::new(),
+            max_file_size_mb: default_max_file_size_mb(),
+            max_files: default_max_files(),
         }
     }
 }

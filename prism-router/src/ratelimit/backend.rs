@@ -36,4 +36,9 @@ pub trait RateLimitBackend: Send + Sync {
     fn is_healthy(&self) -> bool {
         true
     }
+
+    /// Peek at the current accumulated value for a metric (read-only, no increment).
+    fn peek(&self, _key: &str, _metric: &QuotaMetric) -> u64 {
+        0
+    }
 }

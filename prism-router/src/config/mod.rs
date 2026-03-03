@@ -266,6 +266,11 @@ pub fn load_config(path: &std::path::Path) -> Result<PrismConfig, String> {
     FileSource::new(path).load().map_err(|e| e.to_string())
 }
 
+/// Parse a YAML string into PrismConfig (for validation without file I/O).
+pub fn load_config_from_str(yaml: &str) -> Result<PrismConfig, String> {
+    serde_yaml::from_str(yaml).map_err(|e| format!("YAML parse error: {}", e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

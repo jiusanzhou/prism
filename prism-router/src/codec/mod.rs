@@ -8,6 +8,7 @@
 pub mod chain;
 pub mod quota_recorder;
 pub mod auth;
+pub mod streaming_quota;
 pub mod retry;
 pub mod usage_extractor;
 pub mod registry;
