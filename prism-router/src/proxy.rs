@@ -170,6 +170,10 @@ pub struct PrismProxy {
     pub request_timeout_secs: u64,
     /// TCP keepalive interval in seconds (0 = disabled).
     pub keepalive_secs: u64,
+    /// Maximum request body size in bytes (0 = unlimited).
+    pub max_request_body_bytes: u64,
+    /// Provider-level circuit breaker.
+    pub circuit_breaker: Option<Arc<crate::circuit_breaker::CircuitBreaker>>,
 }
 
 impl PrismProxy {
@@ -184,6 +188,8 @@ impl PrismProxy {
             concurrency_limiter: None,
             request_timeout_secs: 300,
             keepalive_secs: 60,
+            max_request_body_bytes: 0,
+            circuit_breaker: None,
         }
     }
 
@@ -202,6 +208,8 @@ impl PrismProxy {
             concurrency_limiter: None,
             request_timeout_secs: 300,
             keepalive_secs: 60,
+            max_request_body_bytes: 0,
+            circuit_breaker: None,
         }
     }
 
@@ -227,6 +235,18 @@ impl PrismProxy {
     pub fn with_timeouts(mut self, request_timeout_secs: u64, keepalive_secs: u64) -> Self {
         self.request_timeout_secs = request_timeout_secs;
         self.keepalive_secs = keepalive_secs;
+        self
+    }
+
+    /// Set maximum request body size.
+    pub fn with_max_request_body(mut self, max_bytes: u64) -> Self {
+        self.max_request_body_bytes = max_bytes;
+        self
+    }
+
+    /// Set circuit breaker.
+    pub fn with_circuit_breaker(mut self, cb: Arc<crate::circuit_breaker::CircuitBreaker>) -> Self {
+        self.circuit_breaker = Some(cb);
         self
     }
 
@@ -440,6 +460,45 @@ impl ProxyHttp for PrismProxy {
             }
         }
 
+        // Request body size limit check
+        if self.max_request_body_bytes > 0 {
+            if let Some(content_length) = session
+                .req_header()
+                .headers
+                .get("content-length")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+            {
+                if content_length > self.max_request_body_bytes {
+                    warn!(
+                        content_length = %content_length,
+                        limit = %self.max_request_body_bytes,
+                        "Request body too large"
+                    );
+                    ctx.response_flags.push("BL".to_string());
+                    let header =
+                        pingora::http::ResponseHeader::build(413, None).unwrap();
+                    let body = serde_json::json!({
+                        "error": {
+                            "type": "request_body_too_large",
+                            "message": format!("Request body size {} exceeds limit {}", content_length, self.max_request_body_bytes),
+                            "limit": self.max_request_body_bytes,
+                        }
+                    });
+                    session.set_keepalive(None);
+                    session
+                        .write_response_header(Box::new(header), true)
+                        .await
+                        .ok();
+                    session
+                        .write_response_body(Some(Bytes::from(body.to_string())), true)
+                        .await
+                        .ok();
+                    return Ok(true);
+                }
+            }
+        }
+
         // Concurrency limit check — after rate limit, before routing
         if let Some(ref concurrency_limiter) = self.concurrency_limiter {
             let headers: Vec<(String, String)> = ctx
@@ -523,6 +582,32 @@ impl ProxyHttp for PrismProxy {
         match router.route(&request) {
             Ok(decision) => {
                 ctx.decision_time_us = Some(route_start.elapsed().as_micros() as u64);
+
+                // Circuit breaker check
+                if let Some(ref cb) = self.circuit_breaker {
+                    use crate::circuit_breaker::CircuitState;
+                    match cb.check(&decision.selected_provider) {
+                        CircuitState::Open => {
+                            warn!(
+                                provider = %decision.selected_provider,
+                                "Circuit breaker OPEN — rejecting request"
+                            );
+                            ctx.response_flags.push("CB".to_string());
+                            ctx.error_message = Some(format!("circuit breaker open for provider {}", decision.selected_provider));
+                            return Err(pingora::Error::explain(
+                                pingora::ErrorType::ConnectProxyFailure,
+                                format!("circuit breaker open for provider {}", decision.selected_provider),
+                            ));
+                        }
+                        CircuitState::HalfOpen => {
+                            info!(
+                                provider = %decision.selected_provider,
+                                "Circuit breaker HALF-OPEN — allowing probe request"
+                            );
+                        }
+                        CircuitState::Closed => {}
+                    }
+                }
                 ctx.selected_variant = Some(decision.selected_variant.clone());
                 ctx.selected_provider = Some(decision.selected_provider.clone());
                 ctx.selected_model = Some(decision.selected_model.clone());

@@ -98,6 +98,8 @@ impl ConfigSource for EnvSource {
                                 timeout_ms: None,
                                 protocols: vec![],
                                 headers: HashMap::new(),
+                                circuit_breaker_threshold: 5,
+                                circuit_breaker_recovery_secs: 30,
                             });
 
                     match field {

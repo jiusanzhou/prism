@@ -27,6 +27,8 @@ mod protocol;
 mod proxy;
 #[cfg(feature = "proxy")]
 pub mod ratelimit;
+#[cfg(feature = "proxy")]
+mod circuit_breaker;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -296,6 +298,28 @@ async fn main() {
                 None
             };
 
+            // Build circuit breaker
+            let circuit_breaker = {
+                use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+                let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default()));
+                // Apply per-provider overrides from config
+                for (provider_id, provider_cfg) in &config.providers {
+                    if provider_cfg.circuit_breaker_threshold != 5
+                        || provider_cfg.circuit_breaker_recovery_secs != 30
+                    {
+                        cb.set_provider_config(
+                            provider_id,
+                            CircuitBreakerConfig {
+                                threshold: provider_cfg.circuit_breaker_threshold,
+                                recovery_secs: provider_cfg.circuit_breaker_recovery_secs,
+                            },
+                        );
+                    }
+                }
+                info!("  Circuit breaker → enabled");
+                cb
+            };
+
             // Build access logger from config
             let access_logger = if config.access_log.enabled {
                 use crate::access_log::AccessLogger;
@@ -332,6 +356,9 @@ async fn main() {
             if let Some(concurrency) = concurrency_limiter {
                 prism_proxy = prism_proxy.with_concurrency_limiter(concurrency);
             }
+            prism_proxy = prism_proxy
+                .with_circuit_breaker(circuit_breaker)
+                .with_max_request_body(config.server.max_request_body_bytes);
             let prism_proxy = prism_proxy;
 
             // Pingora runs in its own thread
