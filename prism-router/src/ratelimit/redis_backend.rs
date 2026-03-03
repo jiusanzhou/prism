@@ -1,8 +1,4 @@
 //! Redis-backed rate limit backend — distributed sliding window.
-//!
-//! Uses Redis Sorted Sets + Lua scripts for atomic sliding window counting.
-//! Automatically falls back to [`LocalBackend`](super::local::LocalBackend)
-//! when Redis is unavailable.
 
 #[cfg(feature = "redis")]
 mod inner {
@@ -17,19 +13,15 @@ mod inner {
 
     use super::super::backend::RateLimitBackend;
     use super::super::local::LocalBackend;
+    use super::super::quota::{Quota, QuotaDenied, QuotaMetric};
 
-    /// Degradation policy when Redis is unavailable.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum DegradationPolicy {
-        /// Allow all requests (fail-open).
         Allow,
-        /// Deny all requests (fail-closed).
         Deny,
-        /// Fall back to local in-memory counting.
         Local,
     }
 
-    /// Redis configuration for the rate limit backend.
     #[derive(Debug, Clone)]
     pub struct RedisConfig {
         pub url: String,
@@ -47,17 +39,9 @@ mod inner {
         }
     }
 
-    /// Redis-backed rate limit backend.
-    ///
-    /// Uses Lua scripts for atomic operations:
-    /// - `sliding_window.lua` — check + increment request count
-    /// - `check_tokens.lua` — check token count
-    /// - `record_tokens.lua` — increment token count
     pub struct RedisBackend {
         client: ConnectionManager,
-        check_script: Script,
-        token_check_script: Script,
-        token_record_script: Script,
+        request_script: Script,
         key_prefix: String,
         degradation_policy: DegradationPolicy,
         fallback: LocalBackend,
@@ -66,11 +50,9 @@ mod inner {
 
     #[allow(dead_code)]
     impl RedisBackend {
-        /// Create a new Redis backend. Blocks briefly to establish connection.
         pub async fn new(config: &RedisConfig) -> Result<Self, String> {
             let client = redis::Client::open(config.url.as_str())
                 .map_err(|e| format!("Redis client error: {}", e))?;
-
             let manager = client
                 .get_connection_manager()
                 .await
@@ -78,9 +60,7 @@ mod inner {
 
             Ok(Self {
                 client: manager,
-                check_script: Script::new(include_str!("lua/sliding_window.lua")),
-                token_check_script: Script::new(include_str!("lua/check_tokens.lua")),
-                token_record_script: Script::new(include_str!("lua/record_tokens.lua")),
+                request_script: Script::new(include_str!("lua/sliding_window.lua")),
                 key_prefix: config.key_prefix.clone(),
                 degradation_policy: config.degradation_policy,
                 fallback: LocalBackend::new(),
@@ -88,12 +68,8 @@ mod inner {
             })
         }
 
-        fn request_key(&self, key: &str) -> String {
-            format!("{}:{}", self.key_prefix, key)
-        }
-
-        fn token_key(&self, key: &str) -> String {
-            format!("{}:{}:tokens", self.key_prefix, key)
+        fn metric_key(&self, key: &str, metric: &QuotaMetric) -> String {
+            format!("{}:{}:{}", self.key_prefix, key, metric.key_suffix())
         }
 
         fn now_secs() -> u64 {
@@ -115,88 +91,117 @@ mod inner {
             }
         }
 
-        /// Perform the Redis check asynchronously.
-        async fn check_async(
+        /// Check all quotas asynchronously.
+        async fn check_quotas_async(
             &self,
             key: &str,
             window_secs: u64,
-            max_requests: u64,
-            max_tokens: Option<u64>,
-        ) -> Result<(), u64> {
-            let rkey = self.request_key(key);
+            quotas: &[Quota],
+        ) -> Result<(), QuotaDenied> {
             let now = Self::now_secs();
 
-            // Check request count
-            let result: Result<Vec<i64>, _> = self
-                .check_script
-                .key(&rkey)
-                .arg(window_secs)
-                .arg(max_requests)
-                .arg(now)
-                .invoke_async(&mut self.client.clone())
-                .await;
+            for quota in quotas {
+                let rkey = self.metric_key(key, &quota.metric);
 
-            match result {
-                Ok(vals) if vals.len() >= 3 => {
-                    self.mark_healthy();
-                    if vals[0] == 0 {
-                        return Err(vals[2] as u64);
-                    }
-                    // Check token limit if configured
-                    if let Some(max_tok) = max_tokens {
-                        let tkey = self.token_key(key);
-                        let tok_result: Result<Vec<i64>, _> = self
-                            .token_check_script
-                            .key(&tkey)
-                            .arg(max_tok)
-                            .invoke_async(&mut self.client.clone())
-                            .await;
+                if quota.metric.is_pre_check() {
+                    // Requests: atomic check + increment via Lua
+                    let result: Result<Vec<i64>, _> = self
+                        .request_script
+                        .key(&rkey)
+                        .arg(window_secs)
+                        .arg(quota.limit)
+                        .arg(now)
+                        .invoke_async(&mut self.client.clone())
+                        .await;
 
-                        match tok_result {
-                            Ok(vals) if vals.len() >= 2 && vals[0] == 0 => {
-                                // Token limit exceeded — calculate retry_after
-                                let retry = window_secs.saturating_sub(now.saturating_sub(
-                                    now.saturating_sub(window_secs),
-                                ));
-                                return Err(retry);
-                            }
-                            Ok(_) => {} // tokens OK
-                            Err(e) => {
-                                warn!("Redis token check failed: {}", e);
-                                // Continue — request count already passed
+                    match result {
+                        Ok(vals) if vals.len() >= 3 => {
+                            self.mark_healthy();
+                            if vals[0] == 0 {
+                                return Err(QuotaDenied {
+                                    metric: quota.metric.clone(),
+                                    current: vals[1] as u64,
+                                    limit: quota.limit,
+                                    retry_after_secs: vals[2] as u64,
+                                });
                             }
                         }
+                        Ok(_) | Err(_) => {
+                            self.mark_unhealthy();
+                            return Err(QuotaDenied {
+                                metric: quota.metric.clone(),
+                                current: 0,
+                                limit: quota.limit,
+                                retry_after_secs: 0,
+                            });
+                        }
                     }
-                    Ok(())
-                }
-                Ok(vals) => {
-                    warn!("Redis script returned unexpected result: {:?}", vals);
-                    self.mark_unhealthy();
-                    Err(0) // Degrade
-                }
-                Err(e) => {
-                    warn!("Redis check_and_increment failed: {}", e);
-                    self.mark_unhealthy();
-                    Err(0) // Signal degradation
+                } else {
+                    // Post-record metrics: GET current value and compare
+                    let result: Result<Option<u64>, _> = redis::cmd("GET")
+                        .arg(&rkey)
+                        .query_async(&mut self.client.clone())
+                        .await;
+
+                    match result {
+                        Ok(Some(current)) => {
+                            self.mark_healthy();
+                            if current >= quota.limit {
+                                let retry = window_secs; // approximate
+                                return Err(QuotaDenied {
+                                    metric: quota.metric.clone(),
+                                    current,
+                                    limit: quota.limit,
+                                    retry_after_secs: retry,
+                                });
+                            }
+                        }
+                        Ok(None) => {
+                            self.mark_healthy();
+                            // No value yet — within limit
+                        }
+                        Err(e) => {
+                            warn!("Redis GET failed for {}: {}", rkey, e);
+                            self.mark_unhealthy();
+                            return Err(QuotaDenied {
+                                metric: quota.metric.clone(),
+                                current: 0,
+                                limit: quota.limit,
+                                retry_after_secs: 0,
+                            });
+                        }
+                    }
                 }
             }
+
+            Ok(())
         }
 
-        /// Record tokens asynchronously.
-        async fn record_tokens_async(&self, key: &str, tokens: u64, window_secs: u64) {
-            let tkey = self.token_key(key);
-            let result: Result<i64, _> = self
-                .token_record_script
-                .key(&tkey)
-                .arg(tokens)
-                .arg(window_secs)
-                .invoke_async(&mut self.client.clone())
+        /// Record a metric value asynchronously.
+        async fn record_metric_async(&self, key: &str, metric: &QuotaMetric, value: u64, window_secs: u64) {
+            let rkey = self.metric_key(key, metric);
+
+            // Use INCRBY + EXPIRE for post-record metrics
+            let result: Result<u64, _> = redis::cmd("INCRBY")
+                .arg(&rkey)
+                .arg(value)
+                .query_async(&mut self.client.clone())
                 .await;
 
             match result {
-                Ok(_) => self.mark_healthy(),
+                Ok(new_val) => {
+                    self.mark_healthy();
+                    // Set TTL if this is the first increment
+                    if new_val == value {
+                        let _: Result<(), _> = redis::cmd("EXPIRE")
+                            .arg(&rkey)
+                            .arg(window_secs + 1)
+                            .query_async(&mut self.client.clone())
+                            .await;
+                    }
+                }
                 Err(e) => {
-                    warn!("Redis record_tokens failed: {}", e);
+                    warn!("Redis INCRBY failed for {}: {}", rkey, e);
                     self.mark_unhealthy();
                 }
             }
@@ -204,86 +209,78 @@ mod inner {
     }
 
     impl RateLimitBackend for RedisBackend {
-        fn check_and_increment(
+        fn check_quotas(
             &self,
             key: &str,
             window_secs: u64,
-            max_requests: u64,
-            max_tokens: Option<u64>,
-        ) -> Result<(), u64> {
-            // Try to run async Redis call from sync context
+            quotas: &[Quota],
+        ) -> Result<(), QuotaDenied> {
             let handle = match Handle::try_current() {
                 Ok(h) => h,
-                Err(_) => {
-                    // No tokio runtime — fall back
-                    return self
-                        .fallback
-                        .check_and_increment(key, window_secs, max_requests, max_tokens);
-                }
+                Err(_) => return self.fallback.check_quotas(key, window_secs, quotas),
             };
 
-            // Use block_in_place to run async from sync trait method
             let result = tokio::task::block_in_place(|| {
-                handle.block_on(self.check_async(key, window_secs, max_requests, max_tokens))
+                handle.block_on(self.check_quotas_async(key, window_secs, quotas))
             });
 
             match result {
                 Ok(()) => Ok(()),
-                Err(retry) if !self.is_healthy() => {
-                    // Redis failed — apply degradation policy
+                Err(denied) if !self.is_healthy() => {
                     match self.degradation_policy {
                         DegradationPolicy::Allow => Ok(()),
-                        DegradationPolicy::Deny => Err(retry),
-                        DegradationPolicy::Local => self
-                            .fallback
-                            .check_and_increment(key, window_secs, max_requests, max_tokens),
+                        DegradationPolicy::Deny => Err(denied),
+                        DegradationPolicy::Local => self.fallback.check_quotas(key, window_secs, quotas),
                     }
                 }
-                Err(retry) => Err(retry), // Legitimate rate limit hit
+                Err(denied) => Err(denied),
             }
         }
 
-        fn record_tokens(&self, key: &str, tokens: u64) {
+        fn record_metric(&self, key: &str, metric: &QuotaMetric, value: u64) {
+            // Also record locally for fallback
+            self.fallback.record_metric(key, metric, value);
+
             let handle = match Handle::try_current() {
                 Ok(h) => h,
-                Err(_) => {
-                    self.fallback.record_tokens(key, tokens);
-                    return;
-                }
+                Err(_) => return,
             };
 
-            // Fire-and-forget with fallback
-            // Use a reasonable default window for token TTL
-            let tkey = self.token_key(key);
+            let rkey = self.metric_key(key, metric);
             let mut client = self.client.clone();
-            let script = self.token_record_script.clone();
             let healthy = Arc::clone(&self.healthy);
-            let fallback_key = key.to_string();
-            let fallback = &self.fallback;
-
-            // Also record locally for fallback
-            fallback.record_tokens(key, tokens);
 
             tokio::task::block_in_place(|| {
                 handle.block_on(async {
-                    let result: Result<i64, _> = script
-                        .key(&tkey)
-                        .arg(tokens)
-                        .arg(60u64) // default window for TTL
-                        .invoke_async(&mut client)
+                    let result: Result<u64, _> = redis::cmd("INCRBY")
+                        .arg(&rkey)
+                        .arg(value)
+                        .query_async(&mut client)
                         .await;
 
-                    if let Err(e) = result {
-                        warn!("Redis record_tokens failed for {}: {}", fallback_key, e);
-                        healthy.store(false, Ordering::Relaxed);
+                    match result {
+                        Ok(new_val) => {
+                            if !healthy.load(Ordering::Relaxed) {
+                                healthy.store(true, Ordering::Relaxed);
+                            }
+                            if new_val == value {
+                                let _: Result<(), _> = redis::cmd("EXPIRE")
+                                    .arg(&rkey)
+                                    .arg(61u64) // default window + 1
+                                    .query_async(&mut client)
+                                    .await;
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Redis record_metric failed: {}", e);
+                            healthy.store(false, Ordering::Relaxed);
+                        }
                     }
                 });
             });
         }
 
         fn cleanup(&self, max_window_secs: u64) {
-            // Redis handles TTL-based cleanup automatically via EXPIRE.
-            // Clean up local fallback.
             self.fallback.cleanup(max_window_secs);
         }
 

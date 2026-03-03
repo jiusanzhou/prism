@@ -1,23 +1,30 @@
 //! Pluggable rate limit backend trait.
 
+use super::quota::{Quota, QuotaDenied, QuotaMetric};
+
 /// Rate limit counting backend — pluggable implementations.
 ///
 /// Built-in: [`LocalBackend`](super::local::LocalBackend) (in-memory DashMap).
 /// Optional: `RedisBackend` (feature-gated behind `redis`).
 pub trait RateLimitBackend: Send + Sync {
-    /// Check the rate limit for `key` against the given limits.
-    /// On success, increments the request counter and returns `Ok(())`.
-    /// On failure, returns `Err(retry_after_secs)`.
-    fn check_and_increment(
+    /// Check all quotas for a key within the given window.
+    ///
+    /// - `Requests` quota: atomically increments and checks (pre-check).
+    /// - All other quotas: checks current recorded value against limit (post-record).
+    ///
+    /// Returns `Ok(())` if all quotas pass, or `Err(QuotaDenied)` with the first
+    /// quota that was exceeded.
+    fn check_quotas(
         &self,
         key: &str,
         window_secs: u64,
-        max_requests: u64,
-        max_tokens: Option<u64>,
-    ) -> Result<(), u64>;
+        quotas: &[Quota],
+    ) -> Result<(), QuotaDenied>;
 
-    /// Record token usage for a key (called from the response phase).
-    fn record_tokens(&self, key: &str, tokens: u64);
+    /// Record a metric value (called from the response phase).
+    ///
+    /// Used for post-record metrics like tokens, cost, etc.
+    fn record_metric(&self, key: &str, metric: &QuotaMetric, value: u64);
 
     /// Remove entries whose window has expired.
     fn cleanup(&self, max_window_secs: u64);
