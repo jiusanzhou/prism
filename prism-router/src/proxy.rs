@@ -106,6 +106,8 @@ pub struct ProxyContext {
     pub upstream_request_attempt_count: u32,
     /// Request ID (generated or from X-Request-ID header).
     pub request_id: String,
+    /// Fallback chain from routing decision for retry/failover.
+    pub retry_fallback_chain: Vec<String>,
 }
 
 impl Default for ProxyContext {
@@ -149,6 +151,7 @@ impl Default for ProxyContext {
             global_codec_ctx: None,
             upstream_request_attempt_count: 1,
             request_id: String::new(),
+            retry_fallback_chain: Vec::new(),
         }
     }
 }
@@ -317,6 +320,11 @@ impl PrismProxy {
         ctx.selected_variant = Some(decision.selected_variant.clone());
         ctx.selected_provider = Some(decision.selected_provider.clone());
         ctx.selected_model = Some(decision.selected_model.clone());
+
+        // Store fallback chain for retry plugin
+        if !decision.fallback_chain.is_empty() {
+            ctx.retry_fallback_chain = decision.fallback_chain.clone();
+        }
 
         // Look up provider
         let provider = router.registry.providers.get(&decision.selected_provider);
@@ -850,6 +858,11 @@ impl ProxyHttp for PrismProxy {
                 ctx.selected_variant = Some(decision.selected_variant.clone());
                 ctx.selected_provider = Some(decision.selected_provider.clone());
                 ctx.selected_model = Some(decision.selected_model.clone());
+
+                // Store fallback chain for retry plugin
+                if !decision.fallback_chain.is_empty() {
+                    ctx.retry_fallback_chain = decision.fallback_chain.clone();
+                }
 
                 // Look up upstream_model_name from the variant
                 if let Some(variant) = router.registry.variants.get(&decision.selected_variant) {
