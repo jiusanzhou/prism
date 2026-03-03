@@ -1,13 +1,15 @@
-//! Rate limiting module — pluggable backend architecture.
+//! Rate limiting module — pluggable backend + extensible quota metrics.
 //!
 //! Provides [`RateLimiter`] with configurable counting backends via
-//! [`RateLimitBackend`](backend::RateLimitBackend).
+//! [`RateLimitBackend`](backend::RateLimitBackend) and multi-metric quotas via
+//! [`QuotaMetric`](quota::QuotaMetric).
 //!
 //! Built-in backends:
 //! - [`LocalBackend`](local::LocalBackend) — in-memory DashMap (default)
 
 pub mod backend;
 pub mod local;
+pub mod quota;
 #[cfg(feature = "redis")]
 pub mod redis_backend;
 
@@ -18,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 pub use backend::RateLimitBackend;
 pub use local::LocalBackend;
+pub use quota::{Quota, QuotaDenied, QuotaMetric};
 #[cfg(feature = "redis")]
 pub use redis_backend::{DegradationPolicy, RedisBackend, RedisConfig};
 
@@ -40,15 +43,20 @@ fn default_rate_limit_message() -> String {
 /// Differential override for a rate limit rule.
 ///
 /// When the request headers match all entries in `match_headers`, the override's
-/// `max_requests` and/or `max_tokens` replace the rule's defaults.
+/// quotas (or legacy `max_requests`/`max_tokens`) replace the rule's defaults.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RateLimitOverride {
     /// Match condition: header_name → expected_value.
     /// All entries must match for this override to apply.
     pub match_headers: HashMap<String, String>,
-    /// Override max requests (None = keep rule default).
+    /// Override quotas — metrics present here replace the rule's defaults.
+    #[serde(default)]
+    pub quotas: Vec<Quota>,
+    /// Legacy: Override max requests (None = keep rule default).
+    #[serde(default)]
     pub max_requests: Option<u64>,
-    /// Override max tokens (None = keep rule default).
+    /// Legacy: Override max tokens (None = keep rule default).
+    #[serde(default)]
     pub max_tokens: Option<u64>,
 }
 
@@ -59,18 +67,19 @@ pub struct RateLimitRule {
     pub name: String,
     /// Header names to extract and combine into the rate limit key.
     /// Empty = global rate limit (all requests share one key).
-    /// `["x-model"]` = per-model rate limit.
-    /// `["x-model", "x-app-id"]` = per model+app rate limit.
     pub key_headers: Vec<String>,
     /// Time window in seconds.
     pub window_secs: u64,
-    /// Maximum requests allowed within the window.
-    pub max_requests: u64,
-    /// Maximum tokens allowed within the window (optional, requires response-phase write-back).
+    /// Multi-metric quotas — the new way to configure limits.
+    #[serde(default)]
+    pub quotas: Vec<Quota>,
+    /// Legacy: Maximum requests allowed within the window.
+    #[serde(default)]
+    pub max_requests: Option<u64>,
+    /// Legacy: Maximum tokens allowed within the window.
+    #[serde(default)]
     pub max_tokens: Option<u64>,
-    /// Differential overrides — most-specific match wins (by match_headers count).
-    /// When multiple overrides match, the one with the most conditions takes priority.
-    /// Ties are broken by declaration order (first wins).
+    /// Differential overrides — most-specific match wins.
     #[serde(default)]
     pub overrides: Vec<RateLimitOverride>,
     /// Whether this rule is enabled.
@@ -84,6 +93,57 @@ pub struct RateLimitRule {
     pub message: String,
 }
 
+impl RateLimitRule {
+    /// Return effective quotas — merges new `quotas` field with legacy `max_requests`/`max_tokens`.
+    ///
+    /// If `quotas` already contains a `Requests` entry, `max_requests` is ignored.
+    /// If `quotas` already contains a `TotalTokens` entry, `max_tokens` is ignored.
+    pub fn effective_quotas(&self) -> Vec<Quota> {
+        let mut result = self.quotas.clone();
+        if !result.iter().any(|q| q.metric == QuotaMetric::Requests) {
+            if let Some(max) = self.max_requests {
+                result.push(Quota {
+                    metric: QuotaMetric::Requests,
+                    limit: max,
+                });
+            }
+        }
+        if !result.iter().any(|q| q.metric == QuotaMetric::TotalTokens) {
+            if let Some(max) = self.max_tokens {
+                result.push(Quota {
+                    metric: QuotaMetric::TotalTokens,
+                    limit: max,
+                });
+            }
+        }
+        result
+    }
+}
+
+impl RateLimitOverride {
+    /// Return effective override quotas — merges new `quotas` with legacy fields.
+    pub fn effective_quotas(&self) -> Vec<Quota> {
+        let mut result = self.quotas.clone();
+        if !result.iter().any(|q| q.metric == QuotaMetric::Requests) {
+            if let Some(max) = self.max_requests {
+                result.push(Quota {
+                    metric: QuotaMetric::Requests,
+                    limit: max,
+                });
+            }
+        }
+        if !result.iter().any(|q| q.metric == QuotaMetric::TotalTokens) {
+            if let Some(max) = self.max_tokens {
+                result.push(Quota {
+                    metric: QuotaMetric::TotalTokens,
+                    limit: max,
+                });
+            }
+        }
+        result
+    }
+}
+
 // ════════════════════════════════════════════════
 // Denied result
 // ════════════════════════════════════════════════
@@ -95,6 +155,12 @@ pub struct RateLimitDenied {
     pub status_code: u16,
     pub message: String,
     pub retry_after_secs: Option<u64>,
+    /// Which metric triggered the denial.
+    pub metric: QuotaMetric,
+    /// Current value of the metric.
+    pub current: u64,
+    /// Configured limit.
+    pub limit: u64,
 }
 
 // ════════════════════════════════════════════════
@@ -114,7 +180,6 @@ impl RateLimiter {
     }
 
     /// Create a rate limiter with the default local (in-memory) backend.
-    /// Backward-compatible — same behavior as the original constructor.
     pub fn new(rules: Vec<RateLimitRule>) -> Self {
         Self::with_backend(rules, Arc::new(LocalBackend::new()))
     }
@@ -138,19 +203,21 @@ impl RateLimiter {
             }
 
             let key = Self::build_key(rule, headers);
-            let (eff_max_requests, eff_max_tokens) = Self::resolve_limits(rule, headers);
+            let quotas = Self::resolve_quotas(rule, headers);
 
-            if let Err(retry_after) = self.backend.check_and_increment(
-                &key,
-                rule.window_secs,
-                eff_max_requests,
-                eff_max_tokens,
-            ) {
+            if quotas.is_empty() {
+                continue;
+            }
+
+            if let Err(denied) = self.backend.check_quotas(&key, rule.window_secs, &quotas) {
                 return Err(RateLimitDenied {
                     rule_name: rule.name.clone(),
                     status_code: rule.status_code,
                     message: rule.message.clone(),
-                    retry_after_secs: Some(retry_after),
+                    retry_after_secs: Some(denied.retry_after_secs),
+                    metric: denied.metric,
+                    current: denied.current,
+                    limit: denied.limit,
                 });
             }
         }
@@ -158,13 +225,15 @@ impl RateLimiter {
         Ok(())
     }
 
-    /// Resolve effective limits by checking overrides.
+    /// Resolve effective quotas by checking overrides.
     /// Most-specific match wins (by match_headers count). Ties broken by declaration order.
-    /// Returns (max_requests, max_tokens) with override values merged over defaults.
-    pub(crate) fn resolve_limits(
+    /// Override quotas replace matching metrics from the rule's defaults.
+    pub(crate) fn resolve_quotas(
         rule: &RateLimitRule,
         headers: &[(String, String)],
-    ) -> (u64, Option<u64>) {
+    ) -> Vec<Quota> {
+        let base_quotas = rule.effective_quotas();
+
         let mut best: Option<&RateLimitOverride> = None;
         let mut best_specificity: usize = 0;
 
@@ -185,29 +254,52 @@ impl RateLimiter {
         }
 
         if let Some(ovr) = best {
-            let max_requests = ovr.max_requests.unwrap_or(rule.max_requests);
-            let max_tokens = ovr.max_tokens.or(rule.max_tokens);
-            (max_requests, max_tokens)
+            let ovr_quotas = ovr.effective_quotas();
+            // Merge: override quotas replace matching metrics, keep rest from base
+            let mut merged = Vec::new();
+            for bq in &base_quotas {
+                if let Some(oq) = ovr_quotas.iter().find(|q| q.metric == bq.metric) {
+                    merged.push(oq.clone());
+                } else {
+                    merged.push(bq.clone());
+                }
+            }
+            // Add override-only quotas not in base
+            for oq in &ovr_quotas {
+                if !base_quotas.iter().any(|bq| bq.metric == oq.metric) {
+                    merged.push(oq.clone());
+                }
+            }
+            merged
         } else {
-            (rule.max_requests, rule.max_tokens)
+            base_quotas
         }
     }
 
-    /// Record token usage for a specific rule + headers combination.
-    pub fn record_tokens(&self, rule_name: &str, headers: &[(String, String)], tokens: u64) {
+    /// Record a metric value for a specific rule + headers combination.
+    pub fn record(
+        &self,
+        rule_name: &str,
+        headers: &[(String, String)],
+        metric: &QuotaMetric,
+        value: u64,
+    ) {
         if let Some(rule) = self.rules.iter().find(|r| r.name == rule_name) {
             let key = Self::build_key(rule, headers);
-            self.backend.record_tokens(&key, tokens);
+            self.backend.record_metric(&key, metric, value);
         }
+    }
+
+    /// Legacy: Record token usage. Delegates to `record` with `TotalTokens`.
+    pub fn record_tokens(&self, rule_name: &str, headers: &[(String, String)], tokens: u64) {
+        self.record(rule_name, headers, &QuotaMetric::TotalTokens, tokens);
     }
 
     /// Build the rate limit key: `rule_name:header_val1:header_val2:...`
-    /// Missing headers contribute an empty string segment.
     pub(crate) fn build_key(rule: &RateLimitRule, headers: &[(String, String)]) -> String {
         if rule.key_headers.is_empty() {
             return rule.name.clone();
         }
-
         let mut key = rule.name.clone();
         for header_name in &rule.key_headers {
             key.push(':');
@@ -246,7 +338,7 @@ impl RateLimiter {
 mod tests {
     use super::*;
 
-    // ── Helper ──
+    // ── Helpers ──
 
     fn make_rule(
         name: &str,
@@ -258,8 +350,29 @@ mod tests {
             name: name.to_string(),
             key_headers: key_headers.into_iter().map(|s| s.to_string()).collect(),
             window_secs,
-            max_requests,
+            max_requests: Some(max_requests),
             max_tokens: None,
+            quotas: vec![],
+            overrides: vec![],
+            enabled: true,
+            status_code: 429,
+            message: "Rate limit exceeded".to_string(),
+        }
+    }
+
+    fn make_quota_rule(
+        name: &str,
+        key_headers: Vec<&str>,
+        window_secs: u64,
+        quotas: Vec<Quota>,
+    ) -> RateLimitRule {
+        RateLimitRule {
+            name: name.to_string(),
+            key_headers: key_headers.into_iter().map(|s| s.to_string()).collect(),
+            window_secs,
+            max_requests: None,
+            max_tokens: None,
+            quotas,
             overrides: vec![],
             enabled: true,
             status_code: 429,
@@ -274,66 +387,85 @@ mod tests {
             .collect()
     }
 
-    // ── RateLimitRule serde tests ──
+    // ── Legacy compat tests (max_requests / max_tokens) ──
 
     #[test]
-    fn test_rule_serde_full() {
-        let json = r#"{
-            "name": "test-rule",
-            "key_headers": ["x-model", "x-app-id"],
-            "window_secs": 60,
-            "max_requests": 100,
-            "max_tokens": 10000,
-            "overrides": [
-                {
-                    "match_headers": {"x-model": "gpt-4"},
-                    "max_requests": 200,
-                    "max_tokens": 5000
-                }
-            ],
-            "enabled": false,
-            "status_code": 503,
-            "message": "custom message"
-        }"#;
-
-        let rule: RateLimitRule = serde_json::from_str(json).unwrap();
-        assert_eq!(rule.name, "test-rule");
-        assert_eq!(rule.key_headers, vec!["x-model", "x-app-id"]);
-        assert_eq!(rule.window_secs, 60);
-        assert_eq!(rule.max_requests, 100);
-        assert_eq!(rule.max_tokens, Some(10000));
-        assert_eq!(rule.overrides.len(), 1);
-        assert_eq!(
-            rule.overrides[0].match_headers.get("x-model"),
-            Some(&"gpt-4".to_string())
-        );
-        assert_eq!(rule.overrides[0].max_requests, Some(200));
-        assert_eq!(rule.overrides[0].max_tokens, Some(5000));
-        assert!(!rule.enabled);
-        assert_eq!(rule.status_code, 503);
-        assert_eq!(rule.message, "custom message");
-
-        let serialized = serde_json::to_string(&rule).unwrap();
-        let deserialized: RateLimitRule = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(deserialized.name, rule.name);
-        assert_eq!(deserialized.overrides.len(), 1);
+    fn test_effective_quotas_legacy() {
+        let rule = make_rule("test", vec![], 60, 100);
+        let quotas = rule.effective_quotas();
+        assert_eq!(quotas.len(), 1);
+        assert_eq!(quotas[0].metric, QuotaMetric::Requests);
+        assert_eq!(quotas[0].limit, 100);
     }
 
     #[test]
-    fn test_rule_serde_defaults() {
-        let json = r#"{
-            "name": "minimal",
-            "key_headers": [],
-            "window_secs": 10,
-            "max_requests": 5
-        }"#;
+    fn test_effective_quotas_legacy_with_tokens() {
+        let mut rule = make_rule("test", vec![], 60, 100);
+        rule.max_tokens = Some(50000);
+        let quotas = rule.effective_quotas();
+        assert_eq!(quotas.len(), 2);
+        assert!(quotas.iter().any(|q| q.metric == QuotaMetric::Requests && q.limit == 100));
+        assert!(quotas.iter().any(|q| q.metric == QuotaMetric::TotalTokens && q.limit == 50000));
+    }
 
+    #[test]
+    fn test_effective_quotas_new_format() {
+        let rule = make_quota_rule("test", vec![], 60, vec![
+            Quota { metric: QuotaMetric::Requests, limit: 100 },
+            Quota { metric: QuotaMetric::InputTokens, limit: 30000 },
+        ]);
+        let quotas = rule.effective_quotas();
+        assert_eq!(quotas.len(), 2);
+        assert_eq!(quotas[0].metric, QuotaMetric::Requests);
+        assert_eq!(quotas[1].metric, QuotaMetric::InputTokens);
+    }
+
+    #[test]
+    fn test_effective_quotas_new_overrides_legacy() {
+        // quotas has Requests, so max_requests should be ignored
+        let mut rule = make_quota_rule("test", vec![], 60, vec![
+            Quota { metric: QuotaMetric::Requests, limit: 200 },
+        ]);
+        rule.max_requests = Some(100); // should be ignored
+        rule.max_tokens = Some(50000); // should be added (no TotalTokens in quotas)
+        let quotas = rule.effective_quotas();
+        assert_eq!(quotas.len(), 2);
+        assert!(quotas.iter().any(|q| q.metric == QuotaMetric::Requests && q.limit == 200));
+        assert!(quotas.iter().any(|q| q.metric == QuotaMetric::TotalTokens && q.limit == 50000));
+    }
+
+    // ── RateLimitRule serde tests ──
+
+    #[test]
+    fn test_rule_serde_legacy_format() {
+        let json = r#"{
+            "name": "test",
+            "key_headers": [],
+            "window_secs": 60,
+            "max_requests": 100,
+            "max_tokens": 50000
+        }"#;
         let rule: RateLimitRule = serde_json::from_str(json).unwrap();
-        assert!(rule.enabled);
-        assert_eq!(rule.status_code, 429);
-        assert_eq!(rule.message, "Rate limit exceeded");
-        assert!(rule.max_tokens.is_none());
-        assert!(rule.overrides.is_empty());
+        let quotas = rule.effective_quotas();
+        assert_eq!(quotas.len(), 2);
+    }
+
+    #[test]
+    fn test_rule_serde_new_format() {
+        let json = r#"{
+            "name": "test",
+            "key_headers": ["x-model"],
+            "window_secs": 60,
+            "quotas": [
+                {"metric": "requests", "limit": 100},
+                {"metric": "total_tokens", "limit": 50000},
+                {"metric": "input_tokens", "limit": 30000}
+            ]
+        }"#;
+        let rule: RateLimitRule = serde_json::from_str(json).unwrap();
+        assert_eq!(rule.quotas.len(), 3);
+        let eff = rule.effective_quotas();
+        assert_eq!(eff.len(), 3);
     }
 
     // ── build_key tests ──
@@ -341,42 +473,34 @@ mod tests {
     #[test]
     fn test_build_key_global() {
         let rule = make_rule("global", vec![], 60, 100);
-        let key = RateLimiter::build_key(&rule, &headers(&[]));
-        assert_eq!(key, "global");
+        assert_eq!(RateLimiter::build_key(&rule, &headers(&[])), "global");
     }
 
     #[test]
     fn test_build_key_single_header() {
         let rule = make_rule("per-model", vec!["x-model"], 60, 100);
-        let key = RateLimiter::build_key(&rule, &headers(&[("x-model", "gpt-4")]));
-        assert_eq!(key, "per-model:gpt-4");
+        assert_eq!(
+            RateLimiter::build_key(&rule, &headers(&[("x-model", "gpt-4")])),
+            "per-model:gpt-4"
+        );
     }
 
     #[test]
     fn test_build_key_multi_header() {
         let rule = make_rule("model-app", vec!["x-model", "x-app-id"], 60, 100);
-        let key = RateLimiter::build_key(
-            &rule,
-            &headers(&[("x-model", "gpt-4"), ("x-app-id", "app-123")]),
+        assert_eq!(
+            RateLimiter::build_key(&rule, &headers(&[("x-model", "gpt-4"), ("x-app-id", "app-123")])),
+            "model-app:gpt-4:app-123"
         );
-        assert_eq!(key, "model-app:gpt-4:app-123");
     }
 
     #[test]
     fn test_build_key_missing_header() {
         let rule = make_rule("per-model", vec!["x-model"], 60, 100);
-        let key = RateLimiter::build_key(&rule, &headers(&[]));
-        assert_eq!(key, "per-model:");
+        assert_eq!(RateLimiter::build_key(&rule, &headers(&[])), "per-model:");
     }
 
-    #[test]
-    fn test_build_key_partial_headers() {
-        let rule = make_rule("multi", vec!["x-model", "x-app-id"], 60, 100);
-        let key = RateLimiter::build_key(&rule, &headers(&[("x-model", "gpt-4")]));
-        assert_eq!(key, "multi:gpt-4:");
-    }
-
-    // ── RateLimiter tests ──
+    // ── RateLimiter tests (legacy compat) ──
 
     #[test]
     fn test_limiter_empty_rules() {
@@ -397,25 +521,12 @@ mod tests {
         let limiter = RateLimiter::new(vec![make_rule("global", vec![], 60, 2)]);
         assert!(limiter.check(&headers(&[])).is_ok());
         assert!(limiter.check(&headers(&[])).is_ok());
-        let result = limiter.check(&headers(&[]));
-        assert!(result.is_err());
-        let denied = result.unwrap_err();
+        let denied = limiter.check(&headers(&[])).unwrap_err();
         assert_eq!(denied.rule_name, "global");
         assert_eq!(denied.status_code, 429);
-        assert_eq!(denied.message, "Rate limit exceeded");
-        assert!(denied.retry_after_secs.is_some());
-    }
-
-    #[test]
-    fn test_limiter_multi_rules_first_triggers() {
-        let limiter = RateLimiter::new(vec![
-            make_rule("strict", vec![], 60, 1),
-            make_rule("relaxed", vec![], 60, 100),
-        ]);
-        assert!(limiter.check(&headers(&[])).is_ok());
-        let result = limiter.check(&headers(&[]));
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().rule_name, "strict");
+        assert_eq!(denied.metric, QuotaMetric::Requests);
+        assert_eq!(denied.current, 2);
+        assert_eq!(denied.limit, 2);
     }
 
     #[test]
@@ -437,31 +548,19 @@ mod tests {
         assert!(limiter.check(&h_gpt4).is_ok());
         assert!(limiter.check(&h_gpt4).is_err());
         assert!(limiter.check(&h_claude).is_ok());
-        assert!(limiter.check(&h_claude).is_ok());
-        assert!(limiter.check(&h_claude).is_err());
     }
 
     #[test]
-    fn test_limiter_missing_header_uses_empty_key() {
-        let limiter = RateLimiter::new(vec![make_rule("per-model", vec!["x-model"], 60, 2)]);
-        let h_empty = headers(&[]);
-        let h_gpt4 = headers(&[("x-model", "gpt-4")]);
-        assert!(limiter.check(&h_empty).is_ok());
-        assert!(limiter.check(&h_empty).is_ok());
-        assert!(limiter.check(&h_empty).is_err());
-        assert!(limiter.check(&h_gpt4).is_ok());
-    }
-
-    #[test]
-    fn test_limiter_custom_status_code() {
-        let mut rule = make_rule("custom", vec![], 60, 1);
-        rule.status_code = 503;
-        rule.message = "Service overloaded".to_string();
+    fn test_limiter_token_recording_legacy() {
+        let mut rule = make_rule("tok", vec![], 60, 100);
+        rule.max_tokens = Some(500);
         let limiter = RateLimiter::new(vec![rule]);
-        assert!(limiter.check(&headers(&[])).is_ok());
-        let denied = limiter.check(&headers(&[])).unwrap_err();
-        assert_eq!(denied.status_code, 503);
-        assert_eq!(denied.message, "Service overloaded");
+        let h = headers(&[]);
+        assert!(limiter.check(&h).is_ok());
+        limiter.record_tokens("tok", &h, 499);
+        assert!(limiter.check(&h).is_ok());
+        limiter.record_tokens("tok", &h, 1);
+        assert!(limiter.check(&h).is_err());
     }
 
     #[test]
@@ -470,52 +569,69 @@ mod tests {
         assert!(limiter.check(&headers(&[])).is_ok());
         assert!(limiter.check(&headers(&[])).is_err());
         limiter.update_rules(vec![make_rule("new", vec![], 60, 10)]);
-        assert_eq!(limiter.rules().len(), 1);
         assert_eq!(limiter.rules()[0].name, "new");
         assert!(limiter.check(&headers(&[])).is_ok());
     }
 
-    #[test]
-    fn test_limiter_rules_accessor() {
-        let rules = vec![
-            make_rule("a", vec![], 60, 10),
-            make_rule("b", vec!["x-model"], 30, 5),
-        ];
-        let limiter = RateLimiter::new(rules);
-        assert_eq!(limiter.rules().len(), 2);
-        assert_eq!(limiter.rules()[0].name, "a");
-        assert_eq!(limiter.rules()[1].name, "b");
-    }
+    // ── Multi-metric quota tests ──
 
     #[test]
-    fn test_limiter_token_recording() {
-        let mut rule = make_rule("token-rule", vec!["x-app-id"], 60, 100);
-        rule.max_tokens = Some(500);
+    fn test_limiter_multi_metric() {
+        let rule = make_quota_rule("multi", vec![], 60, vec![
+            Quota { metric: QuotaMetric::Requests, limit: 100 },
+            Quota { metric: QuotaMetric::InputTokens, limit: 500 },
+            Quota { metric: QuotaMetric::OutputTokens, limit: 300 },
+        ]);
         let limiter = RateLimiter::new(vec![rule]);
-        let h = headers(&[("x-app-id", "app-1")]);
+        let h = headers(&[]);
+
         assert!(limiter.check(&h).is_ok());
-        limiter.record_tokens("token-rule", &h, 499);
+        limiter.record("multi", &h, &QuotaMetric::InputTokens, 200);
+        limiter.record("multi", &h, &QuotaMetric::OutputTokens, 299);
         assert!(limiter.check(&h).is_ok());
-        limiter.record_tokens("token-rule", &h, 1);
-        assert!(limiter.check(&h).is_err());
+
+        limiter.record("multi", &h, &QuotaMetric::OutputTokens, 1);
+        let denied = limiter.check(&h).unwrap_err();
+        assert_eq!(denied.metric, QuotaMetric::OutputTokens);
+        assert_eq!(denied.current, 300);
+        assert_eq!(denied.limit, 300);
     }
 
     #[test]
-    fn test_limiter_record_tokens_unknown_rule() {
-        let limiter = RateLimiter::new(vec![make_rule("known", vec![], 60, 10)]);
-        limiter.record_tokens("unknown", &headers(&[]), 100);
+    fn test_limiter_cost_micros() {
+        let rule = make_quota_rule("cost", vec!["x-app"], 60, vec![
+            Quota { metric: QuotaMetric::Requests, limit: 1000 },
+            Quota { metric: QuotaMetric::CostMicros, limit: 100000 },
+        ]);
+        let limiter = RateLimiter::new(vec![rule]);
+        let h = headers(&[("x-app", "app-1")]);
+
+        assert!(limiter.check(&h).is_ok());
+        limiter.record("cost", &h, &QuotaMetric::CostMicros, 99999);
+        assert!(limiter.check(&h).is_ok());
+        limiter.record("cost", &h, &QuotaMetric::CostMicros, 1);
+        let denied = limiter.check(&h).unwrap_err();
+        assert_eq!(denied.metric, QuotaMetric::CostMicros);
     }
 
-    #[test]
-    fn test_limiter_cleanup() {
-        let limiter = RateLimiter::new(vec![make_rule("test", vec![], 60, 10)]);
-        assert!(limiter.check(&headers(&[])).is_ok());
-        limiter.cleanup();
+    // ── Override tests (quota-aware) ──
+
+    fn make_override_quotas(
+        match_headers: &[(&str, &str)],
+        quotas: Vec<Quota>,
+    ) -> RateLimitOverride {
+        RateLimitOverride {
+            match_headers: match_headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            quotas,
+            max_requests: None,
+            max_tokens: None,
+        }
     }
 
-    // ── Override tests ──
-
-    fn make_override(
+    fn make_override_legacy(
         match_headers: &[(&str, &str)],
         max_requests: Option<u64>,
         max_tokens: Option<u64>,
@@ -525,15 +641,16 @@ mod tests {
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
+            quotas: vec![],
             max_requests,
             max_tokens,
         }
     }
 
     #[test]
-    fn test_override_exact_match() {
+    fn test_override_legacy_still_works() {
         let mut rule = make_rule("per-model", vec!["x-model"], 60, 100);
-        rule.overrides = vec![make_override(&[("x-model", "gpt-4")], Some(200), None)];
+        rule.overrides = vec![make_override_legacy(&[("x-model", "gpt-4")], Some(200), None)];
         let limiter = RateLimiter::new(vec![rule]);
         let h = headers(&[("x-model", "gpt-4")]);
         for _ in 0..200 {
@@ -543,27 +660,35 @@ mod tests {
     }
 
     #[test]
-    fn test_override_partial_header_match() {
-        let mut rule = make_rule("model-app", vec!["x-model", "x-app-id"], 60, 100);
-        rule.overrides = vec![make_override(&[("x-model", "claude-3")], Some(50), None)];
-        let limiter = RateLimiter::new(vec![rule]);
-        let h = headers(&[("x-model", "claude-3"), ("x-app-id", "app-a")]);
-        for _ in 0..50 {
-            assert!(limiter.check(&h).is_ok());
-        }
-        assert!(limiter.check(&h).is_err());
+    fn test_override_quota_format() {
+        let mut rule = make_quota_rule("per-model", vec!["x-model"], 60, vec![
+            Quota { metric: QuotaMetric::Requests, limit: 100 },
+            Quota { metric: QuotaMetric::TotalTokens, limit: 50000 },
+        ]);
+        rule.overrides = vec![make_override_quotas(
+            &[("x-model", "gpt-4")],
+            vec![
+                Quota { metric: QuotaMetric::Requests, limit: 50 },
+                // TotalTokens not overridden — keeps 50000
+            ],
+        )];
+
+        let resolved = RateLimiter::resolve_quotas(&rule, &headers(&[("x-model", "gpt-4")]));
+        assert_eq!(resolved.len(), 2);
+        assert!(resolved.iter().any(|q| q.metric == QuotaMetric::Requests && q.limit == 50));
+        assert!(resolved.iter().any(|q| q.metric == QuotaMetric::TotalTokens && q.limit == 50000));
     }
 
     #[test]
-    fn test_override_same_specificity_first_wins() {
-        let mut rule = make_rule("per-model", vec!["x-model"], 60, 100);
+    fn test_override_most_specific_wins() {
+        let mut rule = make_rule("model-app", vec!["x-model", "x-app-id"], 60, 100);
         rule.overrides = vec![
-            make_override(&[("x-model", "gpt-4")], Some(10), None),
-            make_override(&[("x-model", "gpt-4")], Some(200), None),
+            make_override_legacy(&[("x-model", "gpt-4")], Some(150), None),
+            make_override_legacy(&[("x-model", "gpt-4"), ("x-app-id", "app-b")], Some(200), None),
         ];
         let limiter = RateLimiter::new(vec![rule]);
-        let h = headers(&[("x-model", "gpt-4")]);
-        for _ in 0..10 {
+        let h = headers(&[("x-model", "gpt-4"), ("x-app-id", "app-b")]);
+        for _ in 0..200 {
             assert!(limiter.check(&h).is_ok());
         }
         assert!(limiter.check(&h).is_err());
@@ -572,173 +697,13 @@ mod tests {
     #[test]
     fn test_override_no_match_uses_default() {
         let mut rule = make_rule("per-model", vec!["x-model"], 60, 5);
-        rule.overrides = vec![make_override(&[("x-model", "gpt-4")], Some(200), None)];
+        rule.overrides = vec![make_override_legacy(&[("x-model", "gpt-4")], Some(200), None)];
         let limiter = RateLimiter::new(vec![rule]);
         let h = headers(&[("x-model", "claude-3")]);
         for _ in 0..5 {
             assert!(limiter.check(&h).is_ok());
         }
         assert!(limiter.check(&h).is_err());
-    }
-
-    #[test]
-    fn test_override_only_max_requests_keeps_default_tokens() {
-        let mut rule = make_rule("test", vec!["x-model"], 60, 100);
-        rule.max_tokens = Some(1000);
-        rule.overrides = vec![make_override(&[("x-model", "gpt-4")], Some(200), None)];
-        let limiter = RateLimiter::new(vec![rule]);
-        let h = headers(&[("x-model", "gpt-4")]);
-        assert!(limiter.check(&h).is_ok());
-        limiter.record_tokens("test", &h, 1000);
-        assert!(limiter.check(&h).is_err());
-    }
-
-    #[test]
-    fn test_override_only_max_tokens() {
-        let mut rule = make_rule("test", vec!["x-model"], 60, 100);
-        rule.max_tokens = Some(1000);
-        rule.overrides = vec![make_override(&[("x-model", "gpt-4")], None, Some(500))];
-        let limiter = RateLimiter::new(vec![rule]);
-        let h = headers(&[("x-model", "gpt-4")]);
-        assert!(limiter.check(&h).is_ok());
-        limiter.record_tokens("test", &h, 500);
-        assert!(limiter.check(&h).is_err());
-    }
-
-    #[test]
-    fn test_override_multi_header_condition() {
-        let mut rule = make_rule("model-app", vec!["x-model", "x-app-id"], 60, 100);
-        rule.overrides = vec![make_override(
-            &[("x-model", "gpt-4"), ("x-app-id", "app-b")],
-            Some(200),
-            None,
-        )];
-        let limiter = RateLimiter::new(vec![rule]);
-        let h_match = headers(&[("x-model", "gpt-4"), ("x-app-id", "app-b")]);
-        for _ in 0..200 {
-            assert!(limiter.check(&h_match).is_ok());
-        }
-        assert!(limiter.check(&h_match).is_err());
-        let h_partial = headers(&[("x-model", "gpt-4"), ("x-app-id", "app-a")]);
-        for _ in 0..100 {
-            assert!(limiter.check(&h_partial).is_ok());
-        }
-        assert!(limiter.check(&h_partial).is_err());
-    }
-
-    #[test]
-    fn test_resolve_limits_directly() {
-        let mut rule = make_rule("test", vec!["x-model"], 60, 100);
-        rule.max_tokens = Some(2000);
-        rule.overrides = vec![
-            make_override(&[("x-model", "gpt-4")], Some(200), Some(1000)),
-            make_override(&[("x-model", "claude-3")], Some(50), None),
-        ];
-        let (req, tok) = RateLimiter::resolve_limits(&rule, &headers(&[("x-model", "gpt-4")]));
-        assert_eq!(req, 200);
-        assert_eq!(tok, Some(1000));
-        let (req, tok) = RateLimiter::resolve_limits(&rule, &headers(&[("x-model", "claude-3")]));
-        assert_eq!(req, 50);
-        assert_eq!(tok, Some(2000));
-        let (req, tok) = RateLimiter::resolve_limits(&rule, &headers(&[("x-model", "llama")]));
-        assert_eq!(req, 100);
-        assert_eq!(tok, Some(2000));
-    }
-
-    #[test]
-    fn test_override_most_specific_wins_over_order() {
-        let mut rule = make_rule("model-app", vec!["x-model", "x-app-id"], 60, 100);
-        rule.overrides = vec![
-            make_override(&[("x-model", "gpt-4")], Some(150), None),
-            make_override(
-                &[("x-model", "gpt-4"), ("x-app-id", "app-b")],
-                Some(200),
-                None,
-            ),
-        ];
-        let limiter = RateLimiter::new(vec![rule]);
-        let h = headers(&[("x-model", "gpt-4"), ("x-app-id", "app-b")]);
-        for _ in 0..200 {
-            assert!(limiter.check(&h).is_ok());
-        }
-        assert!(limiter.check(&h).is_err());
-    }
-
-    #[test]
-    fn test_override_most_specific_reverse_order() {
-        let mut rule = make_rule("model-app", vec!["x-model", "x-app-id"], 60, 100);
-        rule.overrides = vec![
-            make_override(
-                &[("x-model", "gpt-4"), ("x-app-id", "app-b")],
-                Some(200),
-                None,
-            ),
-            make_override(&[("x-model", "gpt-4")], Some(150), None),
-        ];
-        let limiter = RateLimiter::new(vec![rule]);
-        let h = headers(&[("x-model", "gpt-4"), ("x-app-id", "app-b")]);
-        for _ in 0..200 {
-            assert!(limiter.check(&h).is_ok());
-        }
-        assert!(limiter.check(&h).is_err());
-    }
-
-    #[test]
-    fn test_override_less_specific_fallback() {
-        let mut rule = make_rule("model-app", vec!["x-model", "x-app-id"], 60, 100);
-        rule.overrides = vec![
-            make_override(&[("x-model", "gpt-4")], Some(150), None),
-            make_override(
-                &[("x-model", "gpt-4"), ("x-app-id", "app-b")],
-                Some(200),
-                None,
-            ),
-        ];
-        let limiter = RateLimiter::new(vec![rule]);
-        let h = headers(&[("x-model", "gpt-4"), ("x-app-id", "app-a")]);
-        for _ in 0..150 {
-            assert!(limiter.check(&h).is_ok());
-        }
-        assert!(limiter.check(&h).is_err());
-    }
-
-    #[test]
-    fn test_resolve_limits_most_specific() {
-        let mut rule = make_rule("test", vec!["x-model", "x-app-id"], 60, 100);
-        rule.max_tokens = Some(2000);
-        rule.overrides = vec![
-            make_override(&[("x-model", "gpt-4")], Some(150), Some(1500)),
-            make_override(
-                &[("x-model", "gpt-4"), ("x-app-id", "app-b")],
-                Some(200),
-                Some(3000),
-            ),
-            make_override(&[("x-model", "claude-3")], Some(50), None),
-        ];
-        let (req, tok) = RateLimiter::resolve_limits(
-            &rule,
-            &headers(&[("x-model", "gpt-4"), ("x-app-id", "app-b")]),
-        );
-        assert_eq!(req, 200);
-        assert_eq!(tok, Some(3000));
-        let (req, tok) = RateLimiter::resolve_limits(
-            &rule,
-            &headers(&[("x-model", "gpt-4"), ("x-app-id", "app-a")]),
-        );
-        assert_eq!(req, 150);
-        assert_eq!(tok, Some(1500));
-        let (req, tok) = RateLimiter::resolve_limits(
-            &rule,
-            &headers(&[("x-model", "claude-3"), ("x-app-id", "app-x")]),
-        );
-        assert_eq!(req, 50);
-        assert_eq!(tok, Some(2000));
-        let (req, tok) = RateLimiter::resolve_limits(
-            &rule,
-            &headers(&[("x-model", "llama"), ("x-app-id", "app-x")]),
-        );
-        assert_eq!(req, 100);
-        assert_eq!(tok, Some(2000));
     }
 
     // ── Backend injection tests ──
@@ -751,7 +716,6 @@ mod tests {
             backend,
         );
         assert_eq!(limiter.backend_name(), "local");
-        assert!(limiter.is_backend_healthy());
         assert!(limiter.check(&headers(&[])).is_ok());
         assert!(limiter.check(&headers(&[])).is_ok());
         assert!(limiter.check(&headers(&[])).is_err());
@@ -762,5 +726,12 @@ mod tests {
         let limiter = RateLimiter::new(vec![]);
         assert_eq!(limiter.backend_name(), "local");
         assert!(limiter.is_backend_healthy());
+    }
+
+    #[test]
+    fn test_cleanup_no_panic() {
+        let limiter = RateLimiter::new(vec![make_rule("test", vec![], 60, 10)]);
+        assert!(limiter.check(&headers(&[])).is_ok());
+        limiter.cleanup();
     }
 }

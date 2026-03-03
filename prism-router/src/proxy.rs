@@ -742,6 +742,9 @@ impl ProxyHttp for PrismProxy {
                         "type": "rate_limit_exceeded",
                         "message": denied.message,
                         "rule": denied.rule_name,
+                        "metric": denied.metric.to_string(),
+                        "current": denied.current,
+                        "limit": denied.limit,
                     }
                 });
 
@@ -1909,8 +1912,9 @@ mod tests {
             name: "global".to_string(),
             key_headers: vec![],
             window_secs: 60,
-            max_requests: 100,
+            max_requests: Some(100),
             max_tokens: None,
+            quotas: vec![],
             overrides: vec![],
             enabled: true,
             status_code: 429,
