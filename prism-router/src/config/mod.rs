@@ -256,6 +256,11 @@ fn merge_configs(base: PrismConfig, overlay: PrismConfig) -> PrismConfig {
         } else {
             overlay.concurrency_limits
         },
+        accounts: if overlay.accounts.is_empty() {
+            base.accounts
+        } else {
+            overlay.accounts
+        },
     }
 }
 

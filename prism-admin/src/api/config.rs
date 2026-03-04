@@ -1,25 +1,22 @@
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
-
 use crate::AppState;
 
 /// GET /api/config — read current config as JSON
 pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
-    match std::fs::read_to_string(&state.config_path) {
-        Ok(yaml_str) => {
-            match serde_yaml::from_str::<serde_json::Value>(&yaml_str) {
+    match state.store.snapshot().await {
+        Ok(config) => {
+            match serde_json::to_value(&config) {
                 Ok(val) => (StatusCode::OK, Json(val)).into_response(),
                 Err(e) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": format!("parse error: {}", e)})),
-                )
-                    .into_response(),
+                    Json(serde_json::json!({"error": format!("serialize error: {}", e)})),
+                ).into_response(),
             }
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("read error: {}", e)})),
-        )
-            .into_response(),
+        ).into_response(),
     }
 }
 
@@ -30,9 +27,8 @@ pub async fn update_config(
 ) -> impl IntoResponse {
     // Validate first
     match prism_router::config::load_config_from_str(&body) {
-        Ok(_config) => {
-            // Write to file
-            match std::fs::write(&state.config_path, &body) {
+        Ok(config) => {
+            match state.store.import_config(config).await {
                 Ok(()) => (
                     StatusCode::OK,
                     Json(serde_json::json!({"status": "ok", "message": "Config saved. Reload required to apply."})),

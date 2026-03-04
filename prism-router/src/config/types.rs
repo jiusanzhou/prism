@@ -47,6 +47,49 @@ pub struct PrismConfig {
     /// Concurrency limiting rules.
     #[serde(default)]
     pub concurrency_limits: Vec<ConcurrencyLimitConfig>,
+
+    /// Account configurations for multi-account routing.
+    #[serde(default)]
+    pub accounts: Vec<AccountConfig>,
+}
+
+impl PrismConfig {
+    /// Get all discovery sources — from both `discoveries` (legacy) and `plugins` with discovery phase.
+    ///
+    /// Returns legacy `DiscoveryConfig` entries as-is, plus synthesized entries
+    /// for any plugin that has `"discovery"` in its phases list.
+    pub fn all_discovery_configs(&self) -> Vec<DiscoveryConfig> {
+        let mut result: Vec<DiscoveryConfig> = self.discoveries.clone();
+
+        for plugin in &self.plugins {
+            if !plugin.enabled {
+                continue;
+            }
+            let has_discovery = plugin.phases.iter().any(|p| p == "discovery");
+            if !has_discovery {
+                continue;
+            }
+
+            // Synthesize a DiscoveryConfig from the plugin's source and config.
+            let source_type = match &plugin.source {
+                PluginSourceConfig::Wasm { wasm } => DiscoverySourceType::Wasm {
+                    wasm: DiscoveryWasmConfig {
+                        path: wasm.clone(),
+                    },
+                },
+                _ => continue, // Only WASM plugins can be discovery sources currently
+            };
+
+            result.push(DiscoveryConfig {
+                name: plugin.name.clone(),
+                source_type,
+                config: plugin.config.clone(),
+                enabled: plugin.enabled,
+            });
+        }
+
+        result
+    }
 }
 
 /// Server-level configuration.
@@ -1100,6 +1143,153 @@ plugins:
             PluginSourceConfig::Builtin { .. }
         ));
     }
+
+    #[test]
+    fn test_account_config_serde() {
+        let yaml = r#"
+accounts:
+  - id: acct-openai-1
+    provider_id: openai
+    api_key: sk-test-key
+    project_id: proj-123
+    billing_tag: team-alpha
+    weight: 2.0
+    enabled: true
+    rate_limit:
+      rpm: 100
+      tpm: 50000
+      concurrent: 5
+    headers:
+      x-custom: value
+    metadata:
+      env: production
+  - id: acct-anthropic-1
+    provider_id: anthropic
+    api_key: sk-ant-key
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.accounts.len(), 2);
+
+        let a1 = &config.accounts[0];
+        assert_eq!(a1.id, "acct-openai-1");
+        assert_eq!(a1.provider_id, "openai");
+        assert_eq!(a1.api_key.as_deref(), Some("sk-test-key"));
+        assert_eq!(a1.project_id.as_deref(), Some("proj-123"));
+        assert_eq!(a1.billing_tag.as_deref(), Some("team-alpha"));
+        assert!((a1.weight - 2.0).abs() < 0.001);
+        assert!(a1.enabled);
+        let rl = a1.rate_limit.as_ref().unwrap();
+        assert_eq!(rl.rpm, Some(100));
+        assert_eq!(rl.tpm, Some(50000));
+        assert_eq!(rl.concurrent, Some(5));
+        assert_eq!(a1.headers.get("x-custom").unwrap(), "value");
+        assert_eq!(a1.metadata.get("env").unwrap(), "production");
+
+        let a2 = &config.accounts[1];
+        assert_eq!(a2.id, "acct-anthropic-1");
+        assert_eq!(a2.provider_id, "anthropic");
+        assert!(a2.enabled); // default_true
+        assert!((a2.weight - 1.0).abs() < 0.001); // default_account_weight
+        assert!(a2.rate_limit.is_none());
+        assert!(a2.headers.is_empty());
+        assert!(a2.metadata.is_empty());
+    }
+
+    #[test]
+    fn test_account_config_defaults() {
+        let yaml = "{}";
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.accounts.is_empty());
+    }
+
+    #[test]
+    fn test_all_discovery_configs_legacy_only() {
+        let yaml = r#"
+discoveries:
+  - name: k8s-pods
+    type:
+      wasm:
+        path: ./plugins/k8s-discovery.wasm
+    config:
+      namespace: default
+    enabled: true
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        let all = config.all_discovery_configs();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "k8s-pods");
+    }
+
+    #[test]
+    fn test_all_discovery_configs_plugin_only() {
+        let yaml = r#"
+plugins:
+  - name: k8s-disc
+    source:
+      wasm: ./plugins/k8s-discovery.wasm
+    phases: [discovery]
+    config:
+      namespace: staging
+    enabled: true
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        let all = config.all_discovery_configs();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "k8s-disc");
+        assert_eq!(all[0].config["namespace"], "staging");
+        assert!(all[0].enabled);
+    }
+
+    #[test]
+    fn test_all_discovery_configs_combined() {
+        let yaml = r#"
+discoveries:
+  - name: legacy-disc
+    type: static
+    enabled: true
+plugins:
+  - name: plugin-disc
+    source:
+      wasm: ./plugins/disc.wasm
+    phases: [discovery]
+    enabled: true
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        let all = config.all_discovery_configs();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].name, "legacy-disc");
+        assert_eq!(all[1].name, "plugin-disc");
+    }
+
+    #[test]
+    fn test_all_discovery_configs_disabled_plugin_skipped() {
+        let yaml = r#"
+plugins:
+  - name: disabled-disc
+    source:
+      wasm: ./plugins/disc.wasm
+    phases: [discovery]
+    enabled: false
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        let all = config.all_discovery_configs();
+        assert!(all.is_empty());
+    }
+
+    #[test]
+    fn test_all_discovery_configs_non_discovery_plugin_skipped() {
+        let yaml = r#"
+plugins:
+  - name: proxy-only
+    source:
+      wasm: ./plugins/proxy.wasm
+    phases: [proxy]
+    enabled: true
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        let all = config.all_discovery_configs();
+        assert!(all.is_empty());
+    }
 }
 
 
@@ -1148,6 +1338,48 @@ pub struct ConcurrencyLimitConfig {
     /// Whether this rule is enabled.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+}
+
+// ════════════════════════════════════════════════
+// Account configuration
+// ════════════════════════════════════════════════
+
+/// Account configuration for multi-account routing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountConfig {
+    pub id: String,
+    pub provider_id: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub rate_limit: Option<AccountRateLimitConfig>,
+    #[serde(default)]
+    pub billing_tag: Option<String>,
+    #[serde(default = "default_account_weight")]
+    pub weight: f32,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+}
+
+/// Account-level rate limit configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountRateLimitConfig {
+    #[serde(default)]
+    pub rpm: Option<u32>,
+    #[serde(default)]
+    pub tpm: Option<u32>,
+    #[serde(default)]
+    pub concurrent: Option<u32>,
+}
+
+fn default_account_weight() -> f32 {
+    1.0
 }
 
 fn default_circuit_breaker_threshold() -> u32 {

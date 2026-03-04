@@ -1,5 +1,10 @@
+pub mod access_log;
+pub mod accounts;
+pub mod auth;
 pub mod config;
 pub mod models;
+pub mod plugins;
+pub mod pools;
 pub mod providers;
 pub mod rate_limits;
 pub mod status;
