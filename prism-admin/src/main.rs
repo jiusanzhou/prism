@@ -14,7 +14,9 @@ use tower_http::cors::CorsLayer;
 use tracing::info;
 
 mod api;
+pub mod cluster;
 pub mod config_source;
+pub mod push;
 pub mod store;
 
 #[derive(Embed)]
@@ -161,6 +163,20 @@ async fn main() {
         .route("/api/access-log", get(api::access_log::get_access_log))
         .route("/api/access-log", put(api::access_log::update_access_log))
         .route("/api/status", get(api::status::get_status))
+        .route("/api/proxy-fetch", post(api::proxy_fetch::proxy_fetch))
+        // Clusters
+        .route("/api/clusters", get(api::clusters::list_clusters))
+        .route("/api/clusters", post(api::clusters::create_cluster))
+        .route("/api/clusters/{id}", get(api::clusters::get_cluster))
+        .route("/api/clusters/{id}", put(api::clusters::update_cluster))
+        .route("/api/clusters/{id}", delete(api::clusters::delete_cluster))
+        .route("/api/clusters/{id}/config", get(api::clusters::get_cluster_config))
+        .route("/api/clusters/{id}/sync", post(api::clusters::sync_cluster))
+        // Proxies
+        .route("/api/proxies", get(api::proxies::list_proxies))
+        .route("/api/proxies/register", post(api::proxies::register_proxy))
+        .route("/api/proxies/heartbeat", post(api::proxies::heartbeat_proxy))
+        .route("/api/proxies/{instance_id}", delete(api::proxies::delete_proxy))
         .fallback(static_handler)
         .layer(CorsLayer::very_permissive())
         .with_state(state);

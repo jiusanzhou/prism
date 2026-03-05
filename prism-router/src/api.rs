@@ -115,7 +115,6 @@ pub async fn route_handler(
             affinity_key: m.affinity_key.clone(),
             tenant_id: m.tenant_id.clone(),
             region: m.region.clone(),
-            analyze_context: None,
             ..Default::default()
         },
         None => RouteMetadata::default(),
@@ -138,6 +137,7 @@ pub async fn route_handler(
         strategy,
         metadata,
         analyze_context: None,
+        requested_model: None,
         required_protocol: body.required_protocol,
     };
 

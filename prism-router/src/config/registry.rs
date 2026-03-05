@@ -19,6 +19,56 @@ pub fn build_registry(config: &PrismConfig) -> InMemoryRegistry {
 
     let mut registry = InMemoryRegistry::new();
     registry.apply_discovery(&result);
+
+    // Inject accounts from config (AccountConfig) into registry.
+    // These override the default "{provider_id}-acct" accounts created by
+    // static discovery, carrying the real API keys and per-account settings.
+    for ac in &config.accounts {
+        if !ac.enabled {
+            continue;
+        }
+        let endpoint_id = format!("{}-ep", ac.provider_id);
+        let auth = if let Some(ref key) = ac.api_key {
+            prism_core::types::AuthConfig::ApiKey {
+                key: format!("Bearer {}", key),
+                header: "Authorization".to_string(),
+            }
+        } else if !ac.headers.is_empty() {
+            prism_core::types::AuthConfig::Custom {
+                headers: ac.headers.clone(),
+            }
+        } else {
+            prism_core::types::AuthConfig::default()
+        };
+        let account = prism_core::types::Account {
+            id: ac.id.clone(),
+            endpoint_id,
+            auth,
+            project_id: ac.project_id.clone(),
+            rate_limit: None,
+            billing_tag: ac.billing_tag.clone(),
+            weight: ac.weight,
+            status: prism_core::types::HealthStatus::Healthy,
+            metadata: ac.metadata.clone(),
+        };
+        registry.accounts.insert(ac.id.clone(), account);
+    }
+
+    // Update variant account_ids: if a variant references a config account
+    // by provider_id (using the default "{provider_id}-acct" placeholder),
+    // rebind it to the first matching config account for that provider.
+    for variant in registry.variants.values_mut() {
+        let default_acct_id = format!("{}-acct", variant.endpoint_id.trim_end_matches("-ep"));
+        if variant.account_id.as_deref() == Some(&default_acct_id) {
+            // Find the first enabled config account for this provider
+            if let Some(ac) = config.accounts.iter().find(|a| {
+                a.enabled && format!("{}-ep", a.provider_id) == variant.endpoint_id
+            }) {
+                variant.account_id = Some(ac.id.clone());
+            }
+        }
+    }
+
     registry
 }
 

@@ -42,6 +42,9 @@ pub struct RouteRequest {
     /// Required protocol for this request (e.g., "openai", "anthropic").
     /// If set, only candidates whose provider supports this protocol are considered.
     pub required_protocol: Option<String>,
+    /// Requested model id from client (e.g. from request body "model" field).
+    /// When set, only candidates matching this model are considered.
+    pub requested_model: Option<String>,
 }
 
 /// Extra metadata attached to a routing request.
@@ -403,6 +406,13 @@ impl Router for PrismRouter {
 
         // Get candidates
         let candidates = self.get_strategy_candidates(strategy);
+
+        // Filter by requested model if specified
+        let candidates = if let Some(ref model_id) = request.requested_model {
+            candidates.into_iter().filter(|c| c.model.id == *model_id).collect()
+        } else {
+            candidates
+        };
         if candidates.is_empty() {
             return Err(RouterError::NoCandidates);
         }

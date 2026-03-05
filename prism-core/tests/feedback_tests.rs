@@ -415,6 +415,7 @@ fn test_feedback_influences_routing() {
         metadata: RouteMetadata::default(),
         analyze_context: None,
         required_protocol: None,
+        requested_model: None,
     };
 
     let decision = router.route(&req).expect("routing should succeed");

@@ -631,6 +631,7 @@ mod proxy_tests {
             metadata: prism_core::router::RouteMetadata::default(),
             analyze_context: None,
             required_protocol: None,
+            requested_model: None,
         });
 
         assert!(result.is_ok());

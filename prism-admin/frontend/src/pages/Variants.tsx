@@ -5,8 +5,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select"
-import { Badge } from "@/components/ui/badge"
-import { Plus, Trash2, Pencil } from "lucide-react"
+import { Plus, Trash2, Pencil, Loader2 } from "lucide-react"
+import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 
 interface Variant {
   id: string
@@ -17,6 +17,10 @@ interface Variant {
   upstream_model_name: string | null
   base_url: string | null
 }
+
+interface ModelItem { id: string; display_name: string }
+interface ProviderItem { id: string }
+interface AccountItem { id: string }
 
 interface FormState {
   id: string
@@ -34,14 +38,16 @@ const emptyForm: FormState = {
 
 export default function Variants() {
   const [variants, setVariants] = useState<Variant[]>([])
-  const [models, setModels] = useState<{ id: string }[]>([])
-  const [providers, setProviders] = useState<{ id: string }[]>([])
-  const [accounts, setAccounts] = useState<{ id: string }[]>([])
+  const [models, setModels] = useState<ModelItem[]>([])
+  const [providers, setProviders] = useState<ProviderItem[]>([])
+  const [accounts, setAccounts] = useState<AccountItem[]>([])
   const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState("")
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
   const [form, setForm] = useState<FormState>(emptyForm)
   const [saving, setSaving] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
 
   const load = () => {
     setLoading(true)
@@ -77,7 +83,6 @@ export default function Variants() {
   }
 
   const handleDelete = async (id: string) => {
-    if (!confirm(`Delete variant "${id}"?`)) return
     await fetch(`/api/variants/${id}`, { method: "DELETE" })
     load()
   }
@@ -101,44 +106,56 @@ export default function Variants() {
     load()
   }
 
-  if (loading) return <div className="text-[hsl(var(--muted-foreground))]">Loading...</div>
+  const modelName = (id: string) => models.find(m => m.id === id)?.display_name || id
+
+  if (loading) return <div className="flex items-center justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-[hsl(var(--muted-foreground))]" /></div>
+
+  const filtered = search ? variants.filter(v => v.id.toLowerCase().includes(search.toLowerCase()) || v.model_id.toLowerCase().includes(search.toLowerCase()) || v.provider_id.toLowerCase().includes(search.toLowerCase())) : variants
 
   return (
     <div>
       <div className="flex items-center justify-between mb-4 sm:mb-6">
-        <h1 className="text-xl sm:text-2xl font-bold">Variants</h1>
+        <div><h1 className="text-xl sm:text-2xl font-bold">Variants</h1><p className="text-sm text-[hsl(var(--muted-foreground))]">Model-provider routing variants</p></div>
         <Button size="sm" onClick={handleNew}><Plus className="h-4 w-4 mr-1" /> New Variant</Button>
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {variants.map(v => (
-          <Card key={v.id}>
-            <CardContent className="p-4">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="font-medium truncate">{v.id}</div>
-                  <div className="text-sm text-[hsl(var(--muted-foreground))]">
-                    {v.provider_id} → {v.model_id}
-                  </div>
-                </div>
-                <Badge variant="secondary">w: {v.weight ?? "—"}</Badge>
-              </div>
-              {v.upstream_model_name && (
-                <div className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">upstream: {v.upstream_model_name}</div>
-              )}
-              {v.base_url && (
-                <div className="mt-1 text-xs text-[hsl(var(--muted-foreground))] truncate">url: {v.base_url}</div>
-              )}
-              <div className="flex gap-1 mt-3 justify-end">
-                <Button variant="ghost" size="sm" onClick={() => handleEdit(v)}><Pencil className="h-3 w-3 mr-1" /> Edit</Button>
-                <Button variant="ghost" size="sm" onClick={() => handleDelete(v.id)}><Trash2 className="h-3 w-3 mr-1 text-red-400" /> Delete</Button>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-        {variants.length === 0 && (
-          <div className="col-span-full text-center py-12 text-[hsl(var(--muted-foreground))]">No variants configured</div>
-        )}
-      </div>
+      <div className="mb-4"><Input placeholder="Search variants..." value={search} onChange={e => setSearch(e.target.value)} className="max-w-sm" /></div>
+      <Card>
+        <CardContent className="p-0">
+          {filtered.length === 0 ? (
+            <div className="text-center py-12 text-[hsl(var(--muted-foreground))]">{search ? "No variants match" : "No variants configured"}</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead><tr className="border-b border-[hsl(var(--border))]">
+                  <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Variant ID</th>
+                  <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Model</th>
+                  <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Provider</th>
+                  <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden sm:table-cell">Account</th>
+                  <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden sm:table-cell">Weight</th>
+                  <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden md:table-cell">Upstream Model</th>
+                  <th className="text-right px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Actions</th>
+                </tr></thead>
+                <tbody>
+                  {filtered.map(v => (
+                    <tr key={v.id} className="border-b border-[hsl(var(--border))] last:border-0 hover:bg-[hsl(var(--accent))]/50 transition-colors">
+                      <td className="px-4 py-3 font-medium">{v.id}</td>
+                      <td className="px-4 py-3"><span className="text-xs">{modelName(v.model_id)}</span></td>
+                      <td className="px-4 py-3"><span className="text-xs">{v.provider_id}</span></td>
+                      <td className="px-4 py-3 hidden sm:table-cell"><span className="text-xs text-[hsl(var(--muted-foreground))]">{v.account_id || "—"}</span></td>
+                      <td className="px-4 py-3 hidden sm:table-cell"><span className="font-mono text-xs">{v.weight ?? "—"}</span></td>
+                      <td className="px-4 py-3 hidden md:table-cell"><span className="text-xs text-[hsl(var(--muted-foreground))]">{v.upstream_model_name || "—"}</span></td>
+                      <td className="px-4 py-3"><div className="flex justify-end gap-1">
+                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleEdit(v)}><Pencil className="h-3.5 w-3.5" /></Button>
+                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDeleteTarget(v.id)}><Trash2 className="h-3.5 w-3.5 text-red-400" /></Button>
+                      </div></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>
@@ -199,6 +216,14 @@ export default function Variants() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={open => { if (!open) setDeleteTarget(null) }}
+        title="Delete Variant"
+        description={`Are you sure you want to delete variant "${deleteTarget}"? This action cannot be undone.`}
+        onConfirm={() => { if (deleteTarget) handleDelete(deleteTarget) }}
+      />
     </div>
   )
 }

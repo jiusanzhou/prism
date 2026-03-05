@@ -1,8 +1,10 @@
 use async_trait::async_trait;
 use prism_router::config::types::*;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::RwLock;
 
+use crate::cluster::{Cluster, ProxyInstance, ProxyStatus};
 use super::{Store, StoreError, StoreResult};
 
 /// Supported configuration file formats for FileStore.
@@ -49,10 +51,13 @@ impl std::fmt::Display for FileFormat {
 }
 
 /// File-based config store. Supports YAML, JSON, and TOML formats.
+/// Clusters and proxies are kept in-memory only (not persisted to the config file).
 pub struct FileStore {
     path: PathBuf,
     format: FileFormat,
     lock: RwLock<()>,
+    clusters: RwLock<HashMap<String, Cluster>>,
+    proxies: RwLock<HashMap<String, ProxyInstance>>,
 }
 
 impl FileStore {
@@ -66,6 +71,8 @@ impl FileStore {
             path,
             format: resolved,
             lock: RwLock::new(()),
+            clusters: RwLock::new(HashMap::new()),
+            proxies: RwLock::new(HashMap::new()),
         }
     }
 
@@ -86,7 +93,6 @@ impl FileStore {
                     .map_err(|e| StoreError::Internal(format!("parse YAML: {}", e)))
             }
             FileFormat::Json => {
-                // Strip JSONC comments (// and /* */) before parsing
                 let stripped = strip_jsonc_comments(&content);
                 serde_json::from_str(&stripped)
                     .map_err(|e| StoreError::Internal(format!("parse JSON: {}", e)))
@@ -153,7 +159,6 @@ fn strip_jsonc_comments(input: &str) -> String {
         } else if c == '/' {
             match chars.peek() {
                 Some(&'/') => {
-                    // Single-line comment — skip to end of line
                     chars.next();
                     for nc in chars.by_ref() {
                         if nc == '\n' {
@@ -163,7 +168,6 @@ fn strip_jsonc_comments(input: &str) -> String {
                     }
                 }
                 Some(&'*') => {
-                    // Multi-line comment — skip to */
                     chars.next();
                     loop {
                         match chars.next() {
@@ -171,7 +175,7 @@ fn strip_jsonc_comments(input: &str) -> String {
                                 chars.next();
                                 break;
                             }
-                            Some('\n') => result.push('\n'), // preserve line numbers
+                            Some('\n') => result.push('\n'),
                             None => break,
                             _ => {}
                         }
@@ -452,6 +456,90 @@ impl Store for FileStore {
         let _guard = self.lock.write().await;
         self.save(&config).await
     }
+
+    // Clusters (in-memory)
+    async fn list_clusters(&self) -> StoreResult<Vec<Cluster>> {
+        let clusters = self.clusters.read().await;
+        Ok(clusters.values().cloned().collect())
+    }
+
+    async fn get_cluster(&self, id: &str) -> StoreResult<Cluster> {
+        let clusters = self.clusters.read().await;
+        clusters
+            .get(id)
+            .cloned()
+            .ok_or_else(|| StoreError::NotFound(format!("cluster '{}'", id)))
+    }
+
+    async fn upsert_cluster(&self, id: &str, cluster: Cluster) -> StoreResult<()> {
+        let mut clusters = self.clusters.write().await;
+        clusters.insert(id.to_string(), cluster);
+        Ok(())
+    }
+
+    async fn delete_cluster(&self, id: &str) -> StoreResult<()> {
+        let proxies = self.proxies.read().await;
+        let has_proxies = proxies.values().any(|p| p.cluster_id == id);
+        if has_proxies {
+            return Err(StoreError::Conflict(format!(
+                "cluster '{}' still has proxies",
+                id
+            )));
+        }
+        drop(proxies);
+
+        let mut clusters = self.clusters.write().await;
+        clusters.remove(id);
+        Ok(())
+    }
+
+    // Proxy instances (in-memory)
+    async fn list_proxies(&self, cluster_id: Option<&str>) -> StoreResult<Vec<ProxyInstance>> {
+        let proxies = self.proxies.read().await;
+        match cluster_id {
+            Some(cid) => Ok(proxies.values().filter(|p| p.cluster_id == cid).cloned().collect()),
+            None => Ok(proxies.values().cloned().collect()),
+        }
+    }
+
+    async fn register_proxy(&self, proxy: ProxyInstance) -> StoreResult<()> {
+        let clusters = self.clusters.read().await;
+        if !clusters.contains_key(&proxy.cluster_id) {
+            return Err(StoreError::NotFound(format!(
+                "cluster '{}'",
+                proxy.cluster_id
+            )));
+        }
+        drop(clusters);
+
+        let mut proxies = self.proxies.write().await;
+        proxies.insert(proxy.instance_id.clone(), proxy);
+        Ok(())
+    }
+
+    async fn heartbeat_proxy(&self, instance_id: &str, config_version: u64) -> StoreResult<()> {
+        let mut proxies = self.proxies.write().await;
+        match proxies.get_mut(instance_id) {
+            Some(proxy) => {
+                proxy.last_heartbeat = chrono::Utc::now();
+                proxy.config_version = config_version;
+                proxy.status = ProxyStatus::Online;
+                Ok(())
+            }
+            None => Err(StoreError::NotFound(format!("proxy '{}'", instance_id))),
+        }
+    }
+
+    async fn unregister_proxy(&self, instance_id: &str) -> StoreResult<()> {
+        let mut proxies = self.proxies.write().await;
+        proxies.remove(instance_id);
+        Ok(())
+    }
+
+    // File store has no scoping — returns the global config snapshot
+    async fn cluster_config(&self, _cluster_id: &str) -> StoreResult<PrismConfig> {
+        self.snapshot().await
+    }
 }
 
 #[cfg(test)]
@@ -486,7 +574,7 @@ mod tests {
     fn test_strip_jsonc_in_string() {
         let input = r#"{"url": "http://example.com/path"}"#;
         let stripped = strip_jsonc_comments(input);
-        assert_eq!(stripped, input); // no change
+        assert_eq!(stripped, input);
     }
 
     #[test]

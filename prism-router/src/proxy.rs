@@ -106,6 +106,8 @@ pub struct ProxyContext {
     pub request_id: String,
     /// Fallback chain from routing decision for retry/failover.
     pub retry_fallback_chain: Vec<String>,
+    /// Client-requested model name extracted from request body.
+    pub requested_model: Option<String>,
     /// Active concurrency guards — dropped when request completes.
     pub concurrency_guards: Vec<crate::ratelimit::concurrency::ConcurrencyGuard>,
 }
@@ -151,6 +153,7 @@ impl Default for ProxyContext {
             upstream_request_attempt_count: 1,
             request_id: String::new(),
             retry_fallback_chain: Vec::new(),
+            requested_model: None,
             concurrency_guards: Vec::new(),
         }
     }
@@ -547,6 +550,33 @@ impl ProxyHttp for PrismProxy {
             }
         }
 
+
+        // Read body to extract model name for routing.
+        // We use enable_retry_buffering() so Pingora saves the body internally.
+        // After reading, proxy_handle_downstream will replay the retry buffer
+        // through request_body_filter, where we do model rewrite / codec.
+        if ctx.protocol != LlmProtocol::Unknown {
+            session.downstream_session.enable_retry_buffering();
+            let mut body_bytes = Vec::new();
+            loop {
+                match session.downstream_session.read_request_body().await {
+                    Ok(Some(bytes)) => body_bytes.extend_from_slice(&bytes),
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+            if !body_bytes.is_empty() {
+                ctx.bytes_received = Some(body_bytes.len() as u64);
+                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+                    if let Some(model) = json.get("model").and_then(|m| m.as_str()) {
+                        ctx.requested_model = Some(model.to_string());
+                        debug!(model = %model, "Extracted model from request body");
+                    }
+                }
+            }
+            ctx.request_body_received_at = Some(Instant::now());
+        }
+
         Ok(false) // continue to Pingora upstream pipeline
     }
 
@@ -556,6 +586,7 @@ impl ProxyHttp for PrismProxy {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> Result<Box<HttpPeer>, Box<pingora::Error>> {
+
         // Build a minimal route request from path + headers
         let path = session.req_header().uri.path().to_string();
         let protocol_str = ctx.protocol.as_str();
@@ -570,6 +601,7 @@ impl ProxyHttp for PrismProxy {
             strategy: None,
             metadata: RouteMetadata::default(),
             analyze_context: None,
+            requested_model: ctx.requested_model.clone(),
             required_protocol: if protocol_str != "unknown" {
                 Some(protocol_str.to_string())
             } else {
@@ -630,6 +662,25 @@ impl ProxyHttp for PrismProxy {
                     .unwrap_or("https://api.openai.com/v1");
 
                 // Extract auth header from provider
+                // First try account auth (preferred — accounts carry the real API keys)
+                let account = router.registry.accounts.get(&decision.selected_account);
+                if let Some(acct) = account {
+                    match &acct.auth {
+                        prism_core::types::AuthConfig::ApiKey { key, .. } if !key.is_empty() => {
+                            ctx.upstream_auth = Some(key.clone());
+                        }
+                        prism_core::types::AuthConfig::Custom { headers } if !headers.is_empty() => {
+                            ctx.upstream_custom_headers = headers
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect();
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Fall back to provider auth if account didn't provide any
+                if ctx.upstream_auth.is_none() && ctx.upstream_custom_headers.is_empty() {
                 if let Some(p) = provider {
                     match &p.auth {
                         prism_core::types::AuthConfig::ApiKey { key, .. } => {
@@ -643,6 +694,7 @@ impl ProxyHttp for PrismProxy {
                         }
                         _ => {}
                     }
+                }
                 }
 
                 ctx.upstream_base_url = Some(base_url.to_string());
@@ -805,6 +857,18 @@ impl ProxyHttp for PrismProxy {
         // Forward X-Request-ID to upstream
         let _ = upstream_request.insert_header("X-Request-ID", &ctx.request_id);
 
+        // If body will be rewritten (model name rewrite or codec conversion),
+        // use chunked transfer encoding since the body size may change.
+        // Must explicitly set Transfer-Encoding: chunked — just removing
+        // Content-Length makes Pingora's BodyWriter fall back to HTTP/1.0
+        // close-delimited mode which silently drops the body.
+        // Note: some upstreams (e.g. Spring-based APIs) don't handle chunked
+        // encoding properly. Consider using reqwest-based forwarding for those.
+        if ctx.upstream_model_name.is_some() || ctx.needs_conversion {
+            let _ = upstream_request.remove_header("content-length");
+            let _ = upstream_request.insert_header("transfer-encoding", "chunked");
+        }
+
         // ── Codec: process request headers through plugin chain ──
         if ctx.needs_conversion {
             // Initialize codec context now that we have full routing info
@@ -902,8 +966,11 @@ impl ProxyHttp for PrismProxy {
         Ok(())
     }
 
-    /// Phase 3b: Handle request body — buffer and transform if conversion is needed,
-    /// and/or rewrite the model name for upstream.
+    /// Phase 3b: Handle request body — rewrite model name and/or transform via codec.
+    ///
+    /// Body arrives here via Pingora's retry buffer (pre-read in request_filter
+    /// with enable_retry_buffering). For codec conversion or model rewrite,
+    /// we buffer all chunks and emit the transformed body on end_of_stream.
     async fn request_body_filter(
         &self,
         _session: &mut Session,
@@ -926,8 +993,6 @@ impl ProxyHttp for PrismProxy {
             }
         }
 
-        // When we have the complete body, optionally rewrite model name and/or
-        // transform through the codec plugin chain.
         if end_of_stream {
             let mut full_body = ctx.request_body_buffer.take().unwrap_or_default();
 
@@ -976,11 +1041,10 @@ impl ProxyHttp for PrismProxy {
                 }
             }
 
-            // Pass through (possibly rewritten) body
+            // Emit the (possibly rewritten) body
             *body = Some(Bytes::from(full_body));
         } else {
-            // We're buffering — suppress sending partial chunks upstream.
-            // Clear the chunk so Pingora doesn't send it yet.
+            // Buffering — suppress partial chunks from going upstream
             *body = None;
         }
 

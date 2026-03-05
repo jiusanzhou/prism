@@ -6,7 +6,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
-import { Plus, Trash2, Pencil, X } from "lucide-react"
+import { Plus, Trash2, Pencil, X, Loader2 } from "lucide-react"
+import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 
 interface RateLimit {
   name: string
@@ -46,6 +47,8 @@ export default function RateLimits() {
   const [editing, setEditing] = useState<string | null>(null)
   const [form, setForm] = useState<FormState>(emptyForm)
   const [saving, setSaving] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
+  const [togglingName, setTogglingName] = useState<string | null>(null)
 
   const load = () => {
     setLoading(true)
@@ -70,9 +73,21 @@ export default function RateLimits() {
   }
 
   const handleDelete = async (name: string) => {
-    if (!confirm(`Delete rate limit "${name}"?`)) return
     await fetch(`/api/rate-limits/${name}`, { method: "DELETE" })
     load()
+  }
+
+  const toggleEnabled = async (r: RateLimit) => {
+    setTogglingName(r.name)
+    setRules(prev => prev.map(rule => rule.name === r.name ? { ...rule, enabled: !rule.enabled } : rule))
+    await fetch(`/api/rate-limits/${r.name}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: r.name, key_headers: r.key_headers, window_secs: r.window_secs,
+        max_requests: r.max_requests, max_tokens: r.max_tokens, enabled: !r.enabled, overrides: [],
+      }),
+    })
+    setTogglingName(null)
   }
 
   const handleSave = async () => {
@@ -101,46 +116,59 @@ export default function RateLimits() {
   const addOverride = () => setForm(f => ({ ...f, overrides: [...f.overrides, { match_headers: [{ key: "", value: "" }], max_requests: "", max_tokens: "" }] }))
   const removeOverride = (i: number) => setForm(f => ({ ...f, overrides: f.overrides.filter((_, idx) => idx !== i) }))
 
-  if (loading) return <div className="text-[hsl(var(--muted-foreground))]">Loading...</div>
+  const formatWindow = (secs: number) => {
+    if (secs < 60) return `${secs}s`
+    if (secs < 3600) return `${Math.floor(secs / 60)}m`
+    return `${Math.floor(secs / 3600)}h`
+  }
+
+  if (loading) return <div className="flex items-center justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-[hsl(var(--muted-foreground))]" /></div>
 
   return (
     <div>
       <div className="flex items-center justify-between mb-4 sm:mb-6">
-        <h1 className="text-xl sm:text-2xl font-bold">Rate Limits</h1>
+        <div><h1 className="text-xl sm:text-2xl font-bold">Rate Limits</h1><p className="text-sm text-[hsl(var(--muted-foreground))]">Request throttling rules</p></div>
         <Button size="sm" onClick={handleNew}><Plus className="h-4 w-4 mr-1" /> New Rule</Button>
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {rules.map(r => (
-          <Card key={r.name}>
-            <CardContent className="p-4">
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <div className="font-medium">{r.name}</div>
-                  <div className="text-sm text-[hsl(var(--muted-foreground))]">
-                    {r.max_requests} req / {r.window_secs}s
-                  </div>
-                  {r.max_tokens && (
-                    <div className="text-xs text-[hsl(var(--muted-foreground))]">{r.max_tokens} tokens</div>
-                  )}
-                  {r.key_headers && r.key_headers.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-1">
-                      {r.key_headers.map(h => <Badge key={h} variant="outline" className="text-[10px]">{h}</Badge>)}
-                    </div>
-                  )}
-                </div>
-                <Badge variant={r.enabled ? "secondary" : "destructive"} className={r.enabled ? "bg-green-900 text-green-300" : ""}>{r.enabled ? "on" : "off"}</Badge>
-              </div>
-              <div className="flex gap-1 mt-3 justify-end">
-                <Button variant="ghost" size="sm" onClick={() => handleEdit(r)}><Pencil className="h-3 w-3 mr-1" /> Edit</Button>
-                <Button variant="ghost" size="sm" onClick={() => handleDelete(r.name)}><Trash2 className="h-3 w-3 mr-1 text-red-400" /> Delete</Button>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-        {rules.length === 0 && (
-          <div className="col-span-full text-center py-12 text-[hsl(var(--muted-foreground))]">No rate limit rules</div>
-        )}
-      </div>
+      <Card>
+        <CardContent className="p-0">
+          {rules.length === 0 ? (
+            <div className="text-center py-12 text-[hsl(var(--muted-foreground))]">No rate limit rules</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead><tr className="border-b border-[hsl(var(--border))]">
+                  <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Name</th>
+                  <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden sm:table-cell">Key Headers</th>
+                  <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Window</th>
+                  <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Max Requests</th>
+                  <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden md:table-cell">Max Tokens</th>
+                  <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Status</th>
+                  <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden sm:table-cell">Overrides</th>
+                  <th className="text-right px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Actions</th>
+                </tr></thead>
+                <tbody>
+                  {rules.map(r => (
+                    <tr key={r.name} className="border-b border-[hsl(var(--border))] last:border-0 hover:bg-[hsl(var(--accent))]/50 transition-colors">
+                      <td className="px-4 py-3 font-medium">{r.name}</td>
+                      <td className="px-4 py-3 hidden sm:table-cell"><div className="flex flex-wrap gap-1">{r.key_headers && r.key_headers.length > 0 ? r.key_headers.map(h => <Badge key={h} variant="outline" className="text-[10px]">{h}</Badge>) : <span className="text-xs text-[hsl(var(--muted-foreground))] italic">global</span>}</div></td>
+                      <td className="px-4 py-3"><span className="font-mono text-xs">{formatWindow(r.window_secs)}</span></td>
+                      <td className="px-4 py-3"><span className="font-mono text-xs">{r.max_requests.toLocaleString()}</span></td>
+                      <td className="px-4 py-3 hidden md:table-cell"><span className="font-mono text-xs">{r.max_tokens != null ? r.max_tokens.toLocaleString() : "—"}</span></td>
+                      <td className="px-4 py-3"><Switch checked={r.enabled} disabled={togglingName === r.name} onCheckedChange={() => toggleEnabled(r)} /></td>
+                      <td className="px-4 py-3 hidden sm:table-cell">{r.overrides > 0 ? <Badge variant="secondary" className="text-[10px]">{r.overrides}</Badge> : <span className="text-xs text-[hsl(var(--muted-foreground))]">—</span>}</td>
+                      <td className="px-4 py-3"><div className="flex justify-end gap-1">
+                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleEdit(r)}><Pencil className="h-3.5 w-3.5" /></Button>
+                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDeleteTarget(r.name)}><Trash2 className="h-3.5 w-3.5 text-red-400" /></Button>
+                      </div></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>
@@ -229,6 +257,14 @@ export default function RateLimits() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={open => { if (!open) setDeleteTarget(null) }}
+        title="Delete Rate Limit"
+        description={`Are you sure you want to delete rate limit "${deleteTarget}"? This action cannot be undone.`}
+        onConfirm={() => { if (deleteTarget) handleDelete(deleteTarget) }}
+      />
     </div>
   )
 }

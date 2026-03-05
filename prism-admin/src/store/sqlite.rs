@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use prism_router::config::types::*;
 use sqlx::SqlitePool;
 
+use crate::cluster::{Cluster, ProxyInstance, ProxyStatus};
 use super::{Store, StoreError, StoreResult};
 
 pub struct SqliteStore {
@@ -19,85 +20,45 @@ impl SqliteStore {
     }
 
     async fn migrate(&self) -> StoreResult<()> {
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS prism_providers (
+        for stmt in &[
+            "CREATE TABLE IF NOT EXISTS prism_providers (id TEXT PRIMARY KEY, config TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS prism_accounts (id TEXT PRIMARY KEY, config TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS prism_models (id TEXT PRIMARY KEY, config TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS prism_variants (id TEXT PRIMARY KEY, config TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS prism_pools (id TEXT PRIMARY KEY, config TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS prism_rate_limits (name TEXT PRIMARY KEY, config TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS prism_plugins (name TEXT PRIMARY KEY, config TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS prism_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS prism_clusters (
                 id TEXT PRIMARY KEY,
-                config TEXT NOT NULL
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                tags TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT (datetime('now'))
             )",
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StoreError::Internal(format!("migration: {}", e)))?;
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS prism_accounts (
-                id TEXT PRIMARY KEY,
-                config TEXT NOT NULL
+            "CREATE TABLE IF NOT EXISTS prism_proxies (
+                instance_id TEXT PRIMARY KEY,
+                cluster_id TEXT NOT NULL REFERENCES prism_clusters(id),
+                address TEXT NOT NULL,
+                version TEXT NOT NULL,
+                status TEXT DEFAULT 'online',
+                last_heartbeat TEXT DEFAULT (datetime('now')),
+                registered_at TEXT DEFAULT (datetime('now')),
+                config_version INTEGER DEFAULT 0,
+                metadata TEXT DEFAULT '{}'
             )",
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StoreError::Internal(format!("migration: {}", e)))?;
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS prism_models (
-                id TEXT PRIMARY KEY,
-                config TEXT NOT NULL
+            "CREATE TABLE IF NOT EXISTS prism_config_versions (
+                version INTEGER PRIMARY KEY AUTOINCREMENT,
+                cluster_id TEXT NOT NULL,
+                config TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
             )",
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StoreError::Internal(format!("migration: {}", e)))?;
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS prism_variants (
-                id TEXT PRIMARY KEY,
-                config TEXT NOT NULL
-            )",
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StoreError::Internal(format!("migration: {}", e)))?;
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS prism_pools (
-                id TEXT PRIMARY KEY,
-                config TEXT NOT NULL
-            )",
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StoreError::Internal(format!("migration: {}", e)))?;
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS prism_rate_limits (
-                name TEXT PRIMARY KEY,
-                config TEXT NOT NULL
-            )",
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StoreError::Internal(format!("migration: {}", e)))?;
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS prism_plugins (
-                name TEXT PRIMARY KEY,
-                config TEXT NOT NULL
-            )",
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StoreError::Internal(format!("migration: {}", e)))?;
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS prism_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )",
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StoreError::Internal(format!("migration: {}", e)))?;
+        ] {
+            sqlx::query(stmt)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StoreError::Internal(format!("migration: {}", e)))?;
+        }
 
         Ok(())
     }
@@ -489,7 +450,6 @@ impl Store for SqliteStore {
 
     // Bulk import
     async fn import_config(&self, config: PrismConfig) -> StoreResult<()> {
-        // Clear all tables
         sqlx::query("DELETE FROM prism_providers").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
         sqlx::query("DELETE FROM prism_accounts").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
         sqlx::query("DELETE FROM prism_models").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
@@ -522,5 +482,195 @@ impl Store for SqliteStore {
         self.set_auth(config.auth).await?;
         self.set_access_log(config.access_log).await?;
         Ok(())
+    }
+
+    // Clusters
+    async fn list_clusters(&self) -> StoreResult<Vec<Cluster>> {
+        let rows: Vec<(String, String, String, String, String)> =
+            sqlx::query_as("SELECT id, name, COALESCE(description, ''), COALESCE(tags, '{}'), created_at FROM prism_clusters ORDER BY created_at")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StoreError::Internal(e.to_string()))?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, name, description, tags, created_at)| {
+                let tags: std::collections::HashMap<String, String> =
+                    serde_json::from_str(&tags).unwrap_or_default();
+                let created_at = chrono::DateTime::parse_from_rfc3339(&created_at)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now());
+                Cluster { id, name, description, tags, created_at }
+            })
+            .collect())
+    }
+
+    async fn get_cluster(&self, id: &str) -> StoreResult<Cluster> {
+        let row: Option<(String, String, String, String, String)> =
+            sqlx::query_as("SELECT id, name, COALESCE(description, ''), COALESCE(tags, '{}'), created_at FROM prism_clusters WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| StoreError::Internal(e.to_string()))?;
+        match row {
+            Some((id, name, description, tags, created_at)) => {
+                let tags: std::collections::HashMap<String, String> =
+                    serde_json::from_str(&tags).unwrap_or_default();
+                let created_at = chrono::DateTime::parse_from_rfc3339(&created_at)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now());
+                Ok(Cluster { id, name, description, tags, created_at })
+            }
+            None => Err(StoreError::NotFound(format!("cluster '{}'", id))),
+        }
+    }
+
+    async fn upsert_cluster(&self, id: &str, cluster: Cluster) -> StoreResult<()> {
+        let tags = Self::to_json(&cluster.tags)?;
+        let created_at = cluster.created_at.to_rfc3339();
+        sqlx::query(
+            "INSERT INTO prism_clusters (id, name, description, tags, created_at) VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (id) DO UPDATE SET name = $2, description = $3, tags = $4",
+        )
+        .bind(id)
+        .bind(&cluster.name)
+        .bind(&cluster.description)
+        .bind(tags)
+        .bind(created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn delete_cluster(&self, id: &str) -> StoreResult<()> {
+        let count: (i32,) =
+            sqlx::query_as("SELECT COUNT(*) FROM prism_proxies WHERE cluster_id = $1")
+                .bind(id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StoreError::Internal(e.to_string()))?;
+        if count.0 > 0 {
+            return Err(StoreError::Conflict(format!(
+                "cluster '{}' still has {} proxies",
+                id, count.0
+            )));
+        }
+        sqlx::query("DELETE FROM prism_clusters WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    // Proxy instances
+    async fn list_proxies(&self, cluster_id: Option<&str>) -> StoreResult<Vec<ProxyInstance>> {
+        let rows: Vec<(String, String, String, String, String, String, String, i64, String)> = match cluster_id {
+            Some(cid) => {
+                sqlx::query_as(
+                    "SELECT instance_id, cluster_id, address, version, COALESCE(status, 'online'), last_heartbeat, registered_at, COALESCE(config_version, 0), COALESCE(metadata, '{}') FROM prism_proxies WHERE cluster_id = $1 ORDER BY registered_at"
+                )
+                .bind(cid)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StoreError::Internal(e.to_string()))?
+            }
+            None => {
+                sqlx::query_as(
+                    "SELECT instance_id, cluster_id, address, version, COALESCE(status, 'online'), last_heartbeat, registered_at, COALESCE(config_version, 0), COALESCE(metadata, '{}') FROM prism_proxies ORDER BY registered_at"
+                )
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StoreError::Internal(e.to_string()))?
+            }
+        };
+        Ok(rows
+            .into_iter()
+            .map(|(instance_id, cluster_id, address, version, status, last_heartbeat, registered_at, config_version, metadata)| {
+                let status = match status.as_str() {
+                    "offline" => ProxyStatus::Offline,
+                    "degraded" => ProxyStatus::Degraded,
+                    _ => ProxyStatus::Online,
+                };
+                let metadata: std::collections::HashMap<String, String> =
+                    serde_json::from_str(&metadata).unwrap_or_default();
+                let last_heartbeat = chrono::DateTime::parse_from_rfc3339(&last_heartbeat)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now());
+                let registered_at = chrono::DateTime::parse_from_rfc3339(&registered_at)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now());
+                ProxyInstance {
+                    instance_id,
+                    cluster_id,
+                    address,
+                    version,
+                    status,
+                    last_heartbeat,
+                    registered_at,
+                    config_version: config_version as u64,
+                    metadata,
+                }
+            })
+            .collect())
+    }
+
+    async fn register_proxy(&self, proxy: ProxyInstance) -> StoreResult<()> {
+        let status_str = match &proxy.status {
+            ProxyStatus::Online => "online",
+            ProxyStatus::Offline => "offline",
+            ProxyStatus::Degraded => "degraded",
+        };
+        let metadata = Self::to_json(&proxy.metadata)?;
+        let last_heartbeat = proxy.last_heartbeat.to_rfc3339();
+        let registered_at = proxy.registered_at.to_rfc3339();
+        sqlx::query(
+            "INSERT INTO prism_proxies (instance_id, cluster_id, address, version, status, last_heartbeat, registered_at, config_version, metadata) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+             ON CONFLICT (instance_id) DO UPDATE SET cluster_id = $2, address = $3, version = $4, status = $5, last_heartbeat = $6, config_version = $8, metadata = $9",
+        )
+        .bind(&proxy.instance_id)
+        .bind(&proxy.cluster_id)
+        .bind(&proxy.address)
+        .bind(&proxy.version)
+        .bind(status_str)
+        .bind(last_heartbeat)
+        .bind(registered_at)
+        .bind(proxy.config_version as i64)
+        .bind(metadata)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn heartbeat_proxy(&self, instance_id: &str, config_version: u64) -> StoreResult<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE prism_proxies SET last_heartbeat = $2, config_version = $3, status = 'online' WHERE instance_id = $1",
+        )
+        .bind(instance_id)
+        .bind(now)
+        .bind(config_version as i64)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Internal(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::NotFound(format!("proxy '{}'", instance_id)));
+        }
+        Ok(())
+    }
+
+    async fn unregister_proxy(&self, instance_id: &str) -> StoreResult<()> {
+        sqlx::query("DELETE FROM prism_proxies WHERE instance_id = $1")
+            .bind(instance_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn cluster_config(&self, _cluster_id: &str) -> StoreResult<PrismConfig> {
+        self.snapshot().await
     }
 }

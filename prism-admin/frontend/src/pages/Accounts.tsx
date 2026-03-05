@@ -8,6 +8,7 @@ import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@
 import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
 import { Plus, Trash2, Pencil, X, Eye, EyeOff } from "lucide-react"
+import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 
 interface Account {
   id: string
@@ -60,6 +61,7 @@ export default function Accounts() {
   const [form, setForm] = useState<FormState>(emptyForm)
   const [saving, setSaving] = useState(false)
   const [showKey, setShowKey] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
 
   const load = () => {
     setLoading(true)
@@ -99,7 +101,6 @@ export default function Accounts() {
   }
 
   const handleDelete = async (id: string) => {
-    if (!confirm(`Delete account "${id}"?`)) return
     await fetch(`/api/accounts/${id}`, { method: "DELETE" })
     load()
   }
@@ -184,7 +185,7 @@ export default function Accounts() {
                   <Button variant="ghost" size="icon" onClick={() => handleEdit(a.id)}>
                     <Pencil className="h-4 w-4" />
                   </Button>
-                  <Button variant="ghost" size="icon" onClick={() => handleDelete(a.id)}>
+                  <Button variant="ghost" size="icon" onClick={() => setDeleteTarget(a.id)}>
                     <Trash2 className="h-4 w-4 text-red-400" />
                   </Button>
                 </div>
@@ -305,6 +306,14 @@ export default function Accounts() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={open => { if (!open) setDeleteTarget(null) }}
+        title="Delete Account"
+        description={`Are you sure you want to delete account "${deleteTarget}"? This action cannot be undone.`}
+        onConfirm={() => { if (deleteTarget) handleDelete(deleteTarget) }}
+      />
     </div>
   )
 }

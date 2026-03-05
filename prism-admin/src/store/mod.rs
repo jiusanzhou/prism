@@ -2,6 +2,8 @@ use async_trait::async_trait;
 use prism_router::config::types::*;
 use std::fmt;
 
+use crate::cluster::{Cluster, ProxyInstance};
+
 pub mod file;
 
 #[cfg(feature = "postgres")]
@@ -85,4 +87,19 @@ pub trait Store: Send + Sync {
 
     // Bulk import from a full config (for PUT /api/config)
     async fn import_config(&self, config: PrismConfig) -> StoreResult<()>;
+
+    // Clusters
+    async fn list_clusters(&self) -> StoreResult<Vec<Cluster>>;
+    async fn get_cluster(&self, id: &str) -> StoreResult<Cluster>;
+    async fn upsert_cluster(&self, id: &str, cluster: Cluster) -> StoreResult<()>;
+    async fn delete_cluster(&self, id: &str) -> StoreResult<()>;
+
+    // Proxy instances
+    async fn list_proxies(&self, cluster_id: Option<&str>) -> StoreResult<Vec<ProxyInstance>>;
+    async fn register_proxy(&self, proxy: ProxyInstance) -> StoreResult<()>;
+    async fn heartbeat_proxy(&self, instance_id: &str, config_version: u64) -> StoreResult<()>;
+    async fn unregister_proxy(&self, instance_id: &str) -> StoreResult<()>;
+
+    // Config get effective config for a cluster
+    async fn cluster_config(&self, cluster_id: &str) -> StoreResult<PrismConfig>;
 }

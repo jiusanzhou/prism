@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { BrowserRouter, Routes, Route, NavLink, useLocation } from "react-router-dom"
-import { LayoutDashboard, Box, Brain, GitBranch, Gauge, Layers, Puzzle, Shield, ScrollText, FileCode, Menu, Sun, Moon, Monitor, Users } from "lucide-react"
+import { LayoutDashboard, Box, Brain, GitBranch, Gauge, Layers, Puzzle, Shield, ScrollText, FileCode, Menu, Sun, Moon, Monitor, Server, Activity, Wrench } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useTheme } from "@/hooks/useTheme"
 import { Sheet, SheetTrigger, SheetContent } from "@/components/ui/sheet"
@@ -14,23 +14,30 @@ import Plugins from "./pages/Plugins"
 import Auth from "./pages/Auth"
 import AccessLog from "./pages/AccessLog"
 import ConfigEditor from "./pages/ConfigEditor"
-import Accounts from "./pages/Accounts"
+import Clusters from "./pages/Clusters"
+import Proxies from "./pages/Proxies"
+import Tools from "./pages/Tools"
 
 const resourceNav = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
   { to: "/providers", label: "Providers", icon: Box },
-  { to: "/accounts", label: "Accounts", icon: Users },
   { to: "/models", label: "Models", icon: Brain },
-  { to: "/variants", label: "Variants", icon: GitBranch },
+  { to: "/variants", label: "All Variants", icon: GitBranch },
   { to: "/rate-limits", label: "Rate Limits", icon: Gauge },
   { to: "/pools", label: "Pools", icon: Layers },
   { to: "/plugins", label: "Plugins", icon: Puzzle },
+]
+
+const infraNav = [
+  { to: "/clusters", label: "Clusters", icon: Server },
+  { to: "/proxies", label: "Proxies", icon: Activity },
 ]
 
 const settingsNav = [
   { to: "/auth", label: "Auth", icon: Shield },
   { to: "/access-log", label: "Access Log", icon: ScrollText },
   { to: "/config", label: "Config", icon: FileCode },
+  { to: "/tools", label: "Tools", icon: Wrench },
 ]
 
 function NavItems({ onClick }: { onClick?: () => void }) {
@@ -42,6 +49,24 @@ function NavItems({ onClick }: { onClick?: () => void }) {
           key={item.to}
           to={item.to}
           end={item.to === "/"}
+          onClick={onClick}
+          className={({ isActive }) =>
+            `flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${
+              isActive
+                ? "bg-[hsl(var(--accent))] text-[hsl(var(--accent-foreground))]"
+                : "text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--accent-foreground))]"
+            }`
+          }
+        >
+          <item.icon className="h-4 w-4" />
+          {item.label}
+        </NavLink>
+      ))}
+      <div className="px-3 pt-4 pb-2 text-xs font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider">Infrastructure</div>
+      {infraNav.map(item => (
+        <NavLink
+          key={item.to}
+          to={item.to}
           onClick={onClick}
           className={({ isActive }) =>
             `flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${
@@ -140,15 +165,17 @@ function AppLayout() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/providers" element={<Providers />} />
-            <Route path="/accounts" element={<Accounts />} />
             <Route path="/models" element={<Models />} />
             <Route path="/variants" element={<Variants />} />
             <Route path="/rate-limits" element={<RateLimits />} />
             <Route path="/pools" element={<Pools />} />
             <Route path="/plugins" element={<Plugins />} />
+            <Route path="/clusters" element={<Clusters />} />
+            <Route path="/proxies" element={<Proxies />} />
             <Route path="/auth" element={<Auth />} />
             <Route path="/access-log" element={<AccessLog />} />
             <Route path="/config" element={<ConfigEditor />} />
+            <Route path="/tools" element={<Tools />} />
           </Routes>
         </main>
       </div>

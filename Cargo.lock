@@ -2954,10 +2954,12 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum 0.8.8",
+ "chrono",
  "clap",
  "mime_guess",
  "prism-core",
  "prism-router",
+ "reqwest",
  "rust-embed",
  "serde",
  "serde_json",

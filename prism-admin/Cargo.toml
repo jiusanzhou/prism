@@ -21,6 +21,8 @@ rust-embed = { version = "8", features = ["mime-guess"] }
 mime_guess = "2"
 clap = { version = "4", features = ["derive"] }
 async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", features = ["json"] }
 
 [dependencies.sqlx]
 version = "0.8"
