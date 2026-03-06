@@ -116,6 +116,8 @@ pub struct ProxyContext {
     pub requested_model: Option<String>,
     /// Active concurrency guards — dropped when request completes.
     pub concurrency_guards: Vec<crate::ratelimit::concurrency::ConcurrencyGuard>,
+    /// Whether X-Prism-Debug header was set on the request.
+    pub debug_mode: bool,
 }
 
 impl Default for ProxyContext {
@@ -163,6 +165,7 @@ impl Default for ProxyContext {
             retry_fallback_chain: Vec::new(),
             requested_model: None,
             concurrency_guards: Vec::new(),
+            debug_mode: false,
         }
     }
 }
@@ -377,9 +380,15 @@ impl ProxyHttp for PrismProxy {
                 format!("prism-{:x}-{:x}", ts, seq)
             });
 
+        // Check if client wants debug trace headers
+        ctx.debug_mode = ctx.request_headers_snapshot
+            .iter()
+            .any(|(k, v)| k == "x-prism-debug" && (v == "true" || v == "1"));
+
         debug!(
             path = %path,
             protocol = %ctx.protocol.as_str(),
+            debug_mode = %ctx.debug_mode,
             "Request received"
         );
 
@@ -1211,6 +1220,38 @@ impl ProxyHttp for PrismProxy {
                 }
                 global_chain.process_response_headers(global_ctx);
             }
+        }
+
+        // ── X-Prism-Debug response headers ──
+        if ctx.debug_mode {
+            let _ = upstream_response.insert_header("X-Prism-Request-Id", &ctx.request_id);
+            let _ = upstream_response.insert_header("X-Prism-Model", ctx.requested_model.as_deref().unwrap_or("-"));
+            let _ = upstream_response.insert_header("X-Prism-Variant", ctx.selected_variant.as_deref().unwrap_or("-"));
+            let _ = upstream_response.insert_header("X-Prism-Provider", ctx.selected_provider.as_deref().unwrap_or("-"));
+            let _ = upstream_response.insert_header("X-Prism-Upstream-Model", ctx.upstream_model_name.as_deref().unwrap_or("-"));
+            let _ = upstream_response.insert_header("X-Prism-Upstream-Base-Url", ctx.upstream_base_url.as_deref().unwrap_or("-"));
+            let _ = upstream_response.insert_header("X-Prism-Protocol", ctx.protocol.as_str());
+            let _ = upstream_response.insert_header("X-Prism-Outbound-Protocol", ctx.outbound_protocol.as_deref().unwrap_or("-"));
+            if let Some(dt) = ctx.decision_time_us {
+                let _ = upstream_response.insert_header("X-Prism-Decision-Time-Us", &dt.to_string());
+            }
+            if let Some(ref ttfb) = ctx.upstream_first_byte_at {
+                let ms = ttfb.duration_since(ctx.request_start).as_millis();
+                let _ = upstream_response.insert_header("X-Prism-Upstream-Ttfb-Ms", &ms.to_string());
+            }
+            let total_ms = ctx.request_start.elapsed().as_millis();
+            let _ = upstream_response.insert_header("X-Prism-Total-Latency-Ms", &total_ms.to_string());
+            if !ctx.response_flags.is_empty() {
+                let _ = upstream_response.insert_header("X-Prism-Flags", &ctx.response_flags.join(","));
+            }
+            if !ctx.retry_fallback_chain.is_empty() {
+                let _ = upstream_response.insert_header("X-Prism-Fallback-Chain", &ctx.retry_fallback_chain.join(","));
+            }
+            let _ = upstream_response.insert_header("X-Prism-Conversion", if ctx.needs_conversion { "true" } else { "false" });
+            if let Some(bytes) = ctx.bytes_received {
+                let _ = upstream_response.insert_header("X-Prism-Bytes-Received", &bytes.to_string());
+            }
+            let _ = upstream_response.insert_header("X-Prism-Attempt-Count", &ctx.upstream_request_attempt_count.to_string());
         }
 
         if !ctx.needs_conversion {
