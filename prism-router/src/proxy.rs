@@ -723,10 +723,13 @@ impl ProxyHttp for PrismProxy {
                         }).collect())
                .unwrap_or_default();
 
-                    // Extract api_key and headers from account's AuthConfig
+                    // Extract api_key from account's AuthConfig.
+                    // Note: registry bakes "Bearer " prefix into ApiKey.key for Bearer auth.
+                    // We strip it here to give the provider plugin the raw key.
                     let (acct_key, acct_headers) = match account.map(|a| &a.auth) {
                         Some(prism_core::types::AuthConfig::ApiKey { key, .. }) if !key.is_empty() => {
-                            (Some(key.clone()), std::collections::HashMap::new())
+                            let raw_key = key.strip_prefix("Bearer ").unwrap_or(key).to_string();
+                            (Some(raw_key), std::collections::HashMap::new())
                         }
                         Some(prism_core::types::AuthConfig::Custom { headers }) => {
                             (None, headers.clone())
