@@ -1,6 +1,7 @@
 mod api;
 pub mod codec;
 mod config;
+pub mod provider;
 mod config_watcher;
 pub mod metrics;
 pub mod plugin_loader;

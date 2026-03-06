@@ -15,6 +15,8 @@ use prism_core::router::{PrismRouter, RouteMetadata, RouteRequest, Router};
 
 use crate::access_log::{AccessLogData, AccessLogger};
 use crate::codec;
+use crate::provider;
+use crate::provider::registry::ProviderPluginRegistry;
 use crate::codec::registry::CodecRegistry;
 use crate::metrics::{MetricsCollector, RequestRecord};
 use crate::protocol::LlmProtocol;
@@ -52,6 +54,8 @@ pub struct ProxyContext {
     pub codec_ctx: Option<codec::ProxyContext>,
     /// Whether protocol conversion is active for this request.
     pub needs_conversion: bool,
+    /// Provider plugin request context (set in upstream_peer).
+    pub provider_ctx: Option<provider::ProviderRequestContext>,
     /// Buffer for accumulating request body chunks when conversion is needed.
     pub request_body_buffer: Option<Vec<u8>>,
     /// Buffer for accumulating response body chunks when conversion is needed (non-streaming).
@@ -129,6 +133,7 @@ impl Default for ProxyContext {
             response_status: None,
             codec_ctx: None,
             needs_conversion: false,
+            provider_ctx: None,
             request_body_buffer: None,
             response_body_buffer: None,
             outbound_protocol: None,
@@ -167,6 +172,7 @@ pub struct PrismProxy {
     pub router: Arc<ArcSwap<PrismRouter>>,
     pub metrics: Arc<MetricsCollector>,
     pub codec_registry: Arc<CodecRegistry>,
+    pub provider_plugins: Arc<ProviderPluginRegistry>,
     pub rate_limiter: Option<Arc<RateLimiter>>,
     pub access_logger: Option<Arc<AccessLogger>>,
     /// Concurrency limiter.
@@ -189,6 +195,7 @@ impl PrismProxy {
             router,
             metrics,
             codec_registry: Arc::new(CodecRegistry::new()),
+            provider_plugins: Arc::new(ProviderPluginRegistry::new()),
             rate_limiter: None,
             access_logger: None,
             concurrency_limiter: None,
@@ -209,6 +216,7 @@ impl PrismProxy {
             router,
             metrics,
             codec_registry,
+            provider_plugins: Arc::new(ProviderPluginRegistry::new()),
             rate_limiter: None,
             access_logger: None,
             concurrency_limiter: None,
@@ -704,6 +712,50 @@ impl ProxyHttp for PrismProxy {
 
                 ctx.upstream_base_url = Some(base_url.to_string());
 
+                // ── Build ProviderRequestContext for provider plugin ──
+                {
+                    let provider_type = provider
+                        .and_then(|p| p.protocols.first().cloned())
+                        .unwrap_or_default();
+                    let provider_extra = provider
+                        .map(|p| p.metadata.clone().into_iter().map(|(k, v)| {
+                            (k, serde_json::Value::String(v))
+                        }).collect())
+               .unwrap_or_default();
+
+                    // Extract api_key and headers from account's AuthConfig
+                    let (acct_key, acct_headers) = match account.map(|a| &a.auth) {
+                        Some(prism_core::types::AuthConfig::ApiKey { key, .. }) if !key.is_empty() => {
+                            (Some(key.clone()), std::collections::HashMap::new())
+                        }
+                        Some(prism_core::types::AuthConfig::Custom { headers }) => {
+                            (None, headers.clone())
+                        }
+                        _ => (None, std::collections::HashMap::new()),
+                    };
+
+                    let variant_obj = router.registry.variants.get(&decision.selected_variant);
+                    let deployment = variant_obj.and_then(|v| v.deployment_name.clone());
+                    let upstream_model = ctx.upstream_model_name.clone();
+
+                    ctx.provider_ctx = Some(provider::ProviderRequestContext {
+                        provider_id: decision.selected_provider.clone(),
+                        provider_type,
+                        base_url: base_url.to_string(),
+                        provider_extra,
+                        account_id: decision.selected_account.clone(),
+                        account_api_key: acct_key,
+                        account_headers: acct_headers,
+                        variant_id: decision.selected_variant.clone(),
+                        model_id: decision.selected_model.clone(),
+                        upstream_model_name: upstream_model,
+                        deployment_name: deployment,
+                        original_path: path.clone(),
+                        method: ctx.request_method.clone(),
+                        is_streaming: false,
+                    });
+                }
+
                 // ── Codec: determine outbound protocol and check if conversion is needed ──
                 let outbound_protocol = provider
                     .and_then(|p| p.protocols.first())
@@ -828,36 +880,102 @@ impl ProxyHttp for PrismProxy {
             })?;
         }
 
-        // Set the auth header (Authorization / x-api-key / custom)
-        if let Some(ref auth) = ctx.upstream_auth {
-            let auth_header = ctx.upstream_auth_header.clone();
-            let auth_value = auth.clone();
-            upstream_request
-                .insert_header(auth_header, &auth_value)
-                .map_err(|e| {
-                    pingora::Error::explain(
-                        pingora::ErrorType::InternalError,
-                        format!("header error: {:?}", e),
-                    )
-                })?;
-        }
+        // ── Provider plugin: build auth headers + rewrite URL ──
+        if let Some(ref pctx) = ctx.provider_ctx {
+            let provider_type = if pctx.provider_type.is_empty() {
+                "openai"
+            } else {
+                &pctx.provider_type
+            };
+            let plugin = self.provider_plugins.get(provider_type);
 
-        // Set custom headers (e.g. x-api-key for wanqing)
-        {
-            let headers_to_set: Vec<(String, String)> = ctx.upstream_custom_headers.clone();
-            for (key, value) in headers_to_set {
+            // Build auth headers via provider plugin
+            match plugin.build_auth(pctx) {
+                Ok(auth_result) => {
+                    let n = auth_result.headers.len();
+                    for (key, value) in auth_result.headers {
+                        upstream_request
+                            .insert_header(key, &value)
+                            .map_err(|e| {
+                                pingora::Error::explain(
+                                    pingora::ErrorType::InternalError,
+                                    format!("provider auth header error: {:?}", e),
+                                )
+                            })?;
+                    }
+                    debug!(
+                        provider_type = %provider_type,
+                        headers = %n,
+                        "Provider plugin set auth headers"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        provider_type = %provider_type,
+                        error = %e,
+                        "Provider plugin build_auth failed, falling back"
+                    );
+                }
+            }
+
+            // Rewrite URL via provider plugin
+            match plugin.rewrite_url(pctx) {
+                Ok(url_result) => {
+                    if url_result.path != pctx.original_path {
+                        if let Ok(uri) = url_result.path.parse::<http::Uri>() {
+                            upstream_request.set_uri(uri);
+                            debug!(
+                                original = %pctx.original_path,
+                                rewritten = %url_result.path,
+                                "Provider plugin rewrote URL"
+                            );
+                        }
+                    }
+                    if let Some(ref host) = url_result.host_override {
+                        let host_str: &str = host.as_str();
+                        let _ = upstream_request.insert_header("Host", host_str);
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        provider_type = %provider_type,
+                        error = %e,
+                        "Provider plugin rewrite_url failed"
+                    );
+                }
+            }
+        } else {
+            // Fallback: legacy auth path (no provider_ctx — shouldn't happen)
+            if let Some(ref auth) = ctx.upstream_auth {
+                let auth_header = ctx.upstream_auth_header.clone();
+                let auth_value = auth.clone();
                 upstream_request
-                    .insert_header(
-                        http::header::HeaderName::from_bytes(key.as_bytes())
-                            .unwrap_or(http::header::CONTENT_TYPE),
-                        &value,
-                    )
+                    .insert_header(auth_header, &auth_value)
                     .map_err(|e| {
                         pingora::Error::explain(
                             pingora::ErrorType::InternalError,
-                            format!("custom header error: {:?}", e),
+                            format!("header error: {:?}", e),
                         )
                     })?;
+            }
+
+            // Set custom headers (legacy path)
+            {
+                let headers_to_set: Vec<(String, String)> = ctx.upstream_custom_headers.clone();
+                for (key, value) in headers_to_set {
+                    upstream_request
+                        .insert_header(
+                            http::header::HeaderName::from_bytes(key.as_bytes())
+                                .unwrap_or(http::header::CONTENT_TYPE),
+                            &value,
+                        )
+                        .map_err(|e| {
+                            pingora::Error::explain(
+                                pingora::ErrorType::InternalError,
+                                format!("custom header error: {:?}", e),
+                            )
+                        })?;
+                }
             }
         }
 

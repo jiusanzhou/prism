@@ -3,6 +3,7 @@
 pub mod api;
 pub mod codec;
 pub mod config;
+pub mod provider;
 pub mod config_watcher;
 pub mod metrics;
 pub mod plugin_loader;
