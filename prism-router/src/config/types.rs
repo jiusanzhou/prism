@@ -271,6 +271,13 @@ pub struct VariantConfig {
     /// Pricing override.
     #[serde(default)]
     pub pricing_override: Option<ModelPricing>,
+    /// Variant status: "active" (default) or "inactive".
+    #[serde(default = "default_variant_status")]
+    pub status: String,
+}
+
+fn default_variant_status() -> String {
+    "active".to_string()
 }
 
 /// Pool configuration.

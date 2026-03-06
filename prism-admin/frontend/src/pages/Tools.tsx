@@ -151,7 +151,7 @@ function mapProvider(raw: RawProvider): MappedProvider {
     provider.aws_region = rc.awsRegion as string || "us-east-1"
     provider.aws_access_key = rc.awsAccessKey as string || ""
     provider.aws_secret_key = rc.awsSecretKey as string || ""
-    provider.base_url = \`https://bedrock-runtime.\${provider.aws_region}.amazonaws.com\`
+    provider.base_url = `https://bedrock-runtime.${provider.aws_region}.amazonaws.com`
   }
 
   const tokens = raw.tokens || raw.rawConfigs?.apiTokens || []
@@ -467,7 +467,9 @@ export default function Tools() {
                           {m.provider.base_url || "—"}
                         </td>
                         <td className="py-2 px-2">
-                          <Badge variant="outline">{m.accounts.length}</Badge>
+                          <Badge variant={m.accounts.length > 0 ? "outline" : "secondary"}>
+                            {m.accounts.length > 0 ? m.accounts.length : "no token"}
+                          </Badge>
                         </td>
                       </tr>
                     ))}
@@ -493,7 +495,11 @@ export default function Tools() {
                             <div>Protocols: <span className="text-[hsl(var(--foreground))]">{m.provider.protocols.join(", ")}</span></div>
                             <div>Auth Type: <span className="text-[hsl(var(--foreground))]">{m.provider.auth_type}</span></div>
                             <div>Base URL: <span className="text-[hsl(var(--foreground))]">{m.provider.base_url || "—"}</span></div>
-                            <div>Accounts: <span className="text-[hsl(var(--foreground))]">{m.accounts.length} ({m.accounts.map(a => a.id).join(", ")})</span></div>
+                            <div>Accounts: <span className="text-[hsl(var(--foreground))]">
+                              {m.accounts.length > 0
+                                ? m.accounts.length + " (" + m.accounts.map(a => a.id).join(", ") + ")"
+                                : "None — no API tokens"}
+                            </span></div>
                           </div>
                         </div>
                       )
