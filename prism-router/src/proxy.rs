@@ -683,6 +683,73 @@ impl ProxyHttp for PrismProxy {
         ctx: &mut Self::CTX,
     ) -> Result<Box<HttpPeer>, Box<pingora::Error>> {
 
+        // ── Retry fast-path: if fail_to_connect set a new variant, use it directly ──
+        if ctx.upstream_request_attempt_count > 1 {
+            if let Some(ref variant_id) = ctx.selected_variant {
+                let router = self.router.load();
+                if let Some(variant) = router.registry.variants.get(variant_id) {
+                    // Resolve provider from variant's endpoint
+                    let endpoint = router.registry.endpoints.get(&variant.endpoint_id);
+                    let provider_id = endpoint.map(|ep| ep.provider_id.clone()).unwrap_or_default();
+                    let provider = router.registry.providers.get(&provider_id);
+
+                    ctx.selected_provider = Some(provider_id.clone());
+                    ctx.upstream_model_name = variant.upstream_model_name.clone();
+
+                    let base_url = variant.base_url.as_deref()
+                        .or_else(|| endpoint.and_then(|ep| ep.base_url.as_deref()))
+                        .or_else(|| provider.map(|p| p.base_url.as_str()))
+                        .unwrap_or("https://api.openai.com/v1");
+                    ctx.upstream_base_url = Some(base_url.to_string());
+
+                    // Re-resolve auth from account
+                    ctx.upstream_auth = None;
+                    ctx.upstream_custom_headers.clear();
+                    let account_id = variant.account_id.as_ref();
+                    if let Some(acct) = account_id.and_then(|id| router.registry.accounts.get(id)) {
+                        match &acct.auth {
+                            prism_core::types::AuthConfig::ApiKey { key, header } if !key.is_empty() => {
+                                ctx.upstream_auth = Some(key.clone());
+                                ctx.upstream_auth_header = header.clone();
+                            }
+                            prism_core::types::AuthConfig::Custom { headers } if !headers.is_empty() => {
+                                ctx.upstream_custom_headers = headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                            }
+                            _ => {}
+                        }
+                    }
+                    // Fallback to provider auth
+                    if ctx.upstream_auth.is_none() && ctx.upstream_custom_headers.is_empty() {
+                        if let Some(p) = provider {
+                            match &p.auth {
+                                prism_core::types::AuthConfig::ApiKey { key, header } => {
+                                    ctx.upstream_auth = Some(key.clone());
+                                    ctx.upstream_auth_header = header.clone();
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    let (host, port, use_tls) = Self::parse_upstream(base_url)?;
+                    info!(
+                        variant = %variant_id,
+                        provider = %provider_id,
+                        host = %host,
+                        attempt = ctx.upstream_request_attempt_count,
+                        "Retry → upstream"
+                    );
+
+                    let mut peer = HttpPeer::new((host, port), use_tls, host.to_string());
+                    peer.options.connection_timeout = Some(std::time::Duration::from_secs(5));
+                    peer.options.read_timeout = Some(std::time::Duration::from_secs(self.request_timeout_secs));
+                    peer.options.write_timeout = Some(std::time::Duration::from_secs(10));
+                    peer.options.set_http_version(1, 1);
+                    return Ok(Box::new(peer));
+                }
+            }
+        }
+
         // Build a minimal route request from path + headers
         let path = session.req_header().uri.path().to_string();
         let protocol_str = ctx.protocol.as_str();
@@ -711,47 +778,91 @@ impl ProxyHttp for PrismProxy {
             Ok(decision) => {
                 ctx.decision_time_us = Some(route_start.elapsed().as_micros() as u64);
 
-                // Circuit breaker check
-                if let Some(ref cb) = self.circuit_breaker {
-                    use crate::circuit_breaker::CircuitState;
-                    match cb.check(&decision.selected_provider) {
-                        CircuitState::Open => {
-                            warn!(
-                                provider = %decision.selected_provider,
-                                "Circuit breaker OPEN — rejecting request"
-                            );
-                            ctx.response_flags.push("CB".to_string());
-                            ctx.error_message = Some(format!("circuit breaker open for provider {}", decision.selected_provider));
-                            return Err(pingora::Error::explain(
-                                pingora::ErrorType::ConnectProxyFailure,
-                                format!("circuit breaker open for provider {}", decision.selected_provider),
-                            ));
+                // Build candidate list: primary + fallback chain
+                let mut candidates = vec![decision.selected_variant.clone()];
+                candidates.extend(decision.fallback_chain.iter().cloned());
+
+                // Find the first healthy candidate
+                let mut chosen_variant = None;
+                for candidate in &candidates {
+                    let variant = router.registry.variants.get(candidate);
+                    let provider_id = variant
+                        .and_then(|v| {
+                            router.registry.endpoints.get(&v.endpoint_id)
+                                .map(|ep| ep.provider_id.clone())
+                        })
+                        .unwrap_or_default();
+
+                    // Circuit breaker check
+                    let cb_ok = if let Some(ref cb) = self.circuit_breaker {
+                        use crate::circuit_breaker::CircuitState;
+                        match cb.check(&provider_id) {
+                            CircuitState::Open => {
+                                warn!(provider = %provider_id, variant = %candidate, "Circuit breaker OPEN — skipping");
+                                false
+                            }
+                            CircuitState::HalfOpen => {
+                                info!(provider = %provider_id, variant = %candidate, "Circuit breaker HALF-OPEN — probe");
+                                true
+                            }
+                            CircuitState::Closed => true,
                         }
-                        CircuitState::HalfOpen => {
+                    } else {
+                        true
+                    };
+
+                    // Health checker check
+                    let health_ok = if let Some(ref hc) = self.health_checker {
+                        hc.is_healthy(candidate)
+                    } else {
+                        true
+                    };
+
+                    if cb_ok && health_ok {
+                        chosen_variant = Some(candidate.clone());
+                        if candidate != &decision.selected_variant {
                             info!(
-                                provider = %decision.selected_provider,
-                                "Circuit breaker HALF-OPEN — allowing probe request"
+                                original = %decision.selected_variant,
+                                failover = %candidate,
+                                "Failover to healthy variant"
                             );
+                            ctx.response_flags.push("FO".to_string()); // failover flag
                         }
-                        CircuitState::Closed => {}
+                        break;
                     }
                 }
-                ctx.selected_variant = Some(decision.selected_variant.clone());
-                ctx.selected_provider = Some(decision.selected_provider.clone());
+
+                let chosen_variant = match chosen_variant {
+                    Some(v) => v,
+                    None => {
+                        // All candidates unhealthy — use primary anyway (best effort)
+                        warn!("All candidates unhealthy, using primary as best effort");
+                        ctx.response_flags.push("AUH".to_string()); // all unhealthy
+                        decision.selected_variant.clone()
+                    }
+                };
+
+                // Resolve chosen variant's provider
+                let chosen_provider = router.registry.variants.get(&chosen_variant)
+                    .and_then(|v| router.registry.endpoints.get(&v.endpoint_id))
+                    .map(|ep| ep.provider_id.clone())
+                    .unwrap_or_else(|| decision.selected_provider.clone());
+
+                ctx.selected_variant = Some(chosen_variant.clone());
+                ctx.selected_provider = Some(chosen_provider.clone());
                 ctx.selected_model = Some(decision.selected_model.clone());
 
-                // Store fallback chain for retry plugin
-                if !decision.fallback_chain.is_empty() {
-                    ctx.retry_fallback_chain = decision.fallback_chain.clone();
-                }
+                // Store remaining fallback chain (after chosen)
+                let chosen_idx = candidates.iter().position(|c| c == &chosen_variant).unwrap_or(0);
+                ctx.retry_fallback_chain = candidates[chosen_idx + 1..].to_vec();
 
-                // Look up upstream_model_name from the variant
-                if let Some(variant) = router.registry.variants.get(&decision.selected_variant) {
+                // Look up upstream_model_name from the chosen variant
+                if let Some(variant) = router.registry.variants.get(&chosen_variant) {
                     ctx.upstream_model_name = variant.upstream_model_name.clone();
                 }
 
                 // Look up the provider's base_url and protocols
-                let provider = router.registry.providers.get(&decision.selected_provider);
+                let provider = router.registry.providers.get(&chosen_provider);
 
                 let base_url = provider
                     .map(|p| p.base_url.as_str())
@@ -759,7 +870,11 @@ impl ProxyHttp for PrismProxy {
 
                 // Extract auth header from provider
                 // First try account auth (preferred — accounts carry the real API keys)
-                let account = router.registry.accounts.get(&decision.selected_account);
+                // Resolve account from chosen variant
+                let chosen_account_id = router.registry.variants.get(&chosen_variant)
+                    .and_then(|v| v.account_id.clone())
+                    .unwrap_or_else(|| decision.selected_account.clone());
+                let account = router.registry.accounts.get(&chosen_account_id);
                 if let Some(acct) = account {
                     match &acct.auth {
                         prism_core::types::AuthConfig::ApiKey { key, header } if !key.is_empty() => {
@@ -1474,6 +1589,32 @@ impl ProxyHttp for PrismProxy {
         }
 
         Ok(None)
+    }
+
+    /// Connection failure handler — mark retryable if fallback chain has candidates.
+    fn fail_to_connect(
+        &self,
+        _session: &mut Session,
+        _peer: &HttpPeer,
+        ctx: &mut Self::CTX,
+        mut e: Box<pingora::Error>,
+    ) -> Box<pingora::Error> {
+        if !ctx.retry_fallback_chain.is_empty() {
+            let next = ctx.retry_fallback_chain.remove(0);
+            info!(
+                failed_variant = ?ctx.selected_variant,
+                next_variant = %next,
+                remaining = ctx.retry_fallback_chain.len(),
+                "Connection failed, retrying with fallback variant"
+            );
+            // Update context for the next upstream_peer call
+            ctx.selected_variant = Some(next);
+            ctx.upstream_request_attempt_count += 1;
+            ctx.response_flags.push("RT".to_string()); // retry flag
+            // Mark as retryable — Pingora will call upstream_peer again
+            e.set_retry(true);
+        }
+        e
     }
 
     /// Phase 5: Log the completed request and record metrics.
