@@ -57,3 +57,27 @@ pub async fn delete_provider(State(state): State<AppState>, Path(id): Path<Strin
 fn error_response(e: String) -> axum::response::Response {
     (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))).into_response()
 }
+
+/// GET /api/provider-types — list all registered provider plugin types and their config schemas.
+pub async fn list_provider_types() -> impl IntoResponse {
+    use prism_router::provider::registry::ProviderPluginRegistry;
+
+    let registry = ProviderPluginRegistry::new();
+    let schemas = registry.all_schemas();
+
+    let types: Vec<serde_json::Value> = registry
+        .provider_types()
+        .into_iter()
+        .map(|id| {
+            let plugin = registry.get(id);
+            let schema = schemas.get(id);
+            serde_json::json!({
+                "id": id,
+                "display_name": plugin.display_name(),
+                "config_schema": schema,
+            })
+        })
+        .collect();
+
+    (StatusCode::OK, Json(serde_json::json!({ "provider_types": types }))).into_response()
+}

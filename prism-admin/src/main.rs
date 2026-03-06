@@ -133,6 +133,7 @@ async fn main() {
         .route("/api/providers/{id}", get(api::providers::get_provider))
         .route("/api/providers/{id}", put(api::providers::update_provider))
         .route("/api/providers/{id}", delete(api::providers::delete_provider))
+        .route("/api/provider-types", get(api::providers::list_provider_types))
         .route("/api/accounts", get(api::accounts::list_accounts))
         .route("/api/accounts", post(api::accounts::create_account))
         .route("/api/accounts/{id}", get(api::accounts::get_account))

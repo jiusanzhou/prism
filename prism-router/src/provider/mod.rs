@@ -31,13 +31,15 @@
 
 pub mod openai;
 pub mod registry;
+#[cfg(feature = "wasm")]
+pub mod wasm_host;
 #[cfg(test)]
 mod tests;
 
 use std::collections::HashMap;
 
 /// Provider-specific request context passed to plugin hooks.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProviderRequestContext {
     /// Provider ID (from routing decision).
     pub provider_id: String,
