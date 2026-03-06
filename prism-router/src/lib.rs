@@ -24,6 +24,7 @@ pub mod gen {
 
 #[cfg(feature = "proxy")]
 pub mod access_log;
+pub mod health;
 #[cfg(feature = "proxy")]
 pub mod protocol;
 #[cfg(feature = "proxy")]

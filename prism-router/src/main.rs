@@ -23,6 +23,8 @@ mod gen {
 #[cfg(feature = "proxy")]
 mod access_log;
 #[cfg(feature = "proxy")]
+mod health;
+#[cfg(feature = "proxy")]
 mod protocol;
 #[cfg(feature = "proxy")]
 mod proxy;
@@ -357,10 +359,61 @@ async fn main() {
             if let Some(concurrency) = concurrency_limiter {
                 prism_proxy = prism_proxy.with_concurrency_limiter(concurrency);
             }
+            // Build health checker from registry endpoints
+            let health_checker = {
+                use crate::health::{HealthChecker, HealthCheckConfig, EndpointInfo};
+                let hc_config = HealthCheckConfig::default();
+                let hc = std::sync::Arc::new(HealthChecker::new(hc_config));
+
+                // Collect endpoint info from registry for active probing
+                let router_guard = state.router.load();
+                let endpoints: Vec<EndpointInfo> = router_guard.registry.endpoints.iter()
+                    .map(|(id, ep)| {
+                        let provider = router_guard.registry.providers.get(&ep.provider_id);
+                        let base_url = ep.base_url.clone()
+                            .or_else(|| provider.map(|p| p.base_url.clone()))
+                            .unwrap_or_default();
+                        let auth_header = provider.and_then(|p| {
+                            match &p.auth {
+                                prism_core::types::AuthConfig::ApiKey { key, header } if !key.is_empty() => {
+                                    Some((header.clone(), key.clone()))
+                                }
+                                _ => None,
+                            }
+                        });
+                        EndpointInfo {
+                            id: id.clone(),
+                            provider_id: ep.provider_id.clone(),
+                            base_url,
+                            auth_header,
+                        }
+                    })
+                    .collect();
+
+                info!("  Health checker → {} endpoints", endpoints.len());
+
+                // Spawn background health check loop
+                let hc_clone = std::sync::Arc::clone(&hc);
+                let (_hc_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+                hc_clone.spawn_checker(
+                    endpoints,
+                    std::time::Duration::from_secs(30),
+                    shutdown_rx,
+                );
+
+                // _hc_shutdown_tx is intentionally leaked (kept alive) —
+                // health checker runs for the lifetime of the process.
+                // It will be cleaned up on process exit.
+                std::mem::forget(_hc_shutdown_tx);
+
+                hc
+            };
+
             prism_proxy = prism_proxy
                 .with_circuit_breaker(circuit_breaker)
                 .with_max_request_body(config.server.max_request_body_bytes)
-                .with_auth(config.auth.clone());
+                .with_auth(config.auth.clone())
+                .with_health_checker(health_checker);
             let prism_proxy = prism_proxy;
 
             // Pingora runs in its own thread

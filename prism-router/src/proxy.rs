@@ -191,6 +191,8 @@ pub struct PrismProxy {
     pub circuit_breaker: Option<Arc<crate::circuit_breaker::CircuitBreaker>>,
     /// Client-side API key authentication.
     pub auth: Option<crate::config::types::AuthConfig>,
+    /// Active health checker for upstream endpoints.
+    pub health_checker: Option<Arc<crate::health::HealthChecker>>,
 }
 
 impl PrismProxy {
@@ -209,6 +211,7 @@ impl PrismProxy {
             max_request_body_bytes: 0,
             circuit_breaker: None,
             auth: None,
+            health_checker: None,
         }
     }
 
@@ -231,6 +234,7 @@ impl PrismProxy {
             max_request_body_bytes: 0,
             circuit_breaker: None,
             auth: None,
+            health_checker: None,
         }
     }
 
@@ -241,6 +245,13 @@ impl PrismProxy {
             info!("  Client auth → enabled ({} keys, header: {})", auth.keys.len(), auth.header);
             self.auth = Some(auth);
         }
+        self
+    }
+
+    /// Enable active health checking.
+    #[allow(dead_code)]
+    pub fn with_health_checker(mut self, hc: Arc<crate::health::HealthChecker>) -> Self {
+        self.health_checker = Some(hc);
         self
     }
 
@@ -1525,6 +1536,33 @@ impl ProxyHttp for PrismProxy {
                 output_tokens: ctx.global_codec_ctx.as_ref().and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY)).and_then(|u| u.output_tokens.map(|v| v as u32)),
                 timestamp: Instant::now(),
             });
+        }
+
+        // ── Circuit breaker feedback ──
+        if let Some(ref cb) = self.circuit_breaker {
+            if let Some(ref provider_id) = ctx.selected_provider {
+                let success = (200..500).contains(&status) && _e.is_none();
+                if success {
+                    cb.record_success(provider_id);
+                } else {
+                    cb.record_failure(provider_id);
+                    debug!(provider = %provider_id, status = %status, "Circuit breaker recorded failure");
+                }
+            }
+        }
+
+        // ── Health checker passive feedback ──
+        if let Some(ref hc) = self.health_checker {
+            // Use variant id as endpoint key (provider_id@endpoint_id in variant)
+            if let Some(ref variant_id) = ctx.selected_variant {
+                let success = (200..500).contains(&status) && _e.is_none();
+                if success {
+                    hc.record_success(variant_id);
+                } else {
+                    let reason = ctx.error_message.clone().unwrap_or_else(|| format!("HTTP {}", status));
+                    hc.record_failure(variant_id, &reason);
+                }
+            }
         }
 
         // ── Global plugin chain: on_log (all requests) ──
