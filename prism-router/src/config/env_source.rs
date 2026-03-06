@@ -97,6 +97,7 @@ impl ConfigSource for EnvSource {
                                 base_url: String::new(),
                                 timeout_ms: None,
                                 protocols: vec![],
+                                auth_type: Default::default(),
                                 headers: HashMap::new(),
                                 circuit_breaker_threshold: 5,
                                 circuit_breaker_recovery_secs: 30,

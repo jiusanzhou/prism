@@ -34,8 +34,10 @@ pub struct ProxyContext {
     pub selected_model: Option<String>,
     /// Upstream base URL
     pub upstream_base_url: Option<String>,
-    /// Authorization header for upstream
+    /// Auth value for upstream (key/token)
     pub upstream_auth: Option<String>,
+    /// Auth header name (default: "Authorization")
+    pub upstream_auth_header: String,
     /// Custom headers to send to upstream (e.g. x-api-key)
     pub upstream_custom_headers: Vec<(String, String)>,
     /// Request start time for latency tracking
@@ -121,6 +123,7 @@ impl Default for ProxyContext {
             selected_model: None,
             upstream_base_url: None,
             upstream_auth: None,
+            upstream_auth_header: "Authorization".to_string(),
             upstream_custom_headers: Vec::new(),
             request_start: Instant::now(),
             response_status: None,
@@ -666,8 +669,9 @@ impl ProxyHttp for PrismProxy {
                 let account = router.registry.accounts.get(&decision.selected_account);
                 if let Some(acct) = account {
                     match &acct.auth {
-                        prism_core::types::AuthConfig::ApiKey { key, .. } if !key.is_empty() => {
+                        prism_core::types::AuthConfig::ApiKey { key, header } if !key.is_empty() => {
                             ctx.upstream_auth = Some(key.clone());
+                            ctx.upstream_auth_header = header.clone();
                         }
                         prism_core::types::AuthConfig::Custom { headers } if !headers.is_empty() => {
                             ctx.upstream_custom_headers = headers
@@ -683,8 +687,9 @@ impl ProxyHttp for PrismProxy {
                 if ctx.upstream_auth.is_none() && ctx.upstream_custom_headers.is_empty() {
                 if let Some(p) = provider {
                     match &p.auth {
-                        prism_core::types::AuthConfig::ApiKey { key, .. } => {
+                        prism_core::types::AuthConfig::ApiKey { key, header } => {
                             ctx.upstream_auth = Some(key.clone());
+                            ctx.upstream_auth_header = header.clone();
                         }
                         prism_core::types::AuthConfig::Custom { headers } => {
                             ctx.upstream_custom_headers = headers
@@ -823,10 +828,12 @@ impl ProxyHttp for PrismProxy {
             })?;
         }
 
-        // Set the Authorization header
+        // Set the auth header (Authorization / x-api-key / custom)
         if let Some(ref auth) = ctx.upstream_auth {
+            let auth_header = ctx.upstream_auth_header.clone();
+            let auth_value = auth.clone();
             upstream_request
-                .insert_header("Authorization", auth.as_str())
+                .insert_header(auth_header, &auth_value)
                 .map_err(|e| {
                     pingora::Error::explain(
                         pingora::ErrorType::InternalError,

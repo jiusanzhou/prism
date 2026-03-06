@@ -172,6 +172,21 @@ fn default_proxy_port() -> u16 {
     8000
 }
 
+/// How the provider authenticates API requests.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAuthType {
+    /// Authorization: Bearer <key> (default, most providers)
+    #[default]
+    Bearer,
+    /// Authorization: <key> (no Bearer prefix)
+    Header,
+    /// x-api-key: <key>
+    XApiKey,
+    /// Custom header name → key goes as value
+    Custom(String),
+}
+
 /// Provider configuration — map key is the provider id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
@@ -184,6 +199,13 @@ pub struct ProviderConfig {
     pub timeout_ms: Option<u32>,
     #[serde(default)]
     pub protocols: Vec<String>,
+    /// How account api_key is sent to the upstream.
+    /// bearer (default): Authorization: Bearer <key>
+    /// header: Authorization: <key>
+    /// x_api_key: x-api-key: <key>
+    /// custom("X-My-Key"): X-My-Key: <key>
+    #[serde(default)]
+    pub auth_type: ProviderAuthType,
     /// Custom headers to send with every request to this provider.
     /// When set, these take precedence over the default `Authorization: Bearer <api_key>`.
     #[serde(default)]

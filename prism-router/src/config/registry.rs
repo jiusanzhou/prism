@@ -28,10 +28,39 @@ pub fn build_registry(config: &PrismConfig) -> InMemoryRegistry {
             continue;
         }
         let endpoint_id = format!("{}-ep", ac.provider_id);
+        // Resolve auth_type from the provider config
+        let provider_auth_type = config
+            .providers
+            .get(&ac.provider_id)
+            .map(|p| p.auth_type.clone())
+            .unwrap_or_default();
+
         let auth = if let Some(ref key) = ac.api_key {
-            prism_core::types::AuthConfig::ApiKey {
-                key: format!("Bearer {}", key),
-                header: "Authorization".to_string(),
+            match &provider_auth_type {
+                crate::config::types::ProviderAuthType::Bearer => {
+                    prism_core::types::AuthConfig::ApiKey {
+                        key: format!("Bearer {}", key),
+                        header: "Authorization".to_string(),
+                    }
+                }
+                crate::config::types::ProviderAuthType::Header => {
+                    prism_core::types::AuthConfig::ApiKey {
+                        key: key.clone(),
+                        header: "Authorization".to_string(),
+                    }
+                }
+                crate::config::types::ProviderAuthType::XApiKey => {
+                    prism_core::types::AuthConfig::ApiKey {
+                        key: key.clone(),
+                        header: "x-api-key".to_string(),
+                    }
+                }
+                crate::config::types::ProviderAuthType::Custom(header_name) => {
+                    prism_core::types::AuthConfig::ApiKey {
+                        key: key.clone(),
+                        header: header_name.clone(),
+                    }
+                }
             }
         } else if !ac.headers.is_empty() {
             prism_core::types::AuthConfig::Custom {
