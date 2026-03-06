@@ -374,10 +374,16 @@ impl ProxyHttp for PrismProxy {
             .map(|(_, v)| v.clone())
             .unwrap_or_else(|| {
                 use std::sync::atomic::{AtomicU64, Ordering};
+                use std::time::{SystemTime, UNIX_EPOCH};
                 static COUNTER: AtomicU64 = AtomicU64::new(0);
-                let ts = ctx.request_start.elapsed().as_nanos() as u64;
+                let ts_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
                 let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-                format!("prism-{:x}-{:x}", ts, seq)
+                // prism-<epoch_ms_hex>-<seq_hex>
+                // e.g. prism-18e5a2b3c00-1a → ts可直接解析为wall clock
+                format!("prism-{:x}-{:x}", ts_ms, seq)
             });
 
         // Check if client wants debug trace headers
