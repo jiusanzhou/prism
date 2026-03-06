@@ -883,17 +883,15 @@ impl ProxyHttp for PrismProxy {
             })?;
         }
 
-        // ── Ensure Content-Type is application/json for LLM API requests ──
-        // curl without -H sends application/x-www-form-urlencoded by default,
-        // which upstream LLM providers reject. Auto-fix if body was valid JSON.
-        if ctx.requested_model.is_some() {
+        // ── Default Content-Type to application/json ──
+        // LLM APIs are JSON-only. Default to application/json if missing or wrong.
+        {
             let needs_fix = upstream_request.headers.get("content-type")
                 .and_then(|v| v.to_str().ok())
                 .map(|ct| !ct.contains("application/json"))
                 .unwrap_or(true);
             if needs_fix {
                 let _ = upstream_request.insert_header("content-type", "application/json");
-                debug!("Auto-set Content-Type to application/json");
             }
         }
 
