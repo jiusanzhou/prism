@@ -10,7 +10,9 @@ pub async fn list_providers(State(state): State<AppState>) -> impl IntoResponse 
                 .map(|(id, p)| serde_json::json!({
                     "id": id,
                     "base_url": p.base_url,
+                    "auth_type": p.auth_type,
                     "protocols": p.protocols,
+                    "headers": p.headers,
                     "circuit_breaker_threshold": p.circuit_breaker_threshold,
                     "circuit_breaker_recovery_secs": p.circuit_breaker_recovery_secs,
                 }))

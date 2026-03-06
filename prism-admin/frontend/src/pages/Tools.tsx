@@ -28,6 +28,7 @@ interface MappedProvider {
   provider: {
     id: string
     base_url: string
+    auth_type: string
     protocols: string[]
     circuit_breaker_threshold: number
     circuit_breaker_recovery_secs: number
@@ -102,13 +103,24 @@ function parseCurl(curlCmd: string): { url: string; headers: { key: string; valu
   return { url, headers }
 }
 
+function inferAuthType(raw: RawProvider): string {
+  // Some LLM Gateways use x-api-key or other auth schemes
+  const rawType = (raw.rawConfigs?.type || raw.type || "").toLowerCase()
+  // Azure uses api-key header
+  if (rawType.includes("azure")) return "x_api_key"
+  // Default: Bearer token
+  return "bearer"
+}
+
 function mapProvider(raw: RawProvider): MappedProvider {
   const base_url = raw.rawConfigs?.openaiCustomUrl || raw.rawConfigs?.azureBaseUrl || ""
   const protocols = [raw.type || "openai"]
+  const auth_type = inferAuthType(raw)
 
   const provider = {
     id: raw.name,
     base_url,
+    auth_type,
     protocols,
     circuit_breaker_threshold: 5,
     circuit_breaker_recovery_secs: 30,
@@ -217,6 +229,7 @@ export default function Tools() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             base_url: m.provider.base_url,
+            auth_type: m.provider.auth_type,
             protocols: m.provider.protocols,
             circuit_breaker_threshold: m.provider.circuit_breaker_threshold,
             circuit_breaker_recovery_secs: m.provider.circuit_breaker_recovery_secs,
@@ -447,6 +460,7 @@ export default function Tools() {
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs text-[hsl(var(--muted-foreground))]">
                             <div>Provider ID: <span className="text-[hsl(var(--foreground))]">{m.provider.id}</span></div>
                             <div>Protocols: <span className="text-[hsl(var(--foreground))]">{m.provider.protocols.join(", ")}</span></div>
+                            <div>Auth Type: <span className="text-[hsl(var(--foreground))]">{m.provider.auth_type}</span></div>
                             <div>Base URL: <span className="text-[hsl(var(--foreground))]">{m.provider.base_url || "—"}</span></div>
                             <div>Accounts: <span className="text-[hsl(var(--foreground))]">{m.accounts.length} ({m.accounts.map(a => a.id).join(", ")})</span></div>
                           </div>
