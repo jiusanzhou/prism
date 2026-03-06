@@ -183,8 +183,13 @@ pub enum ProviderAuthType {
     Header,
     /// x-api-key: <key>
     XApiKey,
+    /// api-key: <key> (Azure OpenAI)
+    ApiKey,
     /// Custom header name → key goes as value
     Custom(String),
+    /// AWS Signature V4 (Bedrock) — uses awsAccessKey/awsSecretKey/awsRegion
+    /// from provider config, not account api_key.
+    AwsSigV4,
 }
 
 /// Provider configuration — map key is the provider id.
@@ -203,9 +208,20 @@ pub struct ProviderConfig {
     /// bearer (default): Authorization: Bearer <key>
     /// header: Authorization: <key>
     /// x_api_key: x-api-key: <key>
+    /// api_key: api-key: <key> (Azure)
     /// custom("X-My-Key"): X-My-Key: <key>
+    /// aws_sig_v4: AWS Signature V4 (Bedrock)
     #[serde(default)]
     pub auth_type: ProviderAuthType,
+    /// AWS region for Bedrock providers.
+    #[serde(default)]
+    pub aws_region: Option<String>,
+    /// AWS access key for Bedrock providers.
+    #[serde(default)]
+    pub aws_access_key: Option<String>,
+    /// AWS secret key for Bedrock providers.
+    #[serde(default)]
+    pub aws_secret_key: Option<String>,
     /// Custom headers to send with every request to this provider.
     /// When set, these take precedence over the default `Authorization: Bearer <api_key>`.
     #[serde(default)]

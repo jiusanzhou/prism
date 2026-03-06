@@ -55,11 +55,23 @@ pub fn build_registry(config: &PrismConfig) -> InMemoryRegistry {
                         header: "x-api-key".to_string(),
                     }
                 }
+                crate::config::types::ProviderAuthType::ApiKey => {
+                    prism_core::types::AuthConfig::ApiKey {
+                        key: key.clone(),
+                        header: "api-key".to_string(),
+                    }
+                }
                 crate::config::types::ProviderAuthType::Custom(header_name) => {
                     prism_core::types::AuthConfig::ApiKey {
                         key: key.clone(),
                         header: header_name.clone(),
                     }
+                }
+                crate::config::types::ProviderAuthType::AwsSigV4 => {
+                    // Bedrock uses AWS SigV4 signing, not simple API key headers.
+                    // AWS credentials are stored in provider config (aws_access_key, etc).
+                    // For now, skip setting auth — proxy layer will handle SigV4 separately.
+                    prism_core::types::AuthConfig::default()
                 }
             }
         } else if !ac.headers.is_empty() {

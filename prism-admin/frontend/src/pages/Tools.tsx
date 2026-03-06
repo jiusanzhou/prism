@@ -30,6 +30,9 @@ interface MappedProvider {
     base_url: string
     auth_type: string
     protocols: string[]
+    aws_region?: string
+    aws_access_key?: string
+    aws_secret_key?: string
     circuit_breaker_threshold: number
     circuit_breaker_recovery_secs: number
   }
@@ -104,26 +107,51 @@ function parseCurl(curlCmd: string): { url: string; headers: { key: string; valu
 }
 
 function inferAuthType(raw: RawProvider): string {
-  // Some LLM Gateways use x-api-key or other auth schemes
   const rawType = (raw.rawConfigs?.type || raw.type || "").toLowerCase()
-  // Azure uses api-key header
-  if (rawType.includes("azure")) return "x_api_key"
-  // Default: Bearer token
+  if (rawType === "azure") return "api_key"   // Azure uses api-key header
+  if (rawType === "bedrock") return "bearer"   // Bedrock: handled separately (AWS SigV4)
   return "bearer"
 }
 
+function extractAzureBaseUrl(raw: RawProvider): string {
+  // Azure azureServiceUrl is a full deployment URL like:
+  // https://host/openai/deployments/NAME/chat/completions?api-version=xxx
+  // We need just the host part as base_url
+  const svcUrl = (raw.rawConfigs as Record<string, unknown>)?.azureServiceUrl as string | undefined
+  if (svcUrl) {
+    try {
+      const u = new URL(svcUrl)
+      return u.origin
+    } catch { /* fall through */ }
+  }
+  return raw.rawConfigs?.openaiCustomUrl || raw.rawConfigs?.azureBaseUrl || ""
+}
+
 function mapProvider(raw: RawProvider): MappedProvider {
-  const base_url = raw.rawConfigs?.openaiCustomUrl || raw.rawConfigs?.azureBaseUrl || ""
+  const rawType = (raw.rawConfigs?.type || raw.type || "").toLowerCase()
+  const base_url = rawType === "azure"
+    ? extractAzureBaseUrl(raw)
+    : (raw.rawConfigs?.openaiCustomUrl || raw.rawConfigs?.azureBaseUrl || "")
   const protocols = [raw.type || "openai"]
   const auth_type = inferAuthType(raw)
 
-  const provider = {
+  const rc = raw.rawConfigs || {}
+  const provider: MappedProvider["provider"] = {
     id: raw.name,
     base_url,
     auth_type,
     protocols,
     circuit_breaker_threshold: 5,
     circuit_breaker_recovery_secs: 30,
+  }
+
+  // Bedrock: store AWS credentials and compute base_url
+  if (rawType === "bedrock") {
+    provider.auth_type = "aws_sig_v4"
+    provider.aws_region = rc.awsRegion as string || "us-east-1"
+    provider.aws_access_key = rc.awsAccessKey as string || ""
+    provider.aws_secret_key = rc.awsSecretKey as string || ""
+    provider.base_url = \`https://bedrock-runtime.\${provider.aws_region}.amazonaws.com\`
   }
 
   const tokens = raw.tokens || raw.rawConfigs?.apiTokens || []
@@ -231,6 +259,9 @@ export default function Tools() {
             base_url: m.provider.base_url,
             auth_type: m.provider.auth_type,
             protocols: m.provider.protocols,
+            ...(m.provider.aws_region && { aws_region: m.provider.aws_region }),
+            ...(m.provider.aws_access_key && { aws_access_key: m.provider.aws_access_key }),
+            ...(m.provider.aws_secret_key && { aws_secret_key: m.provider.aws_secret_key }),
             circuit_breaker_threshold: m.provider.circuit_breaker_threshold,
             circuit_breaker_recovery_secs: m.provider.circuit_breaker_recovery_secs,
           }),
