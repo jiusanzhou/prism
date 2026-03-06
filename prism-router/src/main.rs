@@ -359,7 +359,8 @@ async fn main() {
             }
             prism_proxy = prism_proxy
                 .with_circuit_breaker(circuit_breaker)
-                .with_max_request_body(config.server.max_request_body_bytes);
+                .with_max_request_body(config.server.max_request_body_bytes)
+                .with_auth(config.auth.clone());
             let prism_proxy = prism_proxy;
 
             // Pingora runs in its own thread

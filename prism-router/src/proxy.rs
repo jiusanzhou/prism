@@ -189,6 +189,8 @@ pub struct PrismProxy {
     pub max_request_body_bytes: u64,
     /// Provider-level circuit breaker.
     pub circuit_breaker: Option<Arc<crate::circuit_breaker::CircuitBreaker>>,
+    /// Client-side API key authentication.
+    pub auth: Option<crate::config::types::AuthConfig>,
 }
 
 impl PrismProxy {
@@ -206,6 +208,7 @@ impl PrismProxy {
             keepalive_secs: 60,
             max_request_body_bytes: 0,
             circuit_breaker: None,
+            auth: None,
         }
     }
 
@@ -227,7 +230,18 @@ impl PrismProxy {
             keepalive_secs: 60,
             max_request_body_bytes: 0,
             circuit_breaker: None,
+            auth: None,
         }
+    }
+
+    /// Enable client-side API key authentication.
+    #[allow(dead_code)]
+    pub fn with_auth(mut self, auth: crate::config::types::AuthConfig) -> Self {
+        if auth.enabled {
+            info!("  Client auth → enabled ({} keys, header: {})", auth.keys.len(), auth.header);
+            self.auth = Some(auth);
+        }
+        self
     }
 
     #[allow(dead_code)]
@@ -397,6 +411,51 @@ impl ProxyHttp for PrismProxy {
             debug_mode = %ctx.debug_mode,
             "Request received"
         );
+
+        // ── Client API key authentication ──
+        if let Some(ref auth) = self.auth {
+            // Skip auth for health/readyz/version paths
+            let skip = auth.skip_paths.iter().any(|p| path.starts_with(p));
+            if !skip {
+                let header_val = ctx.request_headers_snapshot
+                    .iter()
+                    .find(|(k, _)| k == &auth.header)
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or("");
+
+                let key = if let Some(ref prefix) = auth.strip_prefix {
+                    header_val.strip_prefix(prefix.as_str()).unwrap_or(header_val)
+                } else {
+                    header_val
+                };
+
+                if key.is_empty() || !auth.keys.iter().any(|k| k == key) {
+                    warn!(path = %path, "Client auth failed — invalid or missing API key");
+                    ctx.response_flags.push("UA".to_string());
+
+                    let header = pingora::http::ResponseHeader::build(401, None).unwrap();
+                    let body = serde_json::json!({
+                        "error": {
+                            "type": "authentication_error",
+                            "message": "Invalid or missing API key",
+                            "code": "invalid_api_key"
+                        }
+                    });
+
+                    session.set_keepalive(None);
+                    session
+                        .write_response_header(Box::new(header), true)
+                        .await
+                        .ok();
+                    session
+                        .write_response_body(Some(Bytes::from(body.to_string())), true)
+                        .await
+                        .ok();
+                    return Ok(true);
+                }
+                debug!("Client auth passed");
+            }
+        }
 
         // ── Global plugin chain: on_request_headers (pre-route) ──
         if let Some(global_chain) = self.codec_registry.global_chain() {
