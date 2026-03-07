@@ -261,6 +261,7 @@ mod tests {
                 deployment_name: None,
                 upstream_model_name: None,
                 pricing_override: None,
+                metadata: Default::default(),
             }],
             pools: vec![StaticPoolConfig {
                 id: "default".to_string(),
@@ -373,6 +374,7 @@ mod tests {
             deployment_name: None,
             upstream_model_name: None,
             pricing_override: None,
+            metadata: Default::default(),
         });
 
         let d = StaticDiscovery::new(config);

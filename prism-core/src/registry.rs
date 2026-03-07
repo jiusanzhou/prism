@@ -246,14 +246,56 @@ impl InMemoryRegistry {
     /// Assemble a ModelCandidate from a variant by resolving all references.
     fn assemble_candidate(&self, variant: &ModelVariant) -> Option<ModelCandidate> {
         let model = self.models.get(&variant.model_id)?;
-        let endpoint = self.endpoints.get(&variant.endpoint_id)?;
-        let provider = self.providers.get(&endpoint.provider_id)?;
 
+        // Try full chain: endpoint -> provider -> account
+        let endpoint = self.endpoints.get(&variant.endpoint_id);
+        let provider = endpoint.and_then(|ep| self.providers.get(&ep.provider_id));
         let account_id = variant
             .account_id
             .as_deref()
             .unwrap_or(&variant.endpoint_id);
-        let account = self.accounts.get(account_id)?;
+        let account = self.accounts.get(account_id);
+
+        // If variant has its own base_url, it can work without provider/endpoint/account
+        // (typical for K8s-discovered instances with per-pod IP:port).
+        let (endpoint, provider, account) = match (endpoint, provider, account) {
+            (Some(ep), Some(prov), Some(acct)) => (ep.clone(), prov.clone(), acct.clone()),
+            _ if variant.base_url.is_some() => {
+                let synth_provider = provider.cloned().unwrap_or_else(|| Provider {
+                    id: format!("{}-auto", variant.id),
+                    name: String::new(),
+                    auth: AuthConfig::default(),
+                    base_url: variant.base_url.clone().unwrap_or_default(),
+                    rate_limit: None,
+                    protocols: vec![],
+                    status: Default::default(),
+                    metadata: Default::default(),
+                });
+                let synth_endpoint = endpoint.cloned().unwrap_or_else(|| Endpoint {
+                    id: format!("{}-ep", variant.id),
+                    provider_id: synth_provider.id.clone(),
+                    base_url: variant.base_url.clone(),
+                    region: None,
+                    auth_override: None,
+                    rate_limit: None,
+                    priority: 0,
+                    status: Default::default(),
+                });
+                let synth_account = account.cloned().unwrap_or_else(|| Account {
+                    id: format!("{}-acct", variant.id),
+                    endpoint_id: synth_endpoint.id.clone(),
+                    auth: AuthConfig::default(),
+                    project_id: None,
+                    rate_limit: None,
+                    billing_tag: None,
+                    weight: 1.0,
+                    status: Default::default(),
+                    metadata: Default::default(),
+                });
+                (synth_endpoint, synth_provider, synth_account)
+            }
+            _ => return None, // no base_url and missing chain -- skip
+        };
 
         // Overlay real-time performance data from the data layer (if available).
         let mut variant_clone = variant.clone();
@@ -278,9 +320,9 @@ impl InMemoryRegistry {
         Some(ModelCandidate {
             variant: variant_clone,
             model: model.clone(),
-            account: account.clone(),
-            endpoint: endpoint.clone(),
-            provider: provider.clone(),
+            account,
+            endpoint,
+            provider,
             effective_pricing,
         })
     }
