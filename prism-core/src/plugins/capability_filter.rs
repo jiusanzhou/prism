@@ -74,3 +74,121 @@ impl RoutingPlugin for CapabilityFilterPlugin {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analyzer::{Language, RequestProfile};
+    use crate::plugin::PluginState;
+    use crate::router::RouteMetadata;
+    use crate::types::*;
+    use std::collections::HashMap;
+
+    fn make_state_with(requires_vision: bool, requires_reasoning: bool, ctx: ContextSize) -> PluginState {
+        PluginState::new(
+            RequestProfile {
+                complexity: 0.3,
+                task_type: TaskType::SimpleQA,
+                estimated_tokens: 100,
+                requires_reasoning,
+                requires_vision,
+                language: Language::English,
+                is_multi_turn: false,
+                context_window_need: ctx,
+            },
+            RouteMetadata::default(),
+            ModelSelectionStrategy::default(),
+            None,
+        )
+    }
+
+    fn make_candidate_with_caps(caps: ModelCapabilities) -> ModelCandidate {
+        ModelCandidate {
+            variant: ModelVariant {
+                id: "v-1".to_string(),
+                model_id: "model-1".into(),
+                endpoint_id: "ep-1".into(),
+                account_id: None,
+                deployment_name: None,
+                weight: 1.0,
+                performance: ModelPerformance::default(),
+                pricing_override: None,
+                status: VariantStatus::Active,
+                base_url: None,
+                upstream_model_name: None,
+            },
+            model: Model {
+                id: "model-1".into(),
+                display_name: "Model 1".into(),
+                quality_tier: QualityTier::A,
+                capabilities: caps,
+                pricing: ModelPricing::default(),
+                specialties: vec![],
+                limits: None,
+                status: ModelStatus::Available,
+            },
+            account: Account {
+                id: "acc-1".into(),
+                endpoint_id: "ep-1".into(),
+                auth: AuthConfig::default(),
+                project_id: None,
+                rate_limit: None,
+                billing_tag: None,
+                weight: 1.0,
+                status: HealthStatus::Healthy,
+                metadata: HashMap::new(),
+            },
+            endpoint: Endpoint {
+                id: "ep-1".into(),
+                provider_id: "prov-1".into(),
+                base_url: None,
+                region: None,
+                auth_override: None,
+                rate_limit: None,
+                priority: 0,
+                status: HealthStatus::Healthy,
+            },
+            provider: Provider {
+                id: "prov-1".into(),
+                name: "Provider 1".into(),
+                auth: AuthConfig::default(),
+                base_url: "https://api.example.com".into(),
+                rate_limit: None,
+                status: HealthStatus::Healthy,
+                metadata: HashMap::new(),
+                protocols: vec![],
+            },
+            effective_pricing: ModelPricing::default(),
+        }
+    }
+
+    #[test]
+    fn test_filter_vision() {
+        let plugin = CapabilityFilterPlugin;
+        let state = make_state_with(true, false, ContextSize::Small);
+        let candidate = make_candidate_with_caps(ModelCapabilities {
+            supports_vision: false,
+            ..Default::default()
+        });
+        assert!(!plugin.filter(&state, &candidate));
+    }
+
+    #[test]
+    fn test_filter_context_window() {
+        let plugin = CapabilityFilterPlugin;
+        let state = make_state_with(false, false, ContextSize::XLarge);
+        let candidate = make_candidate_with_caps(ModelCapabilities {
+            max_context_window: 32000,
+            ..Default::default()
+        });
+        assert!(!plugin.filter(&state, &candidate));
+    }
+
+    #[test]
+    fn test_passthrough() {
+        let plugin = CapabilityFilterPlugin;
+        let state = make_state_with(false, false, ContextSize::Small);
+        let candidate = make_candidate_with_caps(ModelCapabilities::default());
+        assert!(plugin.filter(&state, &candidate));
+    }
+}

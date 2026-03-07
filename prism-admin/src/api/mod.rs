@@ -1,6 +1,15 @@
+pub mod access_log;
+pub mod accounts;
+pub mod auth;
+pub mod clusters;
 pub mod config;
 pub mod models;
+pub mod plugins;
+pub mod pools;
+pub mod proxy_fetch;
+pub mod routing;
 pub mod providers;
+pub mod proxies;
 pub mod rate_limits;
 pub mod status;
 pub mod variants;

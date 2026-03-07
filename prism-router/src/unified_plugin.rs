@@ -1,9 +1,11 @@
 //! Unified plugin registration framework.
 //!
 //! Provides a single entry point for registering WASM plugins that can
-//! participate in multiple phases: routing, proxy, and analysis.
+//! participate in multiple phases: config, discovery, routing, proxy, and analysis.
 //!
 //! Each phase uses its own ABI:
+//! - Config: Prism config ABI (prism_config_load / prism_config_init)
+//! - Discovery: Prism discovery ABI (prism_discovery_init / prism_discovery_discover)
 //! - Proxy: proxy-wasm ABI (compatible with Higress/Envoy)
 //! - Route: Prism routing ABI (RoutingPlugin trait)
 //! - Analyze: Prism analyzer ABI
@@ -300,6 +302,12 @@ use wasm_route::WasmRoutingPlugin;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginPhase {
+    /// Configuration source — provides/loads configuration.
+    /// Uses Prism config ABI (prism_config_load / prism_config_init).
+    Config,
+    /// Service discovery — discovers providers, endpoints, accounts.
+    /// Uses Prism discovery ABI (prism_discovery_init / prism_discovery_discover).
+    Discovery,
     /// Proxy layer — intercept/transform HTTP request/response.
     /// Uses proxy-wasm ABI.
     Proxy,
@@ -391,6 +399,10 @@ pub trait AnalyzerPlugin: Send + Sync {
 
 /// Result of loading all plugins — grouped by phase for consumption.
 pub struct LoadResult {
+    /// Config source plugins ready to add to CompositeSource.
+    pub config_sources: Vec<(String, Box<dyn crate::config::ConfigSource>)>,
+    /// Discovery plugin data (name, plugin config JSON).
+    pub discovery_plugins: Vec<(String, serde_json::Value)>,
     /// Proxy plugins ready to add to ProxyPluginChain.
     pub proxy_plugins: Vec<(String, Box<dyn crate::codec::ProxyPlugin>)>,
     /// Route plugin adapters ready to add to core PluginFramework.
@@ -405,6 +417,8 @@ pub struct LoadResult {
 /// Detected capabilities from WASM module exports.
 #[derive(Debug, Clone)]
 pub struct DetectedCapabilities {
+    pub has_config: bool,
+    pub has_discovery: bool,
     pub has_proxy: bool,
     pub has_route: bool,
     pub has_analyze: bool,
@@ -415,6 +429,10 @@ pub fn detect_capabilities(module_exports: &[String]) -> DetectedCapabilities {
     let has = |name: &str| module_exports.iter().any(|e| e == name);
 
     DetectedCapabilities {
+        // Config phase: prism config ABI exports
+        has_config: has("prism_config_load") || has("prism_config_init"),
+        // Discovery phase: prism discovery ABI exports
+        has_discovery: has("prism_discovery_init") || has("prism_discovery_discover"),
         // Proxy phase: proxy-wasm ABI exports
         has_proxy: has("proxy_on_request_headers"),
         // Route phase: prism routing exports
@@ -430,6 +448,8 @@ pub fn validate_phases(declared: &[PluginPhase], caps: &DetectedCapabilities) ->
     let mut unsupported = Vec::new();
     for phase in declared {
         let supported = match phase {
+            PluginPhase::Config => caps.has_config,
+            PluginPhase::Discovery => caps.has_discovery,
             PluginPhase::Proxy => caps.has_proxy,
             PluginPhase::Route { .. } => caps.has_route,
             PluginPhase::Analyze => caps.has_analyze,
@@ -501,6 +521,8 @@ impl PluginRegistry {
     /// - Analyze phase: TODO (can integrate with examples/wasm-plugins/analyzer)
     pub fn load_all(&mut self) -> LoadResult {
         let mut result = LoadResult {
+            config_sources: Vec::new(),
+            discovery_plugins: Vec::new(),
             proxy_plugins: Vec::new(),
             route_plugins: Vec::new(),
             analyzers: Vec::new(),
@@ -581,6 +603,35 @@ impl PluginRegistry {
 
             for phase in &desc.phases {
                 match phase {
+                    PluginPhase::Config => {
+                        match crate::config::WasmConfigSource::new(&desc.name, &wasm_bytes) {
+                            Ok(source) => {
+                                let source = if !desc.config.is_null() {
+                                    source.with_config(desc.config.to_string())
+                                } else {
+                                    source
+                                };
+                                result
+                                    .config_sources
+                                    .push((desc.name.clone(), Box::new(source)));
+                                registered_phases.push(phase.clone());
+                            }
+                            Err(e) => {
+                                result.errors.push((
+                                    desc.name.clone(),
+                                    format!("Failed to create config source: {}", e),
+                                ));
+                            }
+                        }
+                    }
+                    PluginPhase::Discovery => {
+                        // Store the plugin info for external discovery integration.
+                        // The discovery ABI is already defined in wasm_source.rs.
+                        result
+                            .discovery_plugins
+                            .push((desc.name.clone(), desc.config.clone()));
+                        registered_phases.push(phase.clone());
+                    }
                     PluginPhase::Proxy => {
                         match crate::codec::wasm_host::WasmProxyPlugin::new(&desc.name, &wasm_bytes)
                         {
@@ -673,6 +724,24 @@ mod tests {
         assert_eq!(json, r#""proxy""#);
         let parsed: PluginPhase = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, PluginPhase::Proxy);
+    }
+
+    #[test]
+    fn test_phase_config_serde() {
+        let phase = PluginPhase::Config;
+        let json = serde_json::to_string(&phase).unwrap();
+        assert_eq!(json, r#""config""#);
+        let parsed: PluginPhase = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, PluginPhase::Config);
+    }
+
+    #[test]
+    fn test_phase_discovery_serde() {
+        let phase = PluginPhase::Discovery;
+        let json = serde_json::to_string(&phase).unwrap();
+        assert_eq!(json, r#""discovery""#);
+        let parsed: PluginPhase = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, PluginPhase::Discovery);
     }
 
     #[test]
@@ -915,6 +984,8 @@ mod tests {
     fn test_load_empty_registry() {
         let mut registry = PluginRegistry::new();
         let result = registry.load_all();
+        assert!(result.config_sources.is_empty());
+        assert!(result.discovery_plugins.is_empty());
         assert!(result.proxy_plugins.is_empty());
         assert!(result.route_plugins.is_empty());
         assert!(result.analyzers.is_empty());
@@ -987,6 +1058,8 @@ mod tests {
     fn test_detect_no_capabilities() {
         let exports: Vec<String> = vec!["memory".to_string(), "alloc".to_string()];
         let caps = detect_capabilities(&exports);
+        assert!(!caps.has_config);
+        assert!(!caps.has_discovery);
         assert!(!caps.has_proxy);
         assert!(!caps.has_route);
         assert!(!caps.has_analyze);
@@ -1004,6 +1077,8 @@ mod tests {
             "proxy_on_response_body".to_string(),
         ];
         let caps = detect_capabilities(&exports);
+        assert!(!caps.has_config);
+        assert!(!caps.has_discovery);
         assert!(caps.has_proxy);
         assert!(!caps.has_route);
         assert!(!caps.has_analyze);
@@ -1041,9 +1116,70 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_config_capability() {
+        let exports: Vec<String> = vec![
+            "memory".to_string(),
+            "prism_config_load".to_string(),
+            "prism_config_init".to_string(),
+        ];
+        let caps = detect_capabilities(&exports);
+        assert!(caps.has_config);
+        assert!(!caps.has_discovery);
+        assert!(!caps.has_proxy);
+        assert!(!caps.has_route);
+        assert!(!caps.has_analyze);
+    }
+
+    #[test]
+    fn test_detect_config_load_only() {
+        let exports: Vec<String> = vec!["memory".to_string(), "prism_config_load".to_string()];
+        let caps = detect_capabilities(&exports);
+        assert!(caps.has_config);
+    }
+
+    #[test]
+    fn test_detect_config_init_only() {
+        let exports: Vec<String> = vec!["memory".to_string(), "prism_config_init".to_string()];
+        let caps = detect_capabilities(&exports);
+        assert!(caps.has_config);
+    }
+
+    #[test]
+    fn test_detect_discovery_capability() {
+        let exports: Vec<String> = vec![
+            "memory".to_string(),
+            "prism_discovery_init".to_string(),
+            "prism_discovery_discover".to_string(),
+        ];
+        let caps = detect_capabilities(&exports);
+        assert!(!caps.has_config);
+        assert!(caps.has_discovery);
+        assert!(!caps.has_proxy);
+        assert!(!caps.has_route);
+        assert!(!caps.has_analyze);
+    }
+
+    #[test]
+    fn test_detect_discovery_init_only() {
+        let exports: Vec<String> = vec!["memory".to_string(), "prism_discovery_init".to_string()];
+        let caps = detect_capabilities(&exports);
+        assert!(caps.has_discovery);
+    }
+
+    #[test]
+    fn test_detect_discovery_discover_only() {
+        let exports: Vec<String> =
+            vec!["memory".to_string(), "prism_discovery_discover".to_string()];
+        let caps = detect_capabilities(&exports);
+        assert!(caps.has_discovery);
+    }
+
+    #[test]
     fn test_detect_all_capabilities() {
         let exports: Vec<String> = vec![
             "memory".to_string(),
+            "prism_config_load".to_string(),
+            "prism_discovery_discover".to_string(),
             "proxy_on_request_headers".to_string(),
             "prism_route_filter".to_string(),
             "prism_route_score".to_string(),
@@ -1051,6 +1187,8 @@ mod tests {
             "alloc".to_string(),
         ];
         let caps = detect_capabilities(&exports);
+        assert!(caps.has_config);
+        assert!(caps.has_discovery);
         assert!(caps.has_proxy);
         assert!(caps.has_route);
         assert!(caps.has_analyze);
@@ -1074,6 +1212,8 @@ mod tests {
     #[test]
     fn test_validate_all_supported() {
         let caps = DetectedCapabilities {
+            has_config: true,
+            has_discovery: true,
             has_proxy: true,
             has_route: true,
             has_analyze: true,
@@ -1086,6 +1226,8 @@ mod tests {
     #[test]
     fn test_validate_proxy_unsupported() {
         let caps = DetectedCapabilities {
+            has_config: false,
+            has_discovery: false,
             has_proxy: false,
             has_route: true,
             has_analyze: true,
@@ -1099,6 +1241,8 @@ mod tests {
     #[test]
     fn test_validate_route_unsupported() {
         let caps = DetectedCapabilities {
+            has_config: false,
+            has_discovery: false,
             has_proxy: true,
             has_route: false,
             has_analyze: false,
@@ -1119,8 +1263,54 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_config_unsupported() {
+        let caps = DetectedCapabilities {
+            has_config: false,
+            has_discovery: false,
+            has_proxy: true,
+            has_route: false,
+            has_analyze: false,
+        };
+        let phases = vec![PluginPhase::Config];
+        let unsupported = validate_phases(&phases, &caps);
+        assert_eq!(unsupported.len(), 1);
+        assert_eq!(unsupported[0], PluginPhase::Config);
+    }
+
+    #[test]
+    fn test_validate_discovery_unsupported() {
+        let caps = DetectedCapabilities {
+            has_config: false,
+            has_discovery: false,
+            has_proxy: true,
+            has_route: false,
+            has_analyze: false,
+        };
+        let phases = vec![PluginPhase::Discovery];
+        let unsupported = validate_phases(&phases, &caps);
+        assert_eq!(unsupported.len(), 1);
+        assert_eq!(unsupported[0], PluginPhase::Discovery);
+    }
+
+    #[test]
+    fn test_validate_config_and_discovery_supported() {
+        let caps = DetectedCapabilities {
+            has_config: true,
+            has_discovery: true,
+            has_proxy: false,
+            has_route: false,
+            has_analyze: false,
+        };
+        let phases = vec![PluginPhase::Config, PluginPhase::Discovery];
+        let unsupported = validate_phases(&phases, &caps);
+        assert!(unsupported.is_empty());
+    }
+
+    #[test]
     fn test_validate_empty_phases() {
         let caps = DetectedCapabilities {
+            has_config: false,
+            has_discovery: false,
             has_proxy: false,
             has_route: false,
             has_analyze: false,
@@ -1162,11 +1352,24 @@ mod tests {
                 "source": {"builtin": "noop"},
                 "phases": ["proxy"],
                 "enabled": false
+            },
+            {
+                "name": "config-loader",
+                "source": {"wasm": "plugins/config.wasm"},
+                "phases": ["config"],
+                "priority": 5
+            },
+            {
+                "name": "k8s-discovery",
+                "source": {"wasm": "plugins/k8s.wasm"},
+                "phases": ["discovery"],
+                "config": {"namespace": "default"},
+                "priority": 15
             }
         ]"#;
 
         let descriptors: Vec<PluginDescriptor> = serde_json::from_str(json).unwrap();
-        assert_eq!(descriptors.len(), 4);
+        assert_eq!(descriptors.len(), 6);
 
         // auth-injector
         assert_eq!(descriptors[0].name, "auth-injector");
@@ -1198,6 +1401,16 @@ mod tests {
 
         // disabled-plugin
         assert!(!descriptors[3].enabled);
+
+        // config-loader
+        assert_eq!(descriptors[4].name, "config-loader");
+        assert_eq!(descriptors[4].phases, vec![PluginPhase::Config]);
+        assert_eq!(descriptors[4].priority, 5);
+
+        // k8s-discovery
+        assert_eq!(descriptors[5].name, "k8s-discovery");
+        assert_eq!(descriptors[5].phases, vec![PluginPhase::Discovery]);
+        assert_eq!(descriptors[5].config["namespace"], "default");
     }
 
     #[test]

@@ -12,7 +12,7 @@ pub use env_source::EnvSource;
 #[allow(unused_imports)]
 pub use file_source::{ConfigFormat, FileSource};
 #[allow(unused_imports)]
-pub use registry::{build_registry, build_registry_with_discoveries};
+pub use registry::{build_registry, build_registry_with_discoveries, build_router_from_config, parse_strategy_from_config};
 pub use types::*;
 #[cfg(feature = "wasm")]
 #[allow(unused_imports)]
@@ -256,6 +256,11 @@ fn merge_configs(base: PrismConfig, overlay: PrismConfig) -> PrismConfig {
         } else {
             overlay.concurrency_limits
         },
+        accounts: if overlay.accounts.is_empty() {
+            base.accounts
+        } else {
+            overlay.accounts
+        },
     }
 }
 
@@ -422,6 +427,10 @@ mod tests {
                 timeout_ms: None,
                 protocols: vec![],
                 headers: std::collections::HashMap::new(),
+                auth_type: Default::default(),
+                aws_region: None,
+                aws_access_key: None,
+                aws_secret_key: None,
                 circuit_breaker_threshold: 5,
                 circuit_breaker_recovery_secs: 30,
             },
@@ -437,6 +446,10 @@ mod tests {
                 timeout_ms: None,
                 protocols: vec![],
                 headers: std::collections::HashMap::new(),
+                auth_type: Default::default(),
+                aws_region: None,
+                aws_access_key: None,
+                aws_secret_key: None,
                 circuit_breaker_threshold: 5,
                 circuit_breaker_recovery_secs: 30,
             },

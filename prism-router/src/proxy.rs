@@ -15,6 +15,8 @@ use prism_core::router::{PrismRouter, RouteMetadata, RouteRequest, Router};
 
 use crate::access_log::{AccessLogData, AccessLogger};
 use crate::codec;
+use crate::provider;
+use crate::provider::registry::ProviderPluginRegistry;
 use crate::codec::registry::CodecRegistry;
 use crate::metrics::{MetricsCollector, RequestRecord};
 use crate::protocol::LlmProtocol;
@@ -34,8 +36,10 @@ pub struct ProxyContext {
     pub selected_model: Option<String>,
     /// Upstream base URL
     pub upstream_base_url: Option<String>,
-    /// Authorization header for upstream
+    /// Auth value for upstream (key/token)
     pub upstream_auth: Option<String>,
+    /// Auth header name (default: "Authorization")
+    pub upstream_auth_header: String,
     /// Custom headers to send to upstream (e.g. x-api-key)
     pub upstream_custom_headers: Vec<(String, String)>,
     /// Request start time for latency tracking
@@ -50,6 +54,8 @@ pub struct ProxyContext {
     pub codec_ctx: Option<codec::ProxyContext>,
     /// Whether protocol conversion is active for this request.
     pub needs_conversion: bool,
+    /// Provider plugin request context (set in upstream_peer).
+    pub provider_ctx: Option<provider::ProviderRequestContext>,
     /// Buffer for accumulating request body chunks when conversion is needed.
     pub request_body_buffer: Option<Vec<u8>>,
     /// Buffer for accumulating response body chunks when conversion is needed (non-streaming).
@@ -106,8 +112,12 @@ pub struct ProxyContext {
     pub request_id: String,
     /// Fallback chain from routing decision for retry/failover.
     pub retry_fallback_chain: Vec<String>,
+    /// Client-requested model name extracted from request body.
+    pub requested_model: Option<String>,
     /// Active concurrency guards — dropped when request completes.
     pub concurrency_guards: Vec<crate::ratelimit::concurrency::ConcurrencyGuard>,
+    /// Whether X-Prism-Debug header was set on the request.
+    pub debug_mode: bool,
 }
 
 impl Default for ProxyContext {
@@ -119,11 +129,13 @@ impl Default for ProxyContext {
             selected_model: None,
             upstream_base_url: None,
             upstream_auth: None,
+            upstream_auth_header: "Authorization".to_string(),
             upstream_custom_headers: Vec::new(),
             request_start: Instant::now(),
             response_status: None,
             codec_ctx: None,
             needs_conversion: false,
+            provider_ctx: None,
             request_body_buffer: None,
             response_body_buffer: None,
             outbound_protocol: None,
@@ -151,7 +163,9 @@ impl Default for ProxyContext {
             upstream_request_attempt_count: 1,
             request_id: String::new(),
             retry_fallback_chain: Vec::new(),
+            requested_model: None,
             concurrency_guards: Vec::new(),
+            debug_mode: false,
         }
     }
 }
@@ -161,6 +175,7 @@ pub struct PrismProxy {
     pub router: Arc<ArcSwap<PrismRouter>>,
     pub metrics: Arc<MetricsCollector>,
     pub codec_registry: Arc<CodecRegistry>,
+    pub provider_plugins: Arc<ProviderPluginRegistry>,
     pub rate_limiter: Option<Arc<RateLimiter>>,
     pub access_logger: Option<Arc<AccessLogger>>,
     /// Concurrency limiter.
@@ -174,6 +189,10 @@ pub struct PrismProxy {
     pub max_request_body_bytes: u64,
     /// Provider-level circuit breaker.
     pub circuit_breaker: Option<Arc<crate::circuit_breaker::CircuitBreaker>>,
+    /// Client-side API key authentication.
+    pub auth: Option<crate::config::types::AuthConfig>,
+    /// Active health checker for upstream endpoints.
+    pub health_checker: Option<Arc<crate::health::HealthChecker>>,
 }
 
 impl PrismProxy {
@@ -183,6 +202,7 @@ impl PrismProxy {
             router,
             metrics,
             codec_registry: Arc::new(CodecRegistry::new()),
+            provider_plugins: Arc::new(ProviderPluginRegistry::new()),
             rate_limiter: None,
             access_logger: None,
             concurrency_limiter: None,
@@ -190,6 +210,8 @@ impl PrismProxy {
             keepalive_secs: 60,
             max_request_body_bytes: 0,
             circuit_breaker: None,
+            auth: None,
+            health_checker: None,
         }
     }
 
@@ -203,6 +225,7 @@ impl PrismProxy {
             router,
             metrics,
             codec_registry,
+            provider_plugins: Arc::new(ProviderPluginRegistry::new()),
             rate_limiter: None,
             access_logger: None,
             concurrency_limiter: None,
@@ -210,7 +233,26 @@ impl PrismProxy {
             keepalive_secs: 60,
             max_request_body_bytes: 0,
             circuit_breaker: None,
+            auth: None,
+            health_checker: None,
         }
+    }
+
+    /// Enable client-side API key authentication.
+    #[allow(dead_code)]
+    pub fn with_auth(mut self, auth: crate::config::types::AuthConfig) -> Self {
+        if auth.enabled {
+            info!("  Client auth → enabled ({} keys, header: {})", auth.keys.len(), auth.header);
+            self.auth = Some(auth);
+        }
+        self
+    }
+
+    /// Enable active health checking.
+    #[allow(dead_code)]
+    pub fn with_health_checker(mut self, hc: Arc<crate::health::HealthChecker>) -> Self {
+        self.health_checker = Some(hc);
+        self
     }
 
     #[allow(dead_code)]
@@ -357,17 +399,74 @@ impl ProxyHttp for PrismProxy {
             .map(|(_, v)| v.clone())
             .unwrap_or_else(|| {
                 use std::sync::atomic::{AtomicU64, Ordering};
+                use std::time::{SystemTime, UNIX_EPOCH};
                 static COUNTER: AtomicU64 = AtomicU64::new(0);
-                let ts = ctx.request_start.elapsed().as_nanos() as u64;
+                let ts_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
                 let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-                format!("prism-{:x}-{:x}", ts, seq)
+                // prism-<epoch_ms_hex>-<seq_hex>
+                // e.g. prism-18e5a2b3c00-1a → ts可直接解析为wall clock
+                format!("prism-{:x}-{:x}", ts_ms, seq)
             });
+
+        // Check if client wants debug trace headers
+        ctx.debug_mode = ctx.request_headers_snapshot
+            .iter()
+            .any(|(k, v)| k == "x-prism-debug" && (v == "true" || v == "1"));
 
         debug!(
             path = %path,
             protocol = %ctx.protocol.as_str(),
+            debug_mode = %ctx.debug_mode,
             "Request received"
         );
+
+        // ── Client API key authentication ──
+        if let Some(ref auth) = self.auth {
+            // Skip auth for health/readyz/version paths
+            let skip = auth.skip_paths.iter().any(|p| path.starts_with(p));
+            if !skip {
+                let header_val = ctx.request_headers_snapshot
+                    .iter()
+                    .find(|(k, _)| k == &auth.header)
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or("");
+
+                let key = if let Some(ref prefix) = auth.strip_prefix {
+                    header_val.strip_prefix(prefix.as_str()).unwrap_or(header_val)
+                } else {
+                    header_val
+                };
+
+                if key.is_empty() || !auth.keys.iter().any(|k| k == key) {
+                    warn!(path = %path, "Client auth failed — invalid or missing API key");
+                    ctx.response_flags.push("UA".to_string());
+
+                    let header = pingora::http::ResponseHeader::build(401, None).unwrap();
+                    let body = serde_json::json!({
+                        "error": {
+                            "type": "authentication_error",
+                            "message": "Invalid or missing API key",
+                            "code": "invalid_api_key"
+                        }
+                    });
+
+                    session.set_keepalive(None);
+                    session
+                        .write_response_header(Box::new(header), true)
+                        .await
+                        .ok();
+                    session
+                        .write_response_body(Some(Bytes::from(body.to_string())), true)
+                        .await
+                        .ok();
+                    return Ok(true);
+                }
+                debug!("Client auth passed");
+            }
+        }
 
         // ── Global plugin chain: on_request_headers (pre-route) ──
         if let Some(global_chain) = self.codec_registry.global_chain() {
@@ -547,6 +646,33 @@ impl ProxyHttp for PrismProxy {
             }
         }
 
+
+        // Read body to extract model name for routing.
+        // We use enable_retry_buffering() so Pingora saves the body internally.
+        // After reading, proxy_handle_downstream will replay the retry buffer
+        // through request_body_filter, where we do model rewrite / codec.
+        if ctx.protocol != LlmProtocol::Unknown {
+            session.downstream_session.enable_retry_buffering();
+            let mut body_bytes = Vec::new();
+            loop {
+                match session.downstream_session.read_request_body().await {
+                    Ok(Some(bytes)) => body_bytes.extend_from_slice(&bytes),
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+            if !body_bytes.is_empty() {
+                ctx.bytes_received = Some(body_bytes.len() as u64);
+                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+                    if let Some(model) = json.get("model").and_then(|m| m.as_str()) {
+                        ctx.requested_model = Some(model.to_string());
+                        debug!(model = %model, "Extracted model from request body");
+                    }
+                }
+            }
+            ctx.request_body_received_at = Some(Instant::now());
+        }
+
         Ok(false) // continue to Pingora upstream pipeline
     }
 
@@ -556,6 +682,74 @@ impl ProxyHttp for PrismProxy {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> Result<Box<HttpPeer>, Box<pingora::Error>> {
+
+        // ── Retry fast-path: if fail_to_connect set a new variant, use it directly ──
+        if ctx.upstream_request_attempt_count > 1 {
+            if let Some(ref variant_id) = ctx.selected_variant {
+                let router = self.router.load();
+                if let Some(variant) = router.registry.variants.get(variant_id) {
+                    // Resolve provider from variant's endpoint
+                    let endpoint = router.registry.endpoints.get(&variant.endpoint_id);
+                    let provider_id = endpoint.map(|ep| ep.provider_id.clone()).unwrap_or_default();
+                    let provider = router.registry.providers.get(&provider_id);
+
+                    ctx.selected_provider = Some(provider_id.clone());
+                    ctx.upstream_model_name = variant.upstream_model_name.clone();
+
+                    let base_url = variant.base_url.as_deref()
+                        .or_else(|| endpoint.and_then(|ep| ep.base_url.as_deref()))
+                        .or_else(|| provider.map(|p| p.base_url.as_str()))
+                        .unwrap_or("https://api.openai.com/v1");
+                    ctx.upstream_base_url = Some(base_url.to_string());
+
+                    // Re-resolve auth from account
+                    ctx.upstream_auth = None;
+                    ctx.upstream_custom_headers.clear();
+                    let account_id = variant.account_id.as_ref();
+                    if let Some(acct) = account_id.and_then(|id| router.registry.accounts.get(id)) {
+                        match &acct.auth {
+                            prism_core::types::AuthConfig::ApiKey { key, header } if !key.is_empty() => {
+                                ctx.upstream_auth = Some(key.clone());
+                                ctx.upstream_auth_header = header.clone();
+                            }
+                            prism_core::types::AuthConfig::Custom { headers } if !headers.is_empty() => {
+                                ctx.upstream_custom_headers = headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                            }
+                            _ => {}
+                        }
+                    }
+                    // Fallback to provider auth
+                    if ctx.upstream_auth.is_none() && ctx.upstream_custom_headers.is_empty() {
+                        if let Some(p) = provider {
+                            match &p.auth {
+                                prism_core::types::AuthConfig::ApiKey { key, header } => {
+                                    ctx.upstream_auth = Some(key.clone());
+                                    ctx.upstream_auth_header = header.clone();
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    let (host, port, use_tls) = Self::parse_upstream(base_url)?;
+                    info!(
+                        variant = %variant_id,
+                        provider = %provider_id,
+                        host = %host,
+                        attempt = ctx.upstream_request_attempt_count,
+                        "Retry → upstream"
+                    );
+
+                    let mut peer = HttpPeer::new((host, port), use_tls, host.to_string());
+                    peer.options.connection_timeout = Some(std::time::Duration::from_secs(5));
+                    peer.options.read_timeout = Some(std::time::Duration::from_secs(self.request_timeout_secs));
+                    peer.options.write_timeout = Some(std::time::Duration::from_secs(10));
+                    peer.options.set_http_version(1, 1);
+                    return Ok(Box::new(peer));
+                }
+            }
+        }
+
         // Build a minimal route request from path + headers
         let path = session.req_header().uri.path().to_string();
         let protocol_str = ctx.protocol.as_str();
@@ -570,6 +764,7 @@ impl ProxyHttp for PrismProxy {
             strategy: None,
             metadata: RouteMetadata::default(),
             analyze_context: None,
+            requested_model: ctx.requested_model.clone(),
             required_protocol: if protocol_str != "unknown" {
                 Some(protocol_str.to_string())
             } else {
@@ -583,57 +778,126 @@ impl ProxyHttp for PrismProxy {
             Ok(decision) => {
                 ctx.decision_time_us = Some(route_start.elapsed().as_micros() as u64);
 
-                // Circuit breaker check
-                if let Some(ref cb) = self.circuit_breaker {
-                    use crate::circuit_breaker::CircuitState;
-                    match cb.check(&decision.selected_provider) {
-                        CircuitState::Open => {
-                            warn!(
-                                provider = %decision.selected_provider,
-                                "Circuit breaker OPEN — rejecting request"
-                            );
-                            ctx.response_flags.push("CB".to_string());
-                            ctx.error_message = Some(format!("circuit breaker open for provider {}", decision.selected_provider));
-                            return Err(pingora::Error::explain(
-                                pingora::ErrorType::ConnectProxyFailure,
-                                format!("circuit breaker open for provider {}", decision.selected_provider),
-                            ));
+                // Build candidate list: primary + fallback chain
+                let mut candidates = vec![decision.selected_variant.clone()];
+                candidates.extend(decision.fallback_chain.iter().cloned());
+
+                // Find the first healthy candidate
+                let mut chosen_variant = None;
+                for candidate in &candidates {
+                    let variant = router.registry.variants.get(candidate);
+                    let provider_id = variant
+                        .and_then(|v| {
+                            router.registry.endpoints.get(&v.endpoint_id)
+                                .map(|ep| ep.provider_id.clone())
+                        })
+                        .unwrap_or_default();
+
+                    // Circuit breaker check
+                    let cb_ok = if let Some(ref cb) = self.circuit_breaker {
+                        use crate::circuit_breaker::CircuitState;
+                        match cb.check(&provider_id) {
+                            CircuitState::Open => {
+                                warn!(provider = %provider_id, variant = %candidate, "Circuit breaker OPEN — skipping");
+                                false
+                            }
+                            CircuitState::HalfOpen => {
+                                info!(provider = %provider_id, variant = %candidate, "Circuit breaker HALF-OPEN — probe");
+                                true
+                            }
+                            CircuitState::Closed => true,
                         }
-                        CircuitState::HalfOpen => {
+                    } else {
+                        true
+                    };
+
+                    // Health checker check
+                    let health_ok = if let Some(ref hc) = self.health_checker {
+                        hc.is_healthy(candidate)
+                    } else {
+                        true
+                    };
+
+                    if cb_ok && health_ok {
+                        chosen_variant = Some(candidate.clone());
+                        if candidate != &decision.selected_variant {
                             info!(
-                                provider = %decision.selected_provider,
-                                "Circuit breaker HALF-OPEN — allowing probe request"
+                                original = %decision.selected_variant,
+                                failover = %candidate,
+                                "Failover to healthy variant"
                             );
+                            ctx.response_flags.push("FO".to_string()); // failover flag
                         }
-                        CircuitState::Closed => {}
+                        break;
                     }
                 }
-                ctx.selected_variant = Some(decision.selected_variant.clone());
-                ctx.selected_provider = Some(decision.selected_provider.clone());
+
+                let chosen_variant = match chosen_variant {
+                    Some(v) => v,
+                    None => {
+                        // All candidates unhealthy — use primary anyway (best effort)
+                        warn!("All candidates unhealthy, using primary as best effort");
+                        ctx.response_flags.push("AUH".to_string()); // all unhealthy
+                        decision.selected_variant.clone()
+                    }
+                };
+
+                // Resolve chosen variant's provider
+                let chosen_provider = router.registry.variants.get(&chosen_variant)
+                    .and_then(|v| router.registry.endpoints.get(&v.endpoint_id))
+                    .map(|ep| ep.provider_id.clone())
+                    .unwrap_or_else(|| decision.selected_provider.clone());
+
+                ctx.selected_variant = Some(chosen_variant.clone());
+                ctx.selected_provider = Some(chosen_provider.clone());
                 ctx.selected_model = Some(decision.selected_model.clone());
 
-                // Store fallback chain for retry plugin
-                if !decision.fallback_chain.is_empty() {
-                    ctx.retry_fallback_chain = decision.fallback_chain.clone();
-                }
+                // Store remaining fallback chain (after chosen)
+                let chosen_idx = candidates.iter().position(|c| c == &chosen_variant).unwrap_or(0);
+                ctx.retry_fallback_chain = candidates[chosen_idx + 1..].to_vec();
 
-                // Look up upstream_model_name from the variant
-                if let Some(variant) = router.registry.variants.get(&decision.selected_variant) {
+                // Look up upstream_model_name from the chosen variant
+                if let Some(variant) = router.registry.variants.get(&chosen_variant) {
                     ctx.upstream_model_name = variant.upstream_model_name.clone();
                 }
 
                 // Look up the provider's base_url and protocols
-                let provider = router.registry.providers.get(&decision.selected_provider);
+                let provider = router.registry.providers.get(&chosen_provider);
 
                 let base_url = provider
                     .map(|p| p.base_url.as_str())
                     .unwrap_or("https://api.openai.com/v1");
 
                 // Extract auth header from provider
+                // First try account auth (preferred — accounts carry the real API keys)
+                // Resolve account from chosen variant
+                let chosen_account_id = router.registry.variants.get(&chosen_variant)
+                    .and_then(|v| v.account_id.clone())
+                    .unwrap_or_else(|| decision.selected_account.clone());
+                let account = router.registry.accounts.get(&chosen_account_id);
+                if let Some(acct) = account {
+                    match &acct.auth {
+                        prism_core::types::AuthConfig::ApiKey { key, header } if !key.is_empty() => {
+                            ctx.upstream_auth = Some(key.clone());
+                            ctx.upstream_auth_header = header.clone();
+                        }
+                        prism_core::types::AuthConfig::Custom { headers } if !headers.is_empty() => {
+                            ctx.upstream_custom_headers = headers
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect();
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Fall back to provider auth if account didn't provide any
+                if ctx.upstream_auth.is_none() && ctx.upstream_custom_headers.is_empty() {
                 if let Some(p) = provider {
                     match &p.auth {
-                        prism_core::types::AuthConfig::ApiKey { key, .. } => {
+                        prism_core::types::AuthConfig::ApiKey { key, header } => {
                             ctx.upstream_auth = Some(key.clone());
+                            ctx.upstream_auth_header = header.clone();
                         }
                         prism_core::types::AuthConfig::Custom { headers } => {
                             ctx.upstream_custom_headers = headers
@@ -644,8 +908,56 @@ impl ProxyHttp for PrismProxy {
                         _ => {}
                     }
                 }
+                }
 
                 ctx.upstream_base_url = Some(base_url.to_string());
+
+                // ── Build ProviderRequestContext for provider plugin ──
+                {
+                    let provider_type = provider
+                        .and_then(|p| p.protocols.first().cloned())
+                        .unwrap_or_default();
+                    let provider_extra = provider
+                        .map(|p| p.metadata.clone().into_iter().map(|(k, v)| {
+                            (k, serde_json::Value::String(v))
+                        }).collect())
+               .unwrap_or_default();
+
+                    // Extract api_key from account's AuthConfig.
+                    // Note: registry bakes "Bearer " prefix into ApiKey.key for Bearer auth.
+                    // We strip it here to give the provider plugin the raw key.
+                    let (acct_key, acct_headers) = match account.map(|a| &a.auth) {
+                        Some(prism_core::types::AuthConfig::ApiKey { key, .. }) if !key.is_empty() => {
+                            let raw_key = key.strip_prefix("Bearer ").unwrap_or(key).to_string();
+                            (Some(raw_key), std::collections::HashMap::new())
+                        }
+                        Some(prism_core::types::AuthConfig::Custom { headers }) => {
+                            (None, headers.clone())
+                        }
+                        _ => (None, std::collections::HashMap::new()),
+                    };
+
+                    let variant_obj = router.registry.variants.get(&decision.selected_variant);
+                    let deployment = variant_obj.and_then(|v| v.deployment_name.clone());
+                    let upstream_model = ctx.upstream_model_name.clone();
+
+                    ctx.provider_ctx = Some(provider::ProviderRequestContext {
+                        provider_id: decision.selected_provider.clone(),
+                        provider_type,
+                        base_url: base_url.to_string(),
+                        provider_extra,
+                        account_id: decision.selected_account.clone(),
+                        account_api_key: acct_key,
+                        account_headers: acct_headers,
+                        variant_id: decision.selected_variant.clone(),
+                        model_id: decision.selected_model.clone(),
+                        upstream_model_name: upstream_model,
+                        deployment_name: deployment,
+                        original_path: path.clone(),
+                        method: ctx.request_method.clone(),
+                        is_streaming: false,
+                    });
+                }
 
                 // ── Codec: determine outbound protocol and check if conversion is needed ──
                 let outbound_protocol = provider
@@ -742,10 +1054,20 @@ impl ProxyHttp for PrismProxy {
             // we replace the /v1 prefix with /llm-serve/v1.
             if !base_path.is_empty() {
                 let original_path = upstream_request.uri.path().to_string();
-                // Try to replace the standard API prefix (/v1) with the base path
+                // Try to replace the standard API prefix (/v1) with the base path.
+                // Handles base_urls ending with any version prefix: /v1, /v2, /v3, etc.
                 let new_path = if original_path.starts_with("/v1/") || original_path == "/v1" {
-                    // Replace /v1 with base_path (which may end with /v1 or another version)
-                    if base_path.ends_with("/v1") {
+                    // Check if base_path ends with a versioned prefix (/v1, /v2, /v3, ...)
+                    let base_ends_with_version = {
+                        let bytes = base_path.as_bytes();
+                        bytes.len() >= 3
+                            && bytes[bytes.len() - 3] == b'/'
+                            && bytes[bytes.len() - 2] == b'v'
+                            && bytes[bytes.len() - 1].is_ascii_digit()
+                    };
+                    if base_ends_with_version {
+                        // base_path = "/api/v3", original = "/v1/chat/completions"
+                        // → "/api/v3/chat/completions" (replace /v1 with base's version)
                         format!("{}{}", base_path, &original_path[3..]) // skip "/v1"
                     } else {
                         format!("{}{}", base_path, original_path)
@@ -771,39 +1093,131 @@ impl ProxyHttp for PrismProxy {
             })?;
         }
 
-        // Set the Authorization header
-        if let Some(ref auth) = ctx.upstream_auth {
-            upstream_request
-                .insert_header("Authorization", auth.as_str())
-                .map_err(|e| {
-                    pingora::Error::explain(
-                        pingora::ErrorType::InternalError,
-                        format!("header error: {:?}", e),
-                    )
-                })?;
+        // ── Default Content-Type to application/json ──
+        // LLM APIs are JSON-only. Default to application/json if missing or wrong.
+        {
+            let needs_fix = upstream_request.headers.get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .map(|ct| !ct.contains("application/json"))
+                .unwrap_or(true);
+            if needs_fix {
+                let _ = upstream_request.insert_header("content-type", "application/json");
+            }
         }
 
-        // Set custom headers (e.g. x-api-key for wanqing)
-        {
-            let headers_to_set: Vec<(String, String)> = ctx.upstream_custom_headers.clone();
-            for (key, value) in headers_to_set {
+        // ── Provider plugin: build auth headers + rewrite URL ──
+        if let Some(ref pctx) = ctx.provider_ctx {
+            let provider_type = if pctx.provider_type.is_empty() {
+                "openai"
+            } else {
+                &pctx.provider_type
+            };
+            let plugin = self.provider_plugins.get(provider_type);
+
+            // Build auth headers via provider plugin
+            match plugin.build_auth(pctx) {
+                Ok(auth_result) => {
+                    let n = auth_result.headers.len();
+                    for (key, value) in auth_result.headers {
+                        upstream_request
+                            .insert_header(key, &value)
+                            .map_err(|e| {
+                                pingora::Error::explain(
+                                    pingora::ErrorType::InternalError,
+                                    format!("provider auth header error: {:?}", e),
+                                )
+                            })?;
+                    }
+                    debug!(
+                        provider_type = %provider_type,
+                        headers = %n,
+                        "Provider plugin set auth headers"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        provider_type = %provider_type,
+                        error = %e,
+                        "Provider plugin build_auth failed, falling back"
+                    );
+                }
+            }
+
+            // Rewrite URL via provider plugin
+            match plugin.rewrite_url(pctx) {
+                Ok(url_result) => {
+                    if url_result.path != pctx.original_path {
+                        if let Ok(uri) = url_result.path.parse::<http::Uri>() {
+                            upstream_request.set_uri(uri);
+                            debug!(
+                                original = %pctx.original_path,
+                                rewritten = %url_result.path,
+                                "Provider plugin rewrote URL"
+                            );
+                        }
+                    }
+                    if let Some(ref host) = url_result.host_override {
+                        let host_str: &str = host.as_str();
+                        let _ = upstream_request.insert_header("Host", host_str);
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        provider_type = %provider_type,
+                        error = %e,
+                        "Provider plugin rewrite_url failed"
+                    );
+                }
+            }
+        } else {
+            // Fallback: legacy auth path (no provider_ctx — shouldn't happen)
+            if let Some(ref auth) = ctx.upstream_auth {
+                let auth_header = ctx.upstream_auth_header.clone();
+                let auth_value = auth.clone();
                 upstream_request
-                    .insert_header(
-                        http::header::HeaderName::from_bytes(key.as_bytes())
-                            .unwrap_or(http::header::CONTENT_TYPE),
-                        &value,
-                    )
+                    .insert_header(auth_header, &auth_value)
                     .map_err(|e| {
                         pingora::Error::explain(
                             pingora::ErrorType::InternalError,
-                            format!("custom header error: {:?}", e),
+                            format!("header error: {:?}", e),
                         )
                     })?;
+            }
+
+            // Set custom headers (legacy path)
+            {
+                let headers_to_set: Vec<(String, String)> = ctx.upstream_custom_headers.clone();
+                for (key, value) in headers_to_set {
+                    upstream_request
+                        .insert_header(
+                            http::header::HeaderName::from_bytes(key.as_bytes())
+                                .unwrap_or(http::header::CONTENT_TYPE),
+                            &value,
+                        )
+                        .map_err(|e| {
+                            pingora::Error::explain(
+                                pingora::ErrorType::InternalError,
+                                format!("custom header error: {:?}", e),
+                            )
+                        })?;
+                }
             }
         }
 
         // Forward X-Request-ID to upstream
         let _ = upstream_request.insert_header("X-Request-ID", &ctx.request_id);
+
+        // If body will be rewritten (model name rewrite or codec conversion),
+        // use chunked transfer encoding since the body size may change.
+        // Must explicitly set Transfer-Encoding: chunked — just removing
+        // Content-Length makes Pingora's BodyWriter fall back to HTTP/1.0
+        // close-delimited mode which silently drops the body.
+        // Note: some upstreams (e.g. Spring-based APIs) don't handle chunked
+        // encoding properly. Consider using reqwest-based forwarding for those.
+        if ctx.upstream_model_name.is_some() || ctx.needs_conversion {
+            let _ = upstream_request.remove_header("content-length");
+            let _ = upstream_request.insert_header("transfer-encoding", "chunked");
+        }
 
         // ── Codec: process request headers through plugin chain ──
         if ctx.needs_conversion {
@@ -902,8 +1316,11 @@ impl ProxyHttp for PrismProxy {
         Ok(())
     }
 
-    /// Phase 3b: Handle request body — buffer and transform if conversion is needed,
-    /// and/or rewrite the model name for upstream.
+    /// Phase 3b: Handle request body — rewrite model name and/or transform via codec.
+    ///
+    /// Body arrives here via Pingora's retry buffer (pre-read in request_filter
+    /// with enable_retry_buffering). For codec conversion or model rewrite,
+    /// we buffer all chunks and emit the transformed body on end_of_stream.
     async fn request_body_filter(
         &self,
         _session: &mut Session,
@@ -926,8 +1343,6 @@ impl ProxyHttp for PrismProxy {
             }
         }
 
-        // When we have the complete body, optionally rewrite model name and/or
-        // transform through the codec plugin chain.
         if end_of_stream {
             let mut full_body = ctx.request_body_buffer.take().unwrap_or_default();
 
@@ -976,11 +1391,10 @@ impl ProxyHttp for PrismProxy {
                 }
             }
 
-            // Pass through (possibly rewritten) body
+            // Emit the (possibly rewritten) body
             *body = Some(Bytes::from(full_body));
         } else {
-            // We're buffering — suppress sending partial chunks upstream.
-            // Clear the chunk so Pingora doesn't send it yet.
+            // Buffering — suppress partial chunks from going upstream
             *body = None;
         }
 
@@ -1007,6 +1421,38 @@ impl ProxyHttp for PrismProxy {
                 }
                 global_chain.process_response_headers(global_ctx);
             }
+        }
+
+        // ── X-Prism-Debug response headers ──
+        if ctx.debug_mode {
+            let _ = upstream_response.insert_header("X-Prism-Request-Id", &ctx.request_id);
+            let _ = upstream_response.insert_header("X-Prism-Model", ctx.requested_model.as_deref().unwrap_or("-"));
+            let _ = upstream_response.insert_header("X-Prism-Variant", ctx.selected_variant.as_deref().unwrap_or("-"));
+            let _ = upstream_response.insert_header("X-Prism-Provider", ctx.selected_provider.as_deref().unwrap_or("-"));
+            let _ = upstream_response.insert_header("X-Prism-Upstream-Model", ctx.upstream_model_name.as_deref().unwrap_or("-"));
+            let _ = upstream_response.insert_header("X-Prism-Upstream-Base-Url", ctx.upstream_base_url.as_deref().unwrap_or("-"));
+            let _ = upstream_response.insert_header("X-Prism-Protocol", ctx.protocol.as_str());
+            let _ = upstream_response.insert_header("X-Prism-Outbound-Protocol", ctx.outbound_protocol.as_deref().unwrap_or("-"));
+            if let Some(dt) = ctx.decision_time_us {
+                let _ = upstream_response.insert_header("X-Prism-Decision-Time-Us", &dt.to_string());
+            }
+            if let Some(ref ttfb) = ctx.upstream_first_byte_at {
+                let ms = ttfb.duration_since(ctx.request_start).as_millis();
+                let _ = upstream_response.insert_header("X-Prism-Upstream-Ttfb-Ms", &ms.to_string());
+            }
+            let total_ms = ctx.request_start.elapsed().as_millis();
+            let _ = upstream_response.insert_header("X-Prism-Total-Latency-Ms", &total_ms.to_string());
+            if !ctx.response_flags.is_empty() {
+                let _ = upstream_response.insert_header("X-Prism-Flags", &ctx.response_flags.join(","));
+            }
+            if !ctx.retry_fallback_chain.is_empty() {
+                let _ = upstream_response.insert_header("X-Prism-Fallback-Chain", &ctx.retry_fallback_chain.join(","));
+            }
+            let _ = upstream_response.insert_header("X-Prism-Conversion", if ctx.needs_conversion { "true" } else { "false" });
+            if let Some(bytes) = ctx.bytes_received {
+                let _ = upstream_response.insert_header("X-Prism-Bytes-Received", &bytes.to_string());
+            }
+            let _ = upstream_response.insert_header("X-Prism-Attempt-Count", &ctx.upstream_request_attempt_count.to_string());
         }
 
         if !ctx.needs_conversion {
@@ -1155,6 +1601,32 @@ impl ProxyHttp for PrismProxy {
         Ok(None)
     }
 
+    /// Connection failure handler — mark retryable if fallback chain has candidates.
+    fn fail_to_connect(
+        &self,
+        _session: &mut Session,
+        _peer: &HttpPeer,
+        ctx: &mut Self::CTX,
+        mut e: Box<pingora::Error>,
+    ) -> Box<pingora::Error> {
+        if !ctx.retry_fallback_chain.is_empty() {
+            let next = ctx.retry_fallback_chain.remove(0);
+            info!(
+                failed_variant = ?ctx.selected_variant,
+                next_variant = %next,
+                remaining = ctx.retry_fallback_chain.len(),
+                "Connection failed, retrying with fallback variant"
+            );
+            // Update context for the next upstream_peer call
+            ctx.selected_variant = Some(next);
+            ctx.upstream_request_attempt_count += 1;
+            ctx.response_flags.push("RT".to_string()); // retry flag
+            // Mark as retryable — Pingora will call upstream_peer again
+            e.set_retry(true);
+        }
+        e
+    }
+
     /// Phase 5: Log the completed request and record metrics.
     async fn logging(
         &self,
@@ -1215,6 +1687,33 @@ impl ProxyHttp for PrismProxy {
                 output_tokens: ctx.global_codec_ctx.as_ref().and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY)).and_then(|u| u.output_tokens.map(|v| v as u32)),
                 timestamp: Instant::now(),
             });
+        }
+
+        // ── Circuit breaker feedback ──
+        if let Some(ref cb) = self.circuit_breaker {
+            if let Some(ref provider_id) = ctx.selected_provider {
+                let success = (200..500).contains(&status) && _e.is_none();
+                if success {
+                    cb.record_success(provider_id);
+                } else {
+                    cb.record_failure(provider_id);
+                    debug!(provider = %provider_id, status = %status, "Circuit breaker recorded failure");
+                }
+            }
+        }
+
+        // ── Health checker passive feedback ──
+        if let Some(ref hc) = self.health_checker {
+            // Use variant id as endpoint key (provider_id@endpoint_id in variant)
+            if let Some(ref variant_id) = ctx.selected_variant {
+                let success = (200..500).contains(&status) && _e.is_none();
+                if success {
+                    hc.record_success(variant_id);
+                } else {
+                    let reason = ctx.error_message.clone().unwrap_or_else(|| format!("HTTP {}", status));
+                    hc.record_failure(variant_id, &reason);
+                }
+            }
         }
 
         // ── Global plugin chain: on_log (all requests) ──

@@ -3,6 +3,7 @@
 pub mod api;
 pub mod codec;
 pub mod config;
+pub mod provider;
 pub mod config_watcher;
 pub mod metrics;
 pub mod plugin_loader;
@@ -23,6 +24,7 @@ pub mod gen {
 
 #[cfg(feature = "proxy")]
 pub mod access_log;
+pub mod health;
 #[cfg(feature = "proxy")]
 pub mod protocol;
 #[cfg(feature = "proxy")]

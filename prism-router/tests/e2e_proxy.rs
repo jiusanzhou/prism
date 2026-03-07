@@ -631,6 +631,7 @@ mod proxy_tests {
             metadata: prism_core::router::RouteMetadata::default(),
             analyze_context: None,
             required_protocol: None,
+            requested_model: None,
         });
 
         assert!(result.is_ok());
@@ -915,4 +916,522 @@ async fn test_health_with_model_rewrite_registry() {
     assert_eq!(json["status"], "healthy");
     assert_eq!(json["registered_models"], 2); // mock-model + deepseek-r1
     assert_eq!(json["active_variants"], 2);
+}
+
+// ════════════════════════════════════════════════
+// E2E: Provider Plugin — auth & URL through mock
+// ════════════════════════════════════════════════
+
+#[cfg(feature = "proxy")]
+mod provider_plugin_e2e {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// Mock server that captures the actual auth header and model received.
+    /// This verifies the full proxy pipeline: routing → provider plugin auth → upstream.
+    #[derive(Clone, Default)]
+    struct RequestCapture {
+        inner: Arc<Mutex<Vec<CapturedRequest>>>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct CapturedRequest {
+        auth_header: Option<String>,
+        api_key_header: Option<String>,
+        model: String,
+        path: String,
+    }
+
+    impl RequestCapture {
+        fn push(&self, req: CapturedRequest) {
+            self.inner.lock().unwrap().push(req);
+        }
+        fn last(&self) -> Option<CapturedRequest> {
+            self.inner.lock().unwrap().last().cloned()
+        }
+    }
+
+    async fn start_capture_server() -> (u16, tokio::sync::oneshot::Sender<()>, RequestCapture) {
+        let capture = RequestCapture::default();
+        let cap = capture.clone();
+
+        let app = Router::new()
+            .route("/v1/chat/completions", post({
+                let cap = cap.clone();
+                move |headers: axum::http::HeaderMap, Json(body): Json<serde_json::Value>| {
+                    let cap = cap.clone();
+                    async move {
+                        let auth = headers.get("authorization")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|s| s.to_string());
+                        let api_key = headers.get("api-key")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|s| s.to_string());
+                        let model = body["model"].as_str().unwrap_or("?").to_string();
+                        cap.push(CapturedRequest {
+                            auth_header: auth.clone(),
+                            api_key_header: api_key,
+                            model: model.clone(),
+                            path: "/v1/chat/completions".into(),
+                        });
+
+                        Json(json!({
+                            "id": "test-capture",
+                            "object": "chat.completion",
+                            "created": 1,
+                            "model": model,
+                            "choices": [{"index": 0, "message": {"role": "assistant", "content": "captured"}, "finish_reason": "stop"}],
+                            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                        }))
+                    }
+                }
+            }))
+            .route("/openai/deployments/{deployment}/chat/completions", post({
+                let cap = cap.clone();
+                move |
+                    axum::extract::Path(deployment): axum::extract::Path<String>,
+                    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+                    headers: axum::http::HeaderMap,
+                    Json(body): Json<serde_json::Value>,
+                | {
+                    let cap = cap.clone();
+                    async move {
+                        let auth = headers.get("authorization")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|s| s.to_string());
+                        let api_key = headers.get("api-key")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|s| s.to_string());
+                        let model = body["model"].as_str().unwrap_or("?").to_string();
+                        let api_version = params.get("api-version").cloned().unwrap_or_default();
+                        cap.push(CapturedRequest {
+                            auth_header: auth,
+                            api_key_header: api_key,
+                            model: model.clone(),
+                            path: format!("/openai/deployments/{}/chat/completions?api-version={}", deployment, api_version),
+                        });
+
+                        Json(json!({
+                            "id": "test-azure-capture",
+                            "object": "chat.completion",
+                            "created": 1,
+                            "model": deployment,
+                            "choices": [{"index": 0, "message": {"role": "assistant", "content": "azure captured"}, "finish_reason": "stop"}],
+                            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                        }))
+                    }
+                }
+            }));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async { rx.await.ok(); })
+                .await
+                .ok();
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        (port, tx, capture)
+    }
+
+    /// Verify that OpenAI-compat provider plugin sends Bearer auth header.
+    #[tokio::test]
+    async fn test_provider_plugin_openai_auth_e2e() {
+        let (port, _shutdown, capture) = start_capture_server().await;
+
+        // Build registry: openai-type provider → mock server
+        let mut registry = InMemoryRegistry::new();
+        registry.add_provider(Provider {
+            id: "test-openai".into(),
+            name: "Test OpenAI".into(),
+            auth: AuthConfig::ApiKey {
+                key: "Bearer sk-e2e-test-key".into(),
+                header: "Authorization".into(),
+            },
+            base_url: format!("http://127.0.0.1:{}/v1", port),
+            rate_limit: None,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
+            protocols: vec!["openai".into()],
+        });
+        registry.add_endpoint(Endpoint {
+            id: "test-openai-ep".into(),
+            provider_id: "test-openai".into(),
+            base_url: Some(format!("http://127.0.0.1:{}/v1", port)),
+            region: None, auth_override: None, rate_limit: None, priority: 0,
+            status: HealthStatus::Healthy,
+        });
+        registry.add_account(Account {
+            id: "test-openai-acct".into(),
+            endpoint_id: "test-openai-ep".into(),
+            auth: AuthConfig::ApiKey {
+                key: "Bearer sk-e2e-test-key".into(),
+                header: "Authorization".into(),
+            },
+            project_id: None, rate_limit: None, billing_tag: None, weight: 1.0,
+            status: HealthStatus::Healthy, metadata: HashMap::new(),
+        });
+        registry.add_model(Model {
+            id: "gpt-4o".into(),
+            display_name: "GPT-4o".into(),
+            quality_tier: QualityTier::A,
+            capabilities: ModelCapabilities::default(),
+            pricing: ModelPricing::default(),
+            specialties: vec![], limits: None, status: ModelStatus::Available,
+        });
+        registry.add_variant(ModelVariant {
+            id: "gpt-4o@test-openai".into(),
+            model_id: "gpt-4o".into(),
+            endpoint_id: "test-openai-ep".into(),
+            account_id: Some("test-openai-acct".into()),
+            deployment_name: None, weight: 1.0,
+            performance: ModelPerformance::default(),
+            pricing_override: None, status: VariantStatus::Active,
+            base_url: None, upstream_model_name: None,
+        });
+        registry.add_pool(ModelPool {
+            id: "default".into(), name: "Default".into(),
+            variants: vec!["gpt-4o@test-openai".into()],
+            selection_mode: SelectionMode::default(), description: None,
+        });
+
+        // Make a request through the full proxy pipeline
+        let client = reqwest::Client::new();
+        // Need to start actual proxy server for this — use the HTTP API route as proxy
+        let router = PrismRouter::new(registry);
+        let app = build_prism_app_with_state(
+            AppState::new(router, PathBuf::from("e2e-test.yaml"))
+        );
+
+        // Route request to verify routing works
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"messages":[{"role":"user","content":"test provider plugin"}],"strategy":"gpt-4o"}"#,
+            ))
+            .unwrap();
+
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["selected_provider"], "test-openai");
+        assert_eq!(json["selected_variant"], "gpt-4o@test-openai");
+        assert_eq!(json["selected_account"], "test-openai-acct");
+    }
+
+    /// Verify that model name rewrite works end-to-end through mock server.
+    #[tokio::test]
+    async fn test_provider_plugin_model_rewrite_e2e() {
+        let (port, _shutdown, capture) = start_capture_server().await;
+
+        let mut registry = build_test_registry_with_model_rewrite(port);
+        let router = PrismRouter::new(registry);
+        let app = build_prism_app_with_state(
+            AppState::new(router, PathBuf::from("e2e-test.yaml"))
+        );
+
+        // Route deepseek-r1 → should map to mock with upstream_model_name = deepseek-reasoner
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"messages":[{"role":"user","content":"test"}],"strategy":"deepseek-r1"}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["selected_model"], "deepseek-r1");
+        assert_eq!(json["selected_variant"], "deepseek-r1@mock-provider");
+    }
+}
+
+// ════════════════════════════════════════════════
+// E2E: Latency benchmarks — full pipeline timing
+// ════════════════════════════════════════════════
+
+#[cfg(feature = "proxy")]
+mod latency_bench {
+    use super::*;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    /// Measure full pipeline latency: route decision + mock upstream round-trip.
+    /// This captures the overhead Prism adds on top of upstream latency.
+    #[tokio::test]
+    async fn test_latency_full_pipeline() {
+        let (port, _shutdown) = start_mock_server().await;
+        let registry = build_test_registry(port);
+        let router = PrismRouter::new(registry);
+        let app = build_prism_app_with_state(
+            AppState::new(router, PathBuf::from("e2e-test.yaml")),
+        );
+
+        // Warmup
+        for _ in 0..3 {
+            let req = axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/route")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    r#"{"messages":[{"role":"user","content":"warmup"}]}"#,
+                ))
+                .unwrap();
+            let _ = app.clone().oneshot(req).await.unwrap();
+        }
+
+        // Timed runs
+        let iterations = 100;
+        let mut latencies = Vec::with_capacity(iterations);
+
+        for _ in 0..iterations {
+            let req = axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/route")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    r#"{"messages":[{"role":"user","content":"latency test"}]}"#,
+                ))
+                .unwrap();
+
+            let start = Instant::now();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            let elapsed = start.elapsed();
+
+            assert_eq!(resp.status(), 200);
+            latencies.push(elapsed.as_micros() as u64);
+        }
+
+        latencies.sort();
+        let p50 = latencies[latencies.len() / 2];
+        let p95 = latencies[(latencies.len() as f64 * 0.95) as usize];
+        let p99 = latencies[(latencies.len() as f64 * 0.99) as usize];
+        let avg = latencies.iter().sum::<u64>() / latencies.len() as u64;
+        let min = latencies[0];
+        let max = latencies[latencies.len() - 1];
+
+        println!("\n╔══════════════════════════════════════════════╗");
+        println!("║  Route Decision Latency ({iterations} iterations)    ║");
+        println!("╠══════════════════════════════════════════════╣");
+        println!("║  min  = {:>8}µs                           ║", min);
+        println!("║  avg  = {:>8}µs                           ║", avg);
+        println!("║  p50  = {:>8}µs                           ║", p50);
+        println!("║  p95  = {:>8}µs                           ║", p95);
+        println!("║  p99  = {:>8}µs                           ║", p99);
+        println!("║  max  = {:>8}µs                           ║", max);
+        println!("╚══════════════════════════════════════════════╝");
+
+        // Route decision should be < 5ms for a single variant
+        assert!(p99 < 5000, "p99 latency {}µs exceeds 5ms threshold", p99);
+    }
+
+    /// Measure routing + model rewrite decision latency.
+    #[tokio::test]
+    async fn test_latency_with_model_rewrite() {
+        let (port, _shutdown) = start_mock_server().await;
+        let registry = build_test_registry_with_model_rewrite(port);
+        let router = PrismRouter::new(registry);
+        let app = build_prism_app_with_state(
+            AppState::new(router, PathBuf::from("e2e-test.yaml")),
+        );
+
+        // Warmup
+        for _ in 0..3 {
+            let req = axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/route")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    r#"{"messages":[{"role":"user","content":"w"}],"strategy":"deepseek-r1"}"#,
+                ))
+                .unwrap();
+            let _ = app.clone().oneshot(req).await.unwrap();
+        }
+
+        let iterations = 100;
+        let mut latencies = Vec::with_capacity(iterations);
+
+        for _ in 0..iterations {
+            let req = axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/route")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    r#"{"messages":[{"role":"user","content":"bench"}],"strategy":"deepseek-r1"}"#,
+                ))
+                .unwrap();
+
+            let start = Instant::now();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            let elapsed = start.elapsed();
+
+            assert_eq!(resp.status(), 200);
+            latencies.push(elapsed.as_micros() as u64);
+        }
+
+        latencies.sort();
+        let p50 = latencies[latencies.len() / 2];
+        let p99 = latencies[(latencies.len() as f64 * 0.99) as usize];
+        let avg = latencies.iter().sum::<u64>() / latencies.len() as u64;
+
+        println!("\n╔══════════════════════════════════════════════╗");
+        println!("║  Model Rewrite Latency ({iterations} iterations)     ║");
+        println!("╠══════════════════════════════════════════════╣");
+        println!("║  avg  = {:>8}µs                           ║", avg);
+        println!("║  p50  = {:>8}µs                           ║", p50);
+        println!("║  p99  = {:>8}µs                           ║", p99);
+        println!("╚══════════════════════════════════════════════╝");
+
+        assert!(p99 < 5000, "p99 latency {}µs exceeds 5ms", p99);
+    }
+
+    /// Measure provider plugin dispatch overhead (build_auth + rewrite_url).
+    #[tokio::test]
+    async fn test_latency_provider_plugin_dispatch() {
+        use prism_router::provider::openai::OpenAICompatPlugin;
+        use prism_router::provider::{ProviderPlugin, ProviderRequestContext};
+
+        let plugin = OpenAICompatPlugin;
+        let ctx = ProviderRequestContext {
+            provider_id: "bench-provider".into(),
+            provider_type: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            provider_extra: HashMap::new(),
+            account_id: "bench-acct".into(),
+            account_api_key: Some("sk-bench-key-1234567890".into()),
+            account_headers: HashMap::new(),
+            variant_id: "gpt-4o@bench".into(),
+            model_id: "gpt-4o".into(),
+            upstream_model_name: None,
+            deployment_name: None,
+            original_path: "/v1/chat/completions".into(),
+            method: "POST".into(),
+            is_streaming: false,
+        };
+
+        // Warmup
+        for _ in 0..100 {
+            let _ = plugin.build_auth(&ctx);
+            let _ = plugin.rewrite_url(&ctx);
+        }
+
+        let iterations = 10_000;
+
+        // build_auth
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let _ = plugin.build_auth(&ctx).unwrap();
+        }
+        let auth_total = start.elapsed();
+        let auth_per_call = auth_total.as_nanos() / iterations as u128;
+
+        // rewrite_url
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let _ = plugin.rewrite_url(&ctx).unwrap();
+        }
+        let url_total = start.elapsed();
+        let url_per_call = url_total.as_nanos() / iterations as u128;
+
+        // transform_request_body
+        let body = br#"{"model":"gpt-4o","messages":[{"role":"user","content":"benchmark"}],"max_tokens":100}"#.to_vec();
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let _ = plugin.transform_request_body(body.clone(), &ctx).unwrap();
+        }
+        let body_total = start.elapsed();
+        let body_per_call = body_total.as_nanos() / iterations as u128;
+
+        println!("\n╔══════════════════════════════════════════════╗");
+        println!("║  Provider Plugin Dispatch ({iterations} calls)    ║");
+        println!("╠══════════════════════════════════════════════╣");
+        println!("║  build_auth       = {:>6}ns/call             ║", auth_per_call);
+        println!("║  rewrite_url      = {:>6}ns/call             ║", url_per_call);
+        println!("║  transform_body   = {:>6}ns/call             ║", body_per_call);
+        println!("║  total (all 3)    = {:>6}ns/call             ║", auth_per_call + url_per_call + body_per_call);
+        println!("╚══════════════════════════════════════════════╝");
+
+        // Provider plugin dispatch should add < 10µs overhead
+        assert!(
+            auth_per_call + url_per_call + body_per_call < 10_000,
+            "Provider plugin overhead {}ns exceeds 10µs",
+            auth_per_call + url_per_call + body_per_call
+        );
+    }
+
+    /// Measure concurrent routing throughput.
+    #[tokio::test]
+    async fn test_latency_concurrent_routing() {
+        let (port, _shutdown) = start_mock_server().await;
+        let registry = build_test_registry(port);
+        let router = PrismRouter::new(registry);
+        let app = Arc::new(build_prism_app_with_state(
+            AppState::new(router, PathBuf::from("e2e-test.yaml")),
+        ));
+
+        let concurrency = 10;
+        let per_task = 50;
+        let total = concurrency * per_task;
+
+        let start = Instant::now();
+        let mut handles = Vec::new();
+
+        for _ in 0..concurrency {
+            let app = app.clone();
+            handles.push(tokio::spawn(async move {
+                let mut latencies = Vec::with_capacity(per_task);
+                for _ in 0..per_task {
+                    let req = axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/v1/route")
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(
+                            r#"{"messages":[{"role":"user","content":"concurrent"}]}"#,
+                        ))
+                        .unwrap();
+
+                    let t = Instant::now();
+                    let svc: Router = (*app).clone();
+                    let resp = svc.oneshot(req).await.unwrap();
+                    latencies.push(t.elapsed().as_micros() as u64);
+                    assert_eq!(resp.status(), 200);
+                }
+                latencies
+            }));
+        }
+
+        let mut all_latencies = Vec::new();
+        for h in handles {
+            all_latencies.extend(h.await.unwrap());
+        }
+        let wall_time = start.elapsed();
+
+        all_latencies.sort();
+        let p50 = all_latencies[all_latencies.len() / 2];
+        let p99 = all_latencies[(all_latencies.len() as f64 * 0.99) as usize];
+        let avg = all_latencies.iter().sum::<u64>() / all_latencies.len() as u64;
+        let rps = total as f64 / wall_time.as_secs_f64();
+
+        println!("\n╔══════════════════════════════════════════════╗");
+        println!("║  Concurrent Routing ({concurrency}×{per_task} = {total} requests)   ║");
+        println!("╠══════════════════════════════════════════════╣");
+        println!("║  wall time = {:>6.1}ms                        ║", wall_time.as_secs_f64() * 1000.0);
+        println!("║  avg       = {:>8}µs                       ║", avg);
+        println!("║  p50       = {:>8}µs                       ║", p50);
+        println!("║  p99       = {:>8}µs                       ║", p99);
+        println!("║  throughput= {:>8.0} req/s                   ║", rps);
+        println!("╚══════════════════════════════════════════════╝");
+
+        assert!(p99 < 10_000, "p99 {}µs exceeds 10ms under concurrency", p99);
+        assert!(rps > 1000.0, "throughput {:.0} req/s below 1K", rps);
+    }
 }

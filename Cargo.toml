@@ -1,4 +1,4 @@
 [workspace]
 members = ["prism-core", "prism-router", "prism-admin"]
-exclude = ["examples/wasm-plugins/openai-compat", "examples/wasm-plugins/analyzer", "examples/mock-llm-server"]
+exclude = ["examples/wasm-plugins/openai-compat", "examples/wasm-plugins/analyzer", "examples/wasm-plugins/azure-provider", "examples/mock-llm-server"]
 resolver = "2"

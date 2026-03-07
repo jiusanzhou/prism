@@ -1046,3 +1046,1647 @@ pub fn create_l4_selector(name: &str) -> Box<dyn L4VariantSelector> {
         _ => Box::new(BestL4Selector), // "best" or unknown
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analyzer::{ContextSize, Language, RequestProfile};
+    use crate::feedback::FeedbackCollector;
+    use crate::registry::InMemoryRegistry;
+    use crate::router::RouteMetadata;
+    use crate::strategy::{
+        BackoffStrategy, CircuitBreakerPolicy, FallbackPolicy, ModelSelectionStrategy,
+        ResiliencePolicy, RetryCondition, RetryPolicy, RetryScope, RoutingObjective,
+        TimeoutPolicy,
+    };
+    
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    // ════════════════════════════════════════════════
+    // Test helpers
+    // ════════════════════════════════════════════════
+
+    struct CandidateOpts<'a> {
+        variant_id: &'a str,
+        model_id: &'a str,
+        provider_id: &'a str,
+        account_id: &'a str,
+        endpoint_id: &'a str,
+        quality_tier: QualityTier,
+        input_cost: f64,
+        output_cost: f64,
+        p50_latency_ms: u32,
+        p99_latency_ms: u32,
+        ttft_p50_ms: u32,
+        current_qps: f32,
+        weight: f32,
+        supports_vision: bool,
+        supports_reasoning: bool,
+        max_context_window: u32,
+        specialties: Vec<TaskType>,
+        region: Option<String>,
+        billing_tag: Option<String>,
+        rpm: Option<u32>,
+        priority: u32,
+    }
+
+    impl<'a> Default for CandidateOpts<'a> {
+        fn default() -> Self {
+            Self {
+                variant_id: "v1",
+                model_id: "m1",
+                provider_id: "p1",
+                account_id: "a1",
+                endpoint_id: "e1",
+                quality_tier: QualityTier::A,
+                input_cost: 3.0,
+                output_cost: 15.0,
+                p50_latency_ms: 200,
+                p99_latency_ms: 500,
+                ttft_p50_ms: 100,
+                current_qps: 5.0,
+                weight: 1.0,
+                supports_vision: false,
+                supports_reasoning: false,
+                max_context_window: 128_000,
+                specialties: vec![],
+                region: None,
+                billing_tag: None,
+                rpm: None,
+                priority: 0,
+            }
+        }
+    }
+
+    fn make_candidate(opts: CandidateOpts) -> ModelCandidate {
+        let pricing = ModelPricing {
+            input_per_1m_tokens: opts.input_cost,
+            output_per_1m_tokens: opts.output_cost,
+            currency: "USD".into(),
+        };
+
+        ModelCandidate {
+            variant: ModelVariant {
+                id: opts.variant_id.into(),
+                model_id: opts.model_id.into(),
+                endpoint_id: opts.endpoint_id.into(),
+                account_id: Some(opts.account_id.into()),
+                deployment_name: None,
+                weight: opts.weight,
+                performance: ModelPerformance {
+                    p50_latency_ms: opts.p50_latency_ms,
+                    p95_latency_ms: opts.p99_latency_ms.saturating_sub(50),
+                    p99_latency_ms: opts.p99_latency_ms,
+                    ttft_p50_ms: opts.ttft_p50_ms,
+                    throughput_tps: 100.0,
+                    error_rate: 0.01,
+                    current_qps: opts.current_qps,
+                    queue_depth: 0,
+                    last_updated: None,
+                    gpu_utilization: 0.5,
+                    kv_cache_usage: 0.3,
+                    running_requests: 0,
+                    waiting_requests: 0,
+                    prefix_cache_hit_rate: 0.0,
+                    prefix_cache_blocks: 0,
+                },
+                pricing_override: None,
+                status: VariantStatus::Active,
+                base_url: None,
+                upstream_model_name: None,
+            },
+            model: Model {
+                id: opts.model_id.into(),
+                display_name: format!("Model {}", opts.model_id),
+                quality_tier: opts.quality_tier,
+                capabilities: ModelCapabilities {
+                    max_context_window: opts.max_context_window,
+                    max_output_tokens: 4096,
+                    supports_streaming: true,
+                    supports_function_calling: true,
+                    supports_vision: opts.supports_vision,
+                    supports_json_mode: true,
+                    supports_reasoning: opts.supports_reasoning,
+                },
+                pricing: pricing.clone(),
+                specialties: opts.specialties,
+                limits: None,
+                status: ModelStatus::Available,
+            },
+            account: Account {
+                id: opts.account_id.into(),
+                endpoint_id: opts.endpoint_id.into(),
+                auth: AuthConfig::default(),
+                project_id: None,
+                rate_limit: opts.rpm.map(|rpm| RateLimit {
+                    rpm: Some(rpm),
+                    tpm: None,
+                    concurrent: None,
+                }),
+                billing_tag: opts.billing_tag,
+                weight: 1.0,
+                status: HealthStatus::Healthy,
+                metadata: HashMap::new(),
+            },
+            endpoint: Endpoint {
+                id: opts.endpoint_id.into(),
+                provider_id: opts.provider_id.into(),
+                base_url: None,
+                region: opts.region,
+                auth_override: None,
+                rate_limit: None,
+                priority: opts.priority,
+                status: HealthStatus::Healthy,
+            },
+            provider: Provider {
+                id: opts.provider_id.into(),
+                name: format!("Provider {}", opts.provider_id),
+                auth: AuthConfig::default(),
+                base_url: "https://api.example.com".into(),
+                rate_limit: None,
+                status: HealthStatus::Healthy,
+                metadata: HashMap::new(),
+                protocols: vec![],
+            },
+            effective_pricing: pricing,
+        }
+    }
+
+    fn default_profile() -> RequestProfile {
+        RequestProfile {
+            complexity: 0.2,
+            task_type: TaskType::SimpleQA,
+            estimated_tokens: 100,
+            requires_reasoning: false,
+            requires_vision: false,
+            language: Language::English,
+            is_multi_turn: false,
+            context_window_need: ContextSize::Small,
+        }
+    }
+
+    fn default_metadata() -> RouteMetadata {
+        RouteMetadata {
+            affinity_key: None,
+            tenant_id: None,
+            region: None,
+            analyze_context: None,
+            prefix_key: None,
+        }
+    }
+
+    // ════════════════════════════════════════════════
+    // L1 ScoredL1Selector tests
+    // ════════════════════════════════════════════════
+
+    #[test]
+    fn test_l1_pinned_finds_matching_model() {
+        let feedback = Arc::new(FeedbackCollector::new(100));
+        let selector = ScoredL1Selector::new(feedback);
+
+        let c1 = make_candidate(CandidateOpts {
+            variant_id: "v1",
+            model_id: "gpt-4",
+            ..Default::default()
+        });
+        let c2 = make_candidate(CandidateOpts {
+            variant_id: "v2",
+            model_id: "claude-3",
+            ..Default::default()
+        });
+        let candidates = vec![c1, c2];
+
+        let strategy = ModelSelectionStrategy::Pinned {
+            model_id: "claude-3".into(),
+        };
+        let profile = default_profile();
+        let metadata = default_metadata();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let result = selector.select(&candidates, &ctx).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], 1); // index of claude-3 candidate
+    }
+
+    #[test]
+    fn test_l1_pinned_errors_on_missing_model() {
+        let feedback = Arc::new(FeedbackCollector::new(100));
+        let selector = ScoredL1Selector::new(feedback);
+
+        let c1 = make_candidate(CandidateOpts {
+            variant_id: "v1",
+            model_id: "gpt-4",
+            ..Default::default()
+        });
+        let candidates = vec![c1];
+
+        let strategy = ModelSelectionStrategy::Pinned {
+            model_id: "nonexistent-model".into(),
+        };
+        let profile = default_profile();
+        let metadata = default_metadata();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let result = selector.select(&candidates, &ctx);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RouterError::AllFiltered { reason } => {
+                assert!(reason.contains("nonexistent-model"));
+            }
+            other => panic!("expected AllFiltered, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_l1_auto_balanced_ranks_by_composite_score() {
+        let feedback = Arc::new(FeedbackCollector::new(100));
+        let selector = ScoredL1Selector::new(feedback);
+
+        // Candidate A: S tier, low cost, low latency (should rank highest)
+        let c_best = make_candidate(CandidateOpts {
+            variant_id: "v-best",
+            model_id: "m-best",
+            quality_tier: QualityTier::S,
+            input_cost: 1.0,
+            output_cost: 2.0,
+            p50_latency_ms: 50,
+            p99_latency_ms: 100,
+            ..Default::default()
+        });
+
+        // Candidate B: A tier, medium cost, medium latency
+        let c_mid = make_candidate(CandidateOpts {
+            variant_id: "v-mid",
+            model_id: "m-mid",
+            quality_tier: QualityTier::A,
+            input_cost: 10.0,
+            output_cost: 30.0,
+            p50_latency_ms: 500,
+            p99_latency_ms: 1000,
+            ..Default::default()
+        });
+
+        // Candidate C: C tier, high cost, high latency (should rank lowest)
+        let c_worst = make_candidate(CandidateOpts {
+            variant_id: "v-worst",
+            model_id: "m-worst",
+            quality_tier: QualityTier::C,
+            input_cost: 50.0,
+            output_cost: 80.0,
+            p50_latency_ms: 5000,
+            p99_latency_ms: 8000,
+            ..Default::default()
+        });
+
+        let candidates = vec![c_best, c_mid, c_worst];
+
+        let strategy = ModelSelectionStrategy::Auto {
+            objective: RoutingObjective::Balanced {
+                cost_weight: 0.3,
+                quality_weight: 0.5,
+                latency_weight: 0.2,
+            },
+            pool_ids: None,
+            required_capabilities: None,
+        };
+        let profile = default_profile();
+        let metadata = default_metadata();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let result = selector.select(&candidates, &ctx).unwrap();
+        assert_eq!(result.len(), 3);
+        // First should be the best candidate (S tier, cheap, fast)
+        assert_eq!(result[0], 0, "S tier + cheap + fast should rank first");
+        // Last should be the worst candidate (C tier, expensive, slow)
+        assert_eq!(result[2], 2, "C tier + expensive + slow should rank last");
+    }
+
+    #[test]
+    fn test_l1_auto_cost_first_prioritizes_cheapest() {
+        let feedback = Arc::new(FeedbackCollector::new(100));
+        let selector = ScoredL1Selector::new(feedback);
+
+        // Cheap but A tier
+        let c_cheap = make_candidate(CandidateOpts {
+            variant_id: "v-cheap",
+            model_id: "m-cheap",
+            quality_tier: QualityTier::A,
+            input_cost: 0.5,
+            output_cost: 1.0,
+            ..Default::default()
+        });
+
+        // Expensive but S tier
+        let c_expensive = make_candidate(CandidateOpts {
+            variant_id: "v-expensive",
+            model_id: "m-expensive",
+            quality_tier: QualityTier::S,
+            input_cost: 30.0,
+            output_cost: 60.0,
+            ..Default::default()
+        });
+
+        // Very cheap but C tier (below quality floor of 0.4)
+        let c_low_quality = make_candidate(CandidateOpts {
+            variant_id: "v-low",
+            model_id: "m-low",
+            quality_tier: QualityTier::C,
+            input_cost: 0.1,
+            output_cost: 0.2,
+            ..Default::default()
+        });
+
+        let candidates = vec![c_cheap, c_expensive, c_low_quality];
+
+        let strategy = ModelSelectionStrategy::Auto {
+            objective: RoutingObjective::CostFirst {
+                min_quality_score: 0.4,
+                budget_per_request: None,
+            },
+            pool_ids: None,
+            required_capabilities: None,
+        };
+        let profile = default_profile();
+        let metadata = default_metadata();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let result = selector.select(&candidates, &ctx).unwrap();
+        // C tier (quality 0.25) should be filtered out since min_quality_score is 0.4
+        assert!(
+            !result.contains(&2),
+            "C tier candidate should be filtered by quality floor"
+        );
+        // Cheapest qualifying candidate should rank first
+        assert_eq!(result[0], 0, "cheapest qualifying candidate should rank first");
+    }
+
+    #[test]
+    fn test_l1_auto_quality_first_prioritizes_highest_tier() {
+        let feedback = Arc::new(FeedbackCollector::new(100));
+        let selector = ScoredL1Selector::new(feedback);
+
+        let c_s = make_candidate(CandidateOpts {
+            variant_id: "v-s",
+            model_id: "m-s",
+            quality_tier: QualityTier::S,
+            input_cost: 50.0,
+            output_cost: 80.0,
+            p50_latency_ms: 300,
+            p99_latency_ms: 600,
+            ..Default::default()
+        });
+
+        let c_b = make_candidate(CandidateOpts {
+            variant_id: "v-b",
+            model_id: "m-b",
+            quality_tier: QualityTier::B,
+            input_cost: 1.0,
+            output_cost: 2.0,
+            p50_latency_ms: 50,
+            p99_latency_ms: 100,
+            ..Default::default()
+        });
+
+        let candidates = vec![c_s, c_b];
+
+        let strategy = ModelSelectionStrategy::Auto {
+            objective: RoutingObjective::QualityFirst {
+                max_latency_ms: None,
+            },
+            pool_ids: None,
+            required_capabilities: None,
+        };
+        let profile = default_profile();
+        let metadata = default_metadata();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let result = selector.select(&candidates, &ctx).unwrap();
+        assert_eq!(result[0], 0, "S tier should rank first in QualityFirst mode");
+    }
+
+    #[test]
+    fn test_l1_auto_slo_first_filters_high_latency_and_low_quality() {
+        let feedback = Arc::new(FeedbackCollector::new(100));
+        let selector = ScoredL1Selector::new(feedback);
+
+        // Good: meets SLO constraints
+        let c_good = make_candidate(CandidateOpts {
+            variant_id: "v-good",
+            model_id: "m-good",
+            quality_tier: QualityTier::A,
+            p50_latency_ms: 100,
+            p99_latency_ms: 200,
+            ttft_p50_ms: 50,
+            ..Default::default()
+        });
+
+        // Too slow (p99 exceeds max_latency_ms)
+        let c_slow = make_candidate(CandidateOpts {
+            variant_id: "v-slow",
+            model_id: "m-slow",
+            quality_tier: QualityTier::A,
+            p50_latency_ms: 500,
+            p99_latency_ms: 2000,
+            ttft_p50_ms: 50,
+            ..Default::default()
+        });
+
+        // Too low quality
+        let c_low_q = make_candidate(CandidateOpts {
+            variant_id: "v-lowq",
+            model_id: "m-lowq",
+            quality_tier: QualityTier::C,
+            p50_latency_ms: 50,
+            p99_latency_ms: 100,
+            ttft_p50_ms: 30,
+            ..Default::default()
+        });
+
+        // TTFT too high
+        let c_slow_ttft = make_candidate(CandidateOpts {
+            variant_id: "v-slow-ttft",
+            model_id: "m-slow-ttft",
+            quality_tier: QualityTier::S,
+            p50_latency_ms: 100,
+            p99_latency_ms: 200,
+            ttft_p50_ms: 600,
+            ..Default::default()
+        });
+
+        let candidates = vec![c_good, c_slow, c_low_q, c_slow_ttft];
+
+        let strategy = ModelSelectionStrategy::Auto {
+            objective: RoutingObjective::SloFirst {
+                max_latency_ms: 500,
+                max_ttft_ms: 200,
+                min_quality_score: 0.4,
+            },
+            pool_ids: None,
+            required_capabilities: None,
+        };
+        let profile = default_profile();
+        let metadata = default_metadata();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let result = selector.select(&candidates, &ctx).unwrap();
+        // Only the good candidate should survive: slow one has p99=2000>500, low quality has 0.25<0.4, slow ttft has 600>200
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], 0, "only the good candidate should survive SLO filtering");
+    }
+
+    #[test]
+    fn test_l1_capability_filters() {
+        let feedback = Arc::new(FeedbackCollector::new(100));
+        let selector = ScoredL1Selector::new(feedback);
+
+        // Supports vision
+        let c_vision = make_candidate(CandidateOpts {
+            variant_id: "v-vision",
+            model_id: "m-vision",
+            supports_vision: true,
+            supports_reasoning: false,
+            ..Default::default()
+        });
+
+        // Supports reasoning
+        let c_reasoning = make_candidate(CandidateOpts {
+            variant_id: "v-reasoning",
+            model_id: "m-reasoning",
+            supports_vision: false,
+            supports_reasoning: true,
+            ..Default::default()
+        });
+
+        // Supports neither
+        let c_basic = make_candidate(CandidateOpts {
+            variant_id: "v-basic",
+            model_id: "m-basic",
+            supports_vision: false,
+            supports_reasoning: false,
+            ..Default::default()
+        });
+
+        // Small context window
+        let c_small_ctx = make_candidate(CandidateOpts {
+            variant_id: "v-small-ctx",
+            model_id: "m-small-ctx",
+            max_context_window: 2000,
+            ..Default::default()
+        });
+
+        let candidates = vec![c_vision, c_reasoning, c_basic, c_small_ctx];
+
+        // Test vision requirement from profile
+        let strategy = ModelSelectionStrategy::Auto {
+            objective: RoutingObjective::QualityFirst {
+                max_latency_ms: None,
+            },
+            pool_ids: None,
+            required_capabilities: None,
+        };
+        let mut profile = default_profile();
+        profile.requires_vision = true;
+        let metadata = default_metadata();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let result = selector.select(&candidates, &ctx).unwrap();
+        // Only vision-capable candidate should be returned
+        assert!(result.contains(&0), "vision candidate should be included");
+        assert!(!result.contains(&1), "non-vision reasoning candidate should be filtered");
+        assert!(!result.contains(&2), "basic candidate should be filtered");
+
+        // Test reasoning requirement from profile
+        let mut profile2 = default_profile();
+        profile2.requires_reasoning = true;
+        let ctx2 = RouteContext {
+            profile: &profile2,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let result2 = selector.select(&candidates, &ctx2).unwrap();
+        assert!(result2.contains(&1), "reasoning candidate should be included");
+        assert!(!result2.contains(&2), "basic candidate should be filtered out for reasoning");
+
+        // Test context window filtering via XLarge context need
+        let mut profile3 = default_profile();
+        profile3.context_window_need = ContextSize::XLarge;
+        let ctx3 = RouteContext {
+            profile: &profile3,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let result3 = selector.select(&candidates, &ctx3).unwrap();
+        // Small context candidate (2000) should be filtered out for XLarge (min 128000)
+        assert!(!result3.contains(&3), "small context candidate should be filtered for XLarge need");
+
+        // Test RequiredCapabilities filter
+        let strategy_with_caps = ModelSelectionStrategy::Auto {
+            objective: RoutingObjective::QualityFirst {
+                max_latency_ms: None,
+            },
+            pool_ids: None,
+            required_capabilities: Some(crate::strategy::RequiredCapabilities {
+                min_context_window: None,
+                function_calling: None,
+                vision: Some(true),
+                json_mode: None,
+                reasoning: None,
+            }),
+        };
+        let profile4 = default_profile();
+        let ctx4 = RouteContext {
+            profile: &profile4,
+            metadata: &metadata,
+            strategy: &strategy_with_caps,
+            required_protocol: None,
+        };
+
+        let result4 = selector.select(&candidates, &ctx4).unwrap();
+        assert!(result4.contains(&0), "vision candidate should survive RequiredCapabilities filter");
+        assert!(!result4.contains(&2), "basic candidate should be filtered by RequiredCapabilities");
+    }
+
+    #[test]
+    fn test_l1_all_filtered_returns_error() {
+        let feedback = Arc::new(FeedbackCollector::new(100));
+        let selector = ScoredL1Selector::new(feedback);
+
+        // Only a candidate that lacks vision
+        let c = make_candidate(CandidateOpts {
+            variant_id: "v1",
+            model_id: "m1",
+            supports_vision: false,
+            ..Default::default()
+        });
+        let candidates = vec![c];
+
+        let strategy = ModelSelectionStrategy::Auto {
+            objective: RoutingObjective::QualityFirst {
+                max_latency_ms: None,
+            },
+            pool_ids: None,
+            required_capabilities: None,
+        };
+        let mut profile = default_profile();
+        profile.requires_vision = true;
+        let metadata = default_metadata();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let result = selector.select(&candidates, &ctx);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RouterError::AllFiltered { .. } => {}
+            other => panic!("expected AllFiltered, got: {:?}", other),
+        }
+    }
+
+    // ════════════════════════════════════════════════
+    // L2 Provider Selector tests
+    // ════════════════════════════════════════════════
+
+    #[test]
+    fn test_l2_default_geo_proximity_boost_and_quota_penalty() {
+        let selector = DefaultL2Selector;
+
+        // Candidate in us-east (matching region), high quota usage
+        let c_local_busy = make_candidate(CandidateOpts {
+            variant_id: "v-local",
+            model_id: "m1",
+            endpoint_id: "e-local",
+            region: Some("us-east".into()),
+            current_qps: 9.0,
+            rpm: Some(600), // 10 rps, 9 qps = 0.9 utilization
+            ..Default::default()
+        });
+
+        // Candidate in eu-west (different region), low quota usage
+        let c_remote_idle = make_candidate(CandidateOpts {
+            variant_id: "v-remote",
+            model_id: "m1",
+            endpoint_id: "e-remote",
+            region: Some("eu-west".into()),
+            current_qps: 1.0,
+            rpm: Some(600), // 10 rps, 1 qps = 0.1 utilization
+            ..Default::default()
+        });
+
+        let profile = default_profile();
+        let metadata = RouteMetadata {
+            region: Some("us-east".into()),
+            ..default_metadata()
+        };
+        let strategy = ModelSelectionStrategy::default();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let input = vec![&c_local_busy, &c_remote_idle];
+        let result = selector.rerank(input, &ctx);
+
+        // Local candidate gets +100 geo bonus but -180 quota penalty (0.9 * 200) = net -80
+        // Remote candidate gets 0 geo bonus but -20 quota penalty (0.1 * 200) = net -20
+        // Remote should rank first because its net score (-20) > local net score (-80)
+        assert_eq!(
+            result[0].variant.id, "v-remote",
+            "remote idle candidate should rank first due to quota penalty outweighing geo boost"
+        );
+    }
+
+    #[test]
+    fn test_l2_lowest_latency_sorts_by_p50() {
+        let selector = LowestLatencyL2Selector;
+
+        let c_fast = make_candidate(CandidateOpts {
+            variant_id: "v-fast",
+            p50_latency_ms: 50,
+            ..Default::default()
+        });
+        let c_slow = make_candidate(CandidateOpts {
+            variant_id: "v-slow",
+            p50_latency_ms: 500,
+            ..Default::default()
+        });
+        let c_medium = make_candidate(CandidateOpts {
+            variant_id: "v-medium",
+            p50_latency_ms: 200,
+            ..Default::default()
+        });
+
+        let profile = default_profile();
+        let metadata = default_metadata();
+        let strategy = ModelSelectionStrategy::default();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let input = vec![&c_slow, &c_medium, &c_fast];
+        let result = selector.rerank(input, &ctx);
+
+        assert_eq!(result[0].variant.id, "v-fast");
+        assert_eq!(result[1].variant.id, "v-medium");
+        assert_eq!(result[2].variant.id, "v-slow");
+    }
+
+    #[test]
+    fn test_l2_lowest_cost_sorts_by_cost() {
+        let selector = LowestCostL2Selector;
+
+        let c_cheap = make_candidate(CandidateOpts {
+            variant_id: "v-cheap",
+            input_cost: 0.5,
+            output_cost: 1.0,
+            ..Default::default()
+        });
+        let c_expensive = make_candidate(CandidateOpts {
+            variant_id: "v-expensive",
+            input_cost: 50.0,
+            output_cost: 100.0,
+            ..Default::default()
+        });
+        let c_mid = make_candidate(CandidateOpts {
+            variant_id: "v-mid",
+            input_cost: 10.0,
+            output_cost: 20.0,
+            ..Default::default()
+        });
+
+        let profile = default_profile();
+        let metadata = default_metadata();
+        let strategy = ModelSelectionStrategy::default();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let input = vec![&c_expensive, &c_mid, &c_cheap];
+        let result = selector.rerank(input, &ctx);
+
+        assert_eq!(result[0].variant.id, "v-cheap");
+        assert_eq!(result[1].variant.id, "v-mid");
+        assert_eq!(result[2].variant.id, "v-expensive");
+    }
+
+    #[test]
+    fn test_l2_priority_sorts_by_priority() {
+        let selector = PriorityL2Selector;
+
+        let c_low_prio = make_candidate(CandidateOpts {
+            variant_id: "v-low-prio",
+            priority: 10,
+            ..Default::default()
+        });
+        let c_high_prio = make_candidate(CandidateOpts {
+            variant_id: "v-high-prio",
+            priority: 0,
+            ..Default::default()
+        });
+        let c_mid_prio = make_candidate(CandidateOpts {
+            variant_id: "v-mid-prio",
+            priority: 5,
+            ..Default::default()
+        });
+
+        let profile = default_profile();
+        let metadata = default_metadata();
+        let strategy = ModelSelectionStrategy::default();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let input = vec![&c_low_prio, &c_mid_prio, &c_high_prio];
+        let result = selector.rerank(input, &ctx);
+
+        assert_eq!(result[0].variant.id, "v-high-prio");
+        assert_eq!(result[1].variant.id, "v-mid-prio");
+        assert_eq!(result[2].variant.id, "v-low-prio");
+    }
+
+    #[test]
+    fn test_l2_empty_candidates() {
+        let selector = DefaultL2Selector;
+        let profile = default_profile();
+        let metadata = default_metadata();
+        let strategy = ModelSelectionStrategy::default();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let input: Vec<&ModelCandidate> = vec![];
+        let result = selector.rerank(input, &ctx);
+        assert!(result.is_empty());
+
+        // Also check LowestLatencyL2 with empty
+        let selector2 = LowestLatencyL2Selector;
+        let result2 = selector2.rerank(vec![], &ctx);
+        assert!(result2.is_empty());
+    }
+
+    // ════════════════════════════════════════════════
+    // L3 Account Selector tests
+    // ════════════════════════════════════════════════
+
+    #[test]
+    fn test_l3_affinity_tenant_isolation_via_billing_tag() {
+        let selector = AffinityL3Selector;
+
+        let c_tenant_a = make_candidate(CandidateOpts {
+            variant_id: "v1",
+            account_id: "acct-a",
+            billing_tag: Some("tenant-alpha".into()),
+            ..Default::default()
+        });
+        let c_tenant_b = make_candidate(CandidateOpts {
+            variant_id: "v2",
+            account_id: "acct-b",
+            billing_tag: Some("tenant-beta".into()),
+            ..Default::default()
+        });
+        let c_no_tag = make_candidate(CandidateOpts {
+            variant_id: "v3",
+            account_id: "acct-c",
+            billing_tag: None,
+            ..Default::default()
+        });
+
+        let candidates_refs = vec![&c_tenant_a, &c_tenant_b, &c_no_tag];
+
+        let profile = default_profile();
+        let metadata = RouteMetadata {
+            tenant_id: Some("tenant-beta".into()),
+            ..default_metadata()
+        };
+        let strategy = ModelSelectionStrategy::default();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let result = selector.select(&candidates_refs, &ctx).unwrap();
+        assert_eq!(result, 1, "tenant-beta should route to acct-b");
+    }
+
+    #[test]
+    fn test_l3_affinity_consistent_hash_for_same_key() {
+        let selector = AffinityL3Selector;
+
+        let c1 = make_candidate(CandidateOpts {
+            variant_id: "v1",
+            account_id: "acct-1",
+            ..Default::default()
+        });
+        let c2 = make_candidate(CandidateOpts {
+            variant_id: "v2",
+            account_id: "acct-2",
+            ..Default::default()
+        });
+        let c3 = make_candidate(CandidateOpts {
+            variant_id: "v3",
+            account_id: "acct-3",
+            ..Default::default()
+        });
+
+        let candidates_refs = vec![&c1, &c2, &c3];
+
+        let profile = default_profile();
+        let metadata = RouteMetadata {
+            affinity_key: Some("session-12345".into()),
+            ..default_metadata()
+        };
+        let strategy = ModelSelectionStrategy::default();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        // Same affinity key should produce the same result every time
+        let result1 = selector.select(&candidates_refs, &ctx).unwrap();
+        let result2 = selector.select(&candidates_refs, &ctx).unwrap();
+        let result3 = selector.select(&candidates_refs, &ctx).unwrap();
+
+        assert_eq!(result1, result2);
+        assert_eq!(result2, result3);
+    }
+
+    #[test]
+    fn test_l3_affinity_soft_migration_on_overloaded() {
+        let selector = AffinityL3Selector;
+
+        // Overloaded account: qps=9, rpm=600 => rps_limit=10, utilisation=0.9 => overloaded
+        let c_overloaded = make_candidate(CandidateOpts {
+            variant_id: "v-overloaded",
+            account_id: "acct-overloaded",
+            current_qps: 9.0,
+            rpm: Some(600),
+            ..Default::default()
+        });
+
+        // Idle account
+        let c_idle = make_candidate(CandidateOpts {
+            variant_id: "v-idle",
+            account_id: "acct-idle",
+            current_qps: 1.0,
+            rpm: Some(600),
+            ..Default::default()
+        });
+
+        let candidates_refs = vec![&c_overloaded, &c_idle];
+
+        let profile = default_profile();
+
+        // We need to find an affinity key that hashes to index 0 (the overloaded one).
+        // Since we have 2 accounts, we try multiple keys until one hashes to index 0.
+        let mut key_to_overloaded = None;
+        for i in 0..1000 {
+            let test_key = format!("test-key-{}", i);
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            use std::hash::Hash;
+            test_key.hash(&mut hasher);
+            use std::hash::Hasher;
+            let hash_val = hasher.finish();
+            if (hash_val as usize) % 2 == 0 {
+                key_to_overloaded = Some(test_key);
+                break;
+            }
+        }
+
+        let key = key_to_overloaded.expect("should find a key that hashes to index 0");
+        let metadata = RouteMetadata {
+            affinity_key: Some(key),
+            ..default_metadata()
+        };
+        let strategy = ModelSelectionStrategy::default();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let result = selector.select(&candidates_refs, &ctx).unwrap();
+        // Even though affinity hashes to the overloaded account, soft migration
+        // should redirect to the idle account
+        assert_eq!(
+            result, 1,
+            "soft migration should redirect from overloaded to idle account"
+        );
+    }
+
+    #[test]
+    fn test_l3_round_robin_cycles() {
+        let selector = RoundRobinL3Selector::new();
+
+        let c1 = make_candidate(CandidateOpts {
+            variant_id: "v1",
+            account_id: "acct-1",
+            ..Default::default()
+        });
+        let c2 = make_candidate(CandidateOpts {
+            variant_id: "v2",
+            account_id: "acct-2",
+            ..Default::default()
+        });
+        let c3 = make_candidate(CandidateOpts {
+            variant_id: "v3",
+            account_id: "acct-3",
+            ..Default::default()
+        });
+
+        let candidates_refs = vec![&c1, &c2, &c3];
+
+        let profile = default_profile();
+        let metadata = default_metadata();
+        let strategy = ModelSelectionStrategy::default();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let r1 = selector.select(&candidates_refs, &ctx).unwrap();
+        let r2 = selector.select(&candidates_refs, &ctx).unwrap();
+        let r3 = selector.select(&candidates_refs, &ctx).unwrap();
+        let r4 = selector.select(&candidates_refs, &ctx).unwrap();
+
+        assert_eq!(r1, 0);
+        assert_eq!(r2, 1);
+        assert_eq!(r3, 2);
+        assert_eq!(r4, 0, "should cycle back to first candidate");
+    }
+
+    #[test]
+    fn test_l3_least_load_picks_lowest_qps() {
+        let selector = LeastLoadL3Selector;
+
+        let c_busy = make_candidate(CandidateOpts {
+            variant_id: "v-busy",
+            account_id: "acct-busy",
+            current_qps: 50.0,
+            ..Default::default()
+        });
+        let c_idle = make_candidate(CandidateOpts {
+            variant_id: "v-idle",
+            account_id: "acct-idle",
+            current_qps: 2.0,
+            ..Default::default()
+        });
+        let c_medium = make_candidate(CandidateOpts {
+            variant_id: "v-medium",
+            account_id: "acct-medium",
+            current_qps: 20.0,
+            ..Default::default()
+        });
+
+        let candidates_refs = vec![&c_busy, &c_idle, &c_medium];
+
+        let profile = default_profile();
+        let metadata = default_metadata();
+        let strategy = ModelSelectionStrategy::default();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let result = selector.select(&candidates_refs, &ctx).unwrap();
+        assert_eq!(result, 1, "should pick the candidate with lowest current_qps (2.0)");
+    }
+
+    #[test]
+    fn test_l3_empty_candidates_return_error() {
+        let affinity = AffinityL3Selector;
+        let round_robin = RoundRobinL3Selector::new();
+        let least_load = LeastLoadL3Selector;
+
+        let empty: Vec<&ModelCandidate> = vec![];
+        let profile = default_profile();
+        let metadata = default_metadata();
+        let strategy = ModelSelectionStrategy::default();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        assert!(affinity.select(&empty, &ctx).is_err());
+        assert!(round_robin.select(&empty, &ctx).is_err());
+        assert!(least_load.select(&empty, &ctx).is_err());
+    }
+
+    // ════════════════════════════════════════════════
+    // L4 Variant Selector tests
+    // ════════════════════════════════════════════════
+
+    #[test]
+    fn test_l4_best_picks_first() {
+        let selector = BestL4Selector;
+
+        let c1 = make_candidate(CandidateOpts {
+            variant_id: "v-first",
+            ..Default::default()
+        });
+        let c2 = make_candidate(CandidateOpts {
+            variant_id: "v-second",
+            ..Default::default()
+        });
+
+        let candidates_refs = vec![&c1, &c2];
+        let profile = default_profile();
+        let metadata = default_metadata();
+        let strategy = ModelSelectionStrategy::default();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let result = selector.select(&candidates_refs, &ctx);
+        assert_eq!(result.variant.id, "v-first");
+    }
+
+    #[test]
+    fn test_l4_canary_splits_traffic() {
+        let selector = CanaryL4Selector {
+            canary_variant_id: "v-canary".into(),
+            canary_pct: 0.2,
+        };
+
+        let c_stable = make_candidate(CandidateOpts {
+            variant_id: "v-stable",
+            ..Default::default()
+        });
+        let c_canary = make_candidate(CandidateOpts {
+            variant_id: "v-canary",
+            ..Default::default()
+        });
+
+        let candidates_refs = vec![&c_stable, &c_canary];
+        let profile = default_profile();
+        let metadata = default_metadata();
+        let strategy = ModelSelectionStrategy::default();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let iterations = 1000;
+        let mut canary_count = 0;
+        for _ in 0..iterations {
+            let result = selector.select(&candidates_refs, &ctx);
+            if result.variant.id == "v-canary" {
+                canary_count += 1;
+            }
+        }
+
+        let canary_pct = canary_count as f64 / iterations as f64;
+        assert!(
+            canary_pct > 0.10 && canary_pct < 0.35,
+            "canary traffic should be roughly 20%, got {:.1}%",
+            canary_pct * 100.0
+        );
+    }
+
+    #[test]
+    fn test_l4_weighted_respects_weights() {
+        let selector = WeightedL4Selector;
+
+        let c_heavy = make_candidate(CandidateOpts {
+            variant_id: "v-heavy",
+            weight: 3.0,
+            ..Default::default()
+        });
+        let c_light = make_candidate(CandidateOpts {
+            variant_id: "v-light",
+            weight: 1.0,
+            ..Default::default()
+        });
+
+        let candidates_refs = vec![&c_heavy, &c_light];
+        let profile = default_profile();
+        let metadata = default_metadata();
+        let strategy = ModelSelectionStrategy::default();
+        let ctx = RouteContext {
+            profile: &profile,
+            metadata: &metadata,
+            strategy: &strategy,
+            required_protocol: None,
+        };
+
+        let iterations = 1000;
+        let mut heavy_count = 0;
+        for _ in 0..iterations {
+            let result = selector.select(&candidates_refs, &ctx);
+            if result.variant.id == "v-heavy" {
+                heavy_count += 1;
+            }
+        }
+
+        let heavy_pct = heavy_count as f64 / iterations as f64;
+        // Weight 3.0 vs 1.0 means ~75% should be heavy
+        assert!(
+            heavy_pct > 0.50 && heavy_pct < 0.95,
+            "heavy variant (weight 3.0) should win ~75% of the time, got {:.1}%",
+            heavy_pct * 100.0
+        );
+    }
+
+    // ════════════════════════════════════════════════
+    // L5 Resilience Policy tests
+    // ════════════════════════════════════════════════
+
+    fn build_l5_registry() -> Arc<InMemoryRegistry> {
+        let mut reg = InMemoryRegistry::new();
+
+        reg.providers.insert(
+            "prov-a".into(),
+            Provider {
+                id: "prov-a".into(),
+                name: "Provider A".into(),
+                auth: AuthConfig::default(),
+                base_url: "https://a.example.com".into(),
+                rate_limit: None,
+                status: HealthStatus::Healthy,
+                metadata: HashMap::new(),
+                protocols: vec![],
+            },
+        );
+        reg.providers.insert(
+            "prov-b".into(),
+            Provider {
+                id: "prov-b".into(),
+                name: "Provider B".into(),
+                auth: AuthConfig::default(),
+                base_url: "https://b.example.com".into(),
+                rate_limit: None,
+                status: HealthStatus::Healthy,
+                metadata: HashMap::new(),
+                protocols: vec![],
+            },
+        );
+
+        reg.endpoints.insert(
+            "ep-a".into(),
+            Endpoint {
+                id: "ep-a".into(),
+                provider_id: "prov-a".into(),
+                base_url: None,
+                region: None,
+                auth_override: None,
+                rate_limit: None,
+                priority: 0,
+                status: HealthStatus::Healthy,
+            },
+        );
+        reg.endpoints.insert(
+            "ep-b".into(),
+            Endpoint {
+                id: "ep-b".into(),
+                provider_id: "prov-b".into(),
+                base_url: None,
+                region: None,
+                auth_override: None,
+                rate_limit: None,
+                priority: 0,
+                status: HealthStatus::Healthy,
+            },
+        );
+
+        reg.accounts.insert(
+            "acct-a".into(),
+            Account {
+                id: "acct-a".into(),
+                endpoint_id: "ep-a".into(),
+                auth: AuthConfig::default(),
+                project_id: None,
+                rate_limit: None,
+                billing_tag: None,
+                weight: 1.0,
+                status: HealthStatus::Healthy,
+                metadata: HashMap::new(),
+            },
+        );
+        reg.accounts.insert(
+            "acct-b".into(),
+            Account {
+                id: "acct-b".into(),
+                endpoint_id: "ep-b".into(),
+                auth: AuthConfig::default(),
+                project_id: None,
+                rate_limit: None,
+                billing_tag: None,
+                weight: 1.0,
+                status: HealthStatus::Healthy,
+                metadata: HashMap::new(),
+            },
+        );
+
+        reg.models.insert(
+            "model-x".into(),
+            Model {
+                id: "model-x".into(),
+                display_name: "Model X".into(),
+                quality_tier: QualityTier::A,
+                capabilities: ModelCapabilities::default(),
+                pricing: ModelPricing::default(),
+                specialties: vec![],
+                limits: None,
+                status: ModelStatus::Available,
+            },
+        );
+
+        reg.variants.insert(
+            "var-a".into(),
+            ModelVariant {
+                id: "var-a".into(),
+                model_id: "model-x".into(),
+                endpoint_id: "ep-a".into(),
+                account_id: Some("acct-a".into()),
+                deployment_name: None,
+                weight: 1.0,
+                performance: ModelPerformance::default(),
+                pricing_override: None,
+                status: VariantStatus::Active,
+                base_url: None,
+                upstream_model_name: None,
+            },
+        );
+        reg.variants.insert(
+            "var-b".into(),
+            ModelVariant {
+                id: "var-b".into(),
+                model_id: "model-x".into(),
+                endpoint_id: "ep-b".into(),
+                account_id: Some("acct-b".into()),
+                deployment_name: None,
+                weight: 1.0,
+                performance: ModelPerformance::default(),
+                pricing_override: None,
+                status: VariantStatus::Active,
+                base_url: None,
+                upstream_model_name: None,
+            },
+        );
+
+        Arc::new(reg)
+    }
+
+    fn default_resilience_policy() -> ResiliencePolicy {
+        ResiliencePolicy {
+            retry: RetryPolicy {
+                max_retries: 2,
+                retry_on: vec![
+                    RetryCondition::RateLimit,
+                    RetryCondition::Timeout,
+                    RetryCondition::ConnectionError,
+                    RetryCondition::HttpStatus(vec![500, 502, 503]),
+                ],
+                backoff: BackoffStrategy::Exponential {
+                    base_ms: 100,
+                    max_ms: 5000,
+                },
+                retry_scope: RetryScope::CrossProvider,
+            },
+            fallback: FallbackPolicy::default(),
+            circuit_breaker: CircuitBreakerPolicy {
+                error_threshold_pct: 50.0,
+                window_seconds: 60,
+                min_requests: 5,
+                open_duration_seconds: 30,
+                half_open_requests: 3,
+            },
+            timeout: TimeoutPolicy::default(),
+            hedging: None,
+        }
+    }
+
+    #[test]
+    fn test_l5_retry_on_rate_limit() {
+        let registry = build_l5_registry();
+        let policy = DefaultL5Policy::new(default_resilience_policy(), registry);
+
+        let result = policy
+            .on_failure("var-a", &FailureType::RateLimit, 1)
+            .unwrap();
+
+        match result {
+            RecoveryAction::Retry { variant_id, delay_ms } => {
+                // CrossProvider scope should try a different provider's variant
+                assert_eq!(variant_id, "var-b", "should retry on different provider's variant");
+                assert!(delay_ms > 0, "delay should be positive");
+            }
+            other => panic!("expected Retry, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_l5_retry_on_timeout() {
+        let registry = build_l5_registry();
+        let policy = DefaultL5Policy::new(default_resilience_policy(), registry);
+
+        let result = policy
+            .on_failure("var-a", &FailureType::Timeout, 1)
+            .unwrap();
+
+        match result {
+            RecoveryAction::Retry { delay_ms, .. } => {
+                assert!(delay_ms > 0, "timeout retry should have a delay");
+            }
+            other => panic!("expected Retry, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_l5_fallback_after_max_retries() {
+        let registry = build_l5_registry();
+        let policy = DefaultL5Policy::new(default_resilience_policy(), registry);
+
+        // attempt 3 exceeds max_retries of 2
+        let result = policy
+            .on_failure("var-a", &FailureType::RateLimit, 3)
+            .unwrap();
+
+        match result {
+            RecoveryAction::Fallback { variant_id } => {
+                assert_ne!(variant_id, "var-a", "fallback should choose a different variant");
+            }
+            other => panic!("expected Fallback after max retries, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_l5_circuit_breaker_opens() {
+        let registry = build_l5_registry();
+        let policy = DefaultL5Policy::new(default_resilience_policy(), registry);
+
+        // Record enough failures to trip the circuit breaker (min_requests = 5)
+        for _ in 0..5 {
+            policy.record_failure("var-a");
+        }
+
+        // Now on_failure should detect circuit is open and fallback
+        let result = policy
+            .on_failure("var-a", &FailureType::RateLimit, 1)
+            .unwrap();
+
+        match result {
+            RecoveryAction::Fallback { variant_id } => {
+                assert_eq!(
+                    variant_id, "var-b",
+                    "circuit breaker open should fallback to different variant"
+                );
+            }
+            other => panic!("expected Fallback due to circuit breaker, got: {:?}", other),
+        }
+
+        // Reset and verify recovery
+        policy.reset_failures("var-a");
+        let result_after_reset = policy
+            .on_failure("var-a", &FailureType::RateLimit, 1)
+            .unwrap();
+
+        match result_after_reset {
+            RecoveryAction::Retry { .. } => {
+                // Good - circuit breaker is closed again after reset
+            }
+            other => panic!("expected Retry after circuit reset, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_l5_backoff_calculation() {
+        let registry = build_l5_registry();
+
+        // Test fixed backoff
+        let mut rp = default_resilience_policy();
+        rp.retry.backoff = BackoffStrategy::Fixed { delay_ms: 500 };
+        let policy_fixed = DefaultL5Policy::new(rp, Arc::clone(&registry));
+
+        let delay1 = policy_fixed.compute_delay(1);
+        let delay2 = policy_fixed.compute_delay(2);
+        let delay3 = policy_fixed.compute_delay(3);
+        assert_eq!(delay1, 500);
+        assert_eq!(delay2, 500);
+        assert_eq!(delay3, 500);
+
+        // Test exponential backoff
+        let mut rp2 = default_resilience_policy();
+        rp2.retry.backoff = BackoffStrategy::Exponential {
+            base_ms: 100,
+            max_ms: 5000,
+        };
+        let policy_exp = DefaultL5Policy::new(rp2, Arc::clone(&registry));
+
+        let delay_a1 = policy_exp.compute_delay(1); // 100 * 2^0 = 100
+        let delay_a2 = policy_exp.compute_delay(2); // 100 * 2^1 = 200
+        let delay_a3 = policy_exp.compute_delay(3); // 100 * 2^2 = 400
+        assert_eq!(delay_a1, 100);
+        assert_eq!(delay_a2, 200);
+        assert_eq!(delay_a3, 400);
+
+        // Test exponential max cap
+        let mut rp3 = default_resilience_policy();
+        rp3.retry.backoff = BackoffStrategy::Exponential {
+            base_ms: 1000,
+            max_ms: 3000,
+        };
+        let policy_capped = DefaultL5Policy::new(rp3, registry);
+
+        let delay_c3 = policy_capped.compute_delay(3); // 1000 * 2^2 = 4000, capped to 3000
+        assert_eq!(delay_c3, 3000);
+    }
+
+    #[test]
+    fn test_l5_hedging_plan() {
+        let registry = build_l5_registry();
+        let policy = DefaultL5Policy::new(default_resilience_policy(), registry);
+
+        let c1 = make_candidate(CandidateOpts {
+            variant_id: "hedge-1",
+            ..Default::default()
+        });
+        let c2 = make_candidate(CandidateOpts {
+            variant_id: "hedge-2",
+            ..Default::default()
+        });
+        let c3 = make_candidate(CandidateOpts {
+            variant_id: "hedge-3",
+            ..Default::default()
+        });
+
+        let candidates_refs: Vec<&ModelCandidate> = vec![&c1, &c2, &c3];
+
+        // max=2, should return first 2
+        let plan = policy.plan_hedging(&candidates_refs, 2);
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0], "hedge-1");
+        assert_eq!(plan[1], "hedge-2");
+
+        // max=5, but only 3 candidates, should return all 3
+        let plan_all = policy.plan_hedging(&candidates_refs, 5);
+        assert_eq!(plan_all.len(), 3);
+
+        // max=0, should return empty
+        let plan_none = policy.plan_hedging(&candidates_refs, 0);
+        assert!(plan_none.is_empty());
+    }
+
+    // ════════════════════════════════════════════════
+    // Factory function tests
+    // ════════════════════════════════════════════════
+
+    #[test]
+    fn test_create_l2_selector_returns_correct_type() {
+        let default = create_l2_selector("default");
+        assert_eq!(default.name(), "DefaultL2Selector");
+
+        let latency = create_l2_selector("lowest_latency");
+        assert_eq!(latency.name(), "LowestLatencyL2Selector");
+
+        let cost = create_l2_selector("lowest_cost");
+        assert_eq!(cost.name(), "LowestCostL2Selector");
+
+        let priority = create_l2_selector("priority");
+        assert_eq!(priority.name(), "PriorityL2Selector");
+
+        // Unknown name should fall back to default
+        let unknown = create_l2_selector("unknown_name");
+        assert_eq!(unknown.name(), "DefaultL2Selector");
+    }
+
+    #[test]
+    fn test_create_l3_selector_returns_correct_type() {
+        let affinity = create_l3_selector("affinity");
+        assert_eq!(affinity.name(), "AffinityL3Selector");
+
+        let round_robin = create_l3_selector("round_robin");
+        assert_eq!(round_robin.name(), "RoundRobinL3Selector");
+
+        let least_load = create_l3_selector("least_load");
+        assert_eq!(least_load.name(), "LeastLoadL3Selector");
+
+        // Unknown name should fall back to affinity
+        let unknown = create_l3_selector("unknown_name");
+        assert_eq!(unknown.name(), "AffinityL3Selector");
+    }
+
+    #[test]
+    fn test_create_l4_selector_returns_correct_type() {
+        let best = create_l4_selector("best");
+        assert_eq!(best.name(), "BestL4Selector");
+
+        let weighted = create_l4_selector("weighted");
+        assert_eq!(weighted.name(), "WeightedL4Selector");
+
+        // Unknown name should fall back to best
+        let unknown = create_l4_selector("unknown_name");
+        assert_eq!(unknown.name(), "BestL4Selector");
+    }
+}

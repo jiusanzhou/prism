@@ -47,6 +47,49 @@ pub struct PrismConfig {
     /// Concurrency limiting rules.
     #[serde(default)]
     pub concurrency_limits: Vec<ConcurrencyLimitConfig>,
+
+    /// Account configurations for multi-account routing.
+    #[serde(default)]
+    pub accounts: Vec<AccountConfig>,
+}
+
+impl PrismConfig {
+    /// Get all discovery sources — from both `discoveries` (legacy) and `plugins` with discovery phase.
+    ///
+    /// Returns legacy `DiscoveryConfig` entries as-is, plus synthesized entries
+    /// for any plugin that has `"discovery"` in its phases list.
+    pub fn all_discovery_configs(&self) -> Vec<DiscoveryConfig> {
+        let mut result: Vec<DiscoveryConfig> = self.discoveries.clone();
+
+        for plugin in &self.plugins {
+            if !plugin.enabled {
+                continue;
+            }
+            let has_discovery = plugin.phases.iter().any(|p| p == "discovery");
+            if !has_discovery {
+                continue;
+            }
+
+            // Synthesize a DiscoveryConfig from the plugin's source and config.
+            let source_type = match &plugin.source {
+                PluginSourceConfig::Wasm { wasm } => DiscoverySourceType::Wasm {
+                    wasm: DiscoveryWasmConfig {
+                        path: wasm.clone(),
+                    },
+                },
+                _ => continue, // Only WASM plugins can be discovery sources currently
+            };
+
+            result.push(DiscoveryConfig {
+                name: plugin.name.clone(),
+                source_type,
+                config: plugin.config.clone(),
+                enabled: plugin.enabled,
+            });
+        }
+
+        result
+    }
 }
 
 /// Server-level configuration.
@@ -129,6 +172,26 @@ fn default_proxy_port() -> u16 {
     8000
 }
 
+/// How the provider authenticates API requests.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAuthType {
+    /// Authorization: Bearer <key> (default, most providers)
+    #[default]
+    Bearer,
+    /// Authorization: <key> (no Bearer prefix)
+    Header,
+    /// x-api-key: <key>
+    XApiKey,
+    /// api-key: <key> (Azure OpenAI)
+    ApiKey,
+    /// Custom header name → key goes as value
+    Custom(String),
+    /// AWS Signature V4 (Bedrock) — uses awsAccessKey/awsSecretKey/awsRegion
+    /// from provider config, not account api_key.
+    AwsSigV4,
+}
+
 /// Provider configuration — map key is the provider id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
@@ -141,6 +204,24 @@ pub struct ProviderConfig {
     pub timeout_ms: Option<u32>,
     #[serde(default)]
     pub protocols: Vec<String>,
+    /// How account api_key is sent to the upstream.
+    /// bearer (default): Authorization: Bearer <key>
+    /// header: Authorization: <key>
+    /// x_api_key: x-api-key: <key>
+    /// api_key: api-key: <key> (Azure)
+    /// custom("X-My-Key"): X-My-Key: <key>
+    /// aws_sig_v4: AWS Signature V4 (Bedrock)
+    #[serde(default)]
+    pub auth_type: ProviderAuthType,
+    /// AWS region for Bedrock providers.
+    #[serde(default)]
+    pub aws_region: Option<String>,
+    /// AWS access key for Bedrock providers.
+    #[serde(default)]
+    pub aws_access_key: Option<String>,
+    /// AWS secret key for Bedrock providers.
+    #[serde(default)]
+    pub aws_secret_key: Option<String>,
     /// Custom headers to send with every request to this provider.
     /// When set, these take precedence over the default `Authorization: Bearer <api_key>`.
     #[serde(default)]
@@ -190,6 +271,13 @@ pub struct VariantConfig {
     /// Pricing override.
     #[serde(default)]
     pub pricing_override: Option<ModelPricing>,
+    /// Variant status: "active" (default) or "inactive".
+    #[serde(default = "default_variant_status")]
+    pub status: String,
+}
+
+fn default_variant_status() -> String {
+    "active".to_string()
 }
 
 /// Pool configuration.
@@ -209,6 +297,21 @@ pub struct RoutingConfig {
     pub default_strategy: String,
     #[serde(default)]
     pub balanced: Option<BalancedConfig>,
+    /// L2 provider selection strategy name.
+    #[serde(default = "default_l2_selector")]
+    pub l2_selector: String,
+    /// L3 account selection strategy name.
+    #[serde(default = "default_l3_selector")]
+    pub l3_selector: String,
+    /// L4 variant selection strategy name.
+    #[serde(default = "default_l4_selector")]
+    pub l4_selector: String,
+    /// Per-model strategy overrides.
+    #[serde(default)]
+    pub model_overrides: Vec<ModelStrategyOverride>,
+    /// Resilience configuration.
+    #[serde(default)]
+    pub resilience: ResilienceConfig,
 }
 
 impl Default for RoutingConfig {
@@ -216,12 +319,152 @@ impl Default for RoutingConfig {
         Self {
             default_strategy: default_strategy(),
             balanced: None,
+            l2_selector: default_l2_selector(),
+            l3_selector: default_l3_selector(),
+            l4_selector: default_l4_selector(),
+            model_overrides: Vec::new(),
+            resilience: ResilienceConfig::default(),
         }
     }
 }
 
 fn default_strategy() -> String {
     "balanced".to_string()
+}
+
+fn default_l2_selector() -> String {
+    "default".to_string()
+}
+fn default_l3_selector() -> String {
+    "affinity".to_string()
+}
+fn default_l4_selector() -> String {
+    "best".to_string()
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModelStrategyOverride {
+    pub model_id: String,
+    #[serde(default = "default_strategy")]
+    pub strategy: String,
+    #[serde(default)]
+    pub pool: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResilienceConfig {
+    #[serde(default)]
+    pub retry: RetryConfig,
+    #[serde(default)]
+    pub circuit_breaker: CircuitBreakerConfig,
+    #[serde(default)]
+    pub timeout: TimeoutConfig,
+}
+
+impl Default for ResilienceConfig {
+    fn default() -> Self {
+        Self {
+            retry: RetryConfig::default(),
+            circuit_breaker: CircuitBreakerConfig::default(),
+            timeout: TimeoutConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryConfig {
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    #[serde(default = "default_retry_on")]
+    pub retry_on: Vec<String>,
+    #[serde(default = "default_backoff")]
+    pub backoff: String,
+    #[serde(default = "default_retry_scope")]
+    pub retry_scope: String,
+}
+
+fn default_max_retries() -> u32 {
+    2
+}
+fn default_retry_on() -> Vec<String> {
+    vec!["RateLimit".into(), "Timeout".into()]
+}
+fn default_backoff() -> String {
+    "Exponential".into()
+}
+fn default_retry_scope() -> String {
+    "CrossProvider".into()
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: default_max_retries(),
+            retry_on: default_retry_on(),
+            backoff: default_backoff(),
+            retry_scope: default_retry_scope(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CircuitBreakerConfig {
+    #[serde(default = "default_error_threshold")]
+    pub error_threshold_pct: f32,
+    #[serde(default = "default_window_seconds")]
+    pub window_seconds: u32,
+    #[serde(default = "default_open_duration")]
+    pub open_duration_seconds: u32,
+}
+
+fn default_error_threshold() -> f32 {
+    50.0
+}
+fn default_window_seconds() -> u32 {
+    60
+}
+fn default_open_duration() -> u32 {
+    30
+}
+
+impl Default for CircuitBreakerConfig {
+    fn default() -> Self {
+        Self {
+            error_threshold_pct: default_error_threshold(),
+            window_seconds: default_window_seconds(),
+            open_duration_seconds: default_open_duration(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeoutConfig {
+    #[serde(default = "default_connect_ms")]
+    pub connect_ms: u32,
+    #[serde(default = "default_request_ms")]
+    pub request_ms: u32,
+    #[serde(default = "default_ttft_ms")]
+    pub ttft_ms: u32,
+}
+
+fn default_connect_ms() -> u32 {
+    3000
+}
+fn default_request_ms() -> u32 {
+    30000
+}
+fn default_ttft_ms() -> u32 {
+    10000
+}
+
+impl Default for TimeoutConfig {
+    fn default() -> Self {
+        Self {
+            connect_ms: default_connect_ms(),
+            request_ms: default_request_ms(),
+            ttft_ms: default_ttft_ms(),
+        }
+    }
 }
 
 /// Balanced strategy weights.
@@ -1100,6 +1343,153 @@ plugins:
             PluginSourceConfig::Builtin { .. }
         ));
     }
+
+    #[test]
+    fn test_account_config_serde() {
+        let yaml = r#"
+accounts:
+  - id: acct-openai-1
+    provider_id: openai
+    api_key: sk-test-key
+    project_id: proj-123
+    billing_tag: team-alpha
+    weight: 2.0
+    enabled: true
+    rate_limit:
+      rpm: 100
+      tpm: 50000
+      concurrent: 5
+    headers:
+      x-custom: value
+    metadata:
+      env: production
+  - id: acct-anthropic-1
+    provider_id: anthropic
+    api_key: sk-ant-key
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.accounts.len(), 2);
+
+        let a1 = &config.accounts[0];
+        assert_eq!(a1.id, "acct-openai-1");
+        assert_eq!(a1.provider_id, "openai");
+        assert_eq!(a1.api_key.as_deref(), Some("sk-test-key"));
+        assert_eq!(a1.project_id.as_deref(), Some("proj-123"));
+        assert_eq!(a1.billing_tag.as_deref(), Some("team-alpha"));
+        assert!((a1.weight - 2.0).abs() < 0.001);
+        assert!(a1.enabled);
+        let rl = a1.rate_limit.as_ref().unwrap();
+        assert_eq!(rl.rpm, Some(100));
+        assert_eq!(rl.tpm, Some(50000));
+        assert_eq!(rl.concurrent, Some(5));
+        assert_eq!(a1.headers.get("x-custom").unwrap(), "value");
+        assert_eq!(a1.metadata.get("env").unwrap(), "production");
+
+        let a2 = &config.accounts[1];
+        assert_eq!(a2.id, "acct-anthropic-1");
+        assert_eq!(a2.provider_id, "anthropic");
+        assert!(a2.enabled); // default_true
+        assert!((a2.weight - 1.0).abs() < 0.001); // default_account_weight
+        assert!(a2.rate_limit.is_none());
+        assert!(a2.headers.is_empty());
+        assert!(a2.metadata.is_empty());
+    }
+
+    #[test]
+    fn test_account_config_defaults() {
+        let yaml = "{}";
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.accounts.is_empty());
+    }
+
+    #[test]
+    fn test_all_discovery_configs_legacy_only() {
+        let yaml = r#"
+discoveries:
+  - name: k8s-pods
+    type:
+      wasm:
+        path: ./plugins/k8s-discovery.wasm
+    config:
+      namespace: default
+    enabled: true
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        let all = config.all_discovery_configs();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "k8s-pods");
+    }
+
+    #[test]
+    fn test_all_discovery_configs_plugin_only() {
+        let yaml = r#"
+plugins:
+  - name: k8s-disc
+    source:
+      wasm: ./plugins/k8s-discovery.wasm
+    phases: [discovery]
+    config:
+      namespace: staging
+    enabled: true
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        let all = config.all_discovery_configs();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "k8s-disc");
+        assert_eq!(all[0].config["namespace"], "staging");
+        assert!(all[0].enabled);
+    }
+
+    #[test]
+    fn test_all_discovery_configs_combined() {
+        let yaml = r#"
+discoveries:
+  - name: legacy-disc
+    type: static
+    enabled: true
+plugins:
+  - name: plugin-disc
+    source:
+      wasm: ./plugins/disc.wasm
+    phases: [discovery]
+    enabled: true
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        let all = config.all_discovery_configs();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].name, "legacy-disc");
+        assert_eq!(all[1].name, "plugin-disc");
+    }
+
+    #[test]
+    fn test_all_discovery_configs_disabled_plugin_skipped() {
+        let yaml = r#"
+plugins:
+  - name: disabled-disc
+    source:
+      wasm: ./plugins/disc.wasm
+    phases: [discovery]
+    enabled: false
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        let all = config.all_discovery_configs();
+        assert!(all.is_empty());
+    }
+
+    #[test]
+    fn test_all_discovery_configs_non_discovery_plugin_skipped() {
+        let yaml = r#"
+plugins:
+  - name: proxy-only
+    source:
+      wasm: ./plugins/proxy.wasm
+    phases: [proxy]
+    enabled: true
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        let all = config.all_discovery_configs();
+        assert!(all.is_empty());
+    }
 }
 
 
@@ -1148,6 +1538,48 @@ pub struct ConcurrencyLimitConfig {
     /// Whether this rule is enabled.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+}
+
+// ════════════════════════════════════════════════
+// Account configuration
+// ════════════════════════════════════════════════
+
+/// Account configuration for multi-account routing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountConfig {
+    pub id: String,
+    pub provider_id: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub rate_limit: Option<AccountRateLimitConfig>,
+    #[serde(default)]
+    pub billing_tag: Option<String>,
+    #[serde(default = "default_account_weight")]
+    pub weight: f32,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+}
+
+/// Account-level rate limit configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountRateLimitConfig {
+    #[serde(default)]
+    pub rpm: Option<u32>,
+    #[serde(default)]
+    pub tpm: Option<u32>,
+    #[serde(default)]
+    pub concurrent: Option<u32>,
+}
+
+fn default_account_weight() -> f32 {
+    1.0
 }
 
 fn default_circuit_breaker_threshold() -> u32 {

@@ -12,7 +12,7 @@ use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
-use crate::config::{build_registry, load_config};
+use crate::config::{build_registry, build_router_from_config, load_config};
 use crate::state::AppState;
 
 /// Configuration for the watcher.
@@ -155,8 +155,8 @@ pub fn reload_config(
     // 2. Build new registry
     let new_registry = build_registry(&new_config);
 
-    // 3. Build new router
-    let new_router = prism_core::router::PrismRouter::new(new_registry);
+    // 3. Build new router with routing config applied
+    let new_router = build_router_from_config(new_registry, &new_config.routing);
 
     // 4. Gather stats before swap
     let providers_count = new_router.registry.providers.len();

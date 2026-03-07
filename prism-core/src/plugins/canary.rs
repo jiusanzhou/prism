@@ -71,3 +71,149 @@ impl RoutingPlugin for CanaryPlugin {
         0.5
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analyzer::{ContextSize, Language, RequestProfile};
+    use crate::plugin::RoutingPlugin;
+    use crate::router::RouteMetadata;
+    use crate::strategy::ModelSelectionStrategy;
+    use crate::types::*;
+
+    fn make_candidate(variant_id: &str) -> ModelCandidate {
+        ModelCandidate {
+            variant: ModelVariant {
+                id: variant_id.to_string(),
+                model_id: "m-1".to_string(),
+                endpoint_id: "ep-1".to_string(),
+                account_id: None,
+                deployment_name: None,
+                weight: 1.0,
+                performance: ModelPerformance::default(),
+                pricing_override: None,
+                status: VariantStatus::Active,
+                base_url: None,
+                upstream_model_name: None,
+            },
+            model: Model {
+                id: "m-1".to_string(),
+                display_name: "m-1".to_string(),
+                quality_tier: QualityTier::A,
+                capabilities: ModelCapabilities {
+                    max_context_window: 128000,
+                    max_output_tokens: 4096,
+                    supports_streaming: true,
+                    supports_function_calling: true,
+                    supports_vision: false,
+                    supports_json_mode: false,
+                    supports_reasoning: false,
+                },
+                pricing: ModelPricing::default(),
+                specialties: vec![],
+                limits: None,
+                status: ModelStatus::Available,
+            },
+            account: Account {
+                id: "acc-1".to_string(),
+                endpoint_id: "ep-1".to_string(),
+                auth: AuthConfig::default(),
+                project_id: None,
+                rate_limit: None,
+                billing_tag: None,
+                weight: 1.0,
+                status: HealthStatus::Healthy,
+                metadata: Default::default(),
+            },
+            endpoint: Endpoint {
+                id: "ep-1".to_string(),
+                provider_id: "prov-1".to_string(),
+                base_url: None,
+                region: None,
+                auth_override: None,
+                rate_limit: None,
+                priority: 0,
+                status: HealthStatus::Healthy,
+            },
+            provider: Provider {
+                id: "prov-1".to_string(),
+                name: "Test".to_string(),
+                auth: AuthConfig::default(),
+                base_url: "https://api.test.com".to_string(),
+                rate_limit: None,
+                status: HealthStatus::Healthy,
+                metadata: Default::default(),
+                protocols: vec![],
+            },
+            effective_pricing: ModelPricing::default(),
+        }
+    }
+
+    fn default_state() -> PluginState {
+        PluginState::new(
+            RequestProfile {
+                complexity: 0.5,
+                task_type: crate::types::TaskType::SimpleQA,
+                estimated_tokens: 100,
+                requires_reasoning: false,
+                requires_vision: false,
+                language: Language::English,
+                is_multi_turn: false,
+                context_window_need: ContextSize::Small,
+            },
+            RouteMetadata::default(),
+            ModelSelectionStrategy::default(),
+            None,
+        )
+    }
+
+    #[test]
+    fn test_no_config_returns_neutral() {
+        let plugin = CanaryPlugin::new();
+        let state = default_state();
+        let candidate = make_candidate("v-any");
+        let score = plugin.score(&state, &candidate);
+        assert!(
+            (score - 0.5).abs() < f32::EPSILON,
+            "no canary config should return 0.5, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_canary_traffic_split() {
+        let plugin = CanaryPlugin::with_canary("v-canary".to_string(), 0.3);
+        let state = default_state();
+        let candidate = make_candidate("v-canary");
+
+        let mut boosted_count = 0;
+        let iterations = 1000;
+        for _ in 0..iterations {
+            let score = plugin.score(&state, &candidate);
+            if (score - 100.0).abs() < f32::EPSILON {
+                boosted_count += 1;
+            }
+        }
+
+        let pct = boosted_count as f64 / iterations as f64;
+        assert!(
+            pct > 0.15 && pct < 0.50,
+            "canary with 30% should get boosted ~30% of the time, got {:.1}%",
+            pct * 100.0
+        );
+    }
+
+    #[test]
+    fn test_non_canary_always_neutral() {
+        let plugin = CanaryPlugin::with_canary("v-canary".to_string(), 0.3);
+        let state = default_state();
+        let candidate = make_candidate("v-stable");
+
+        for _ in 0..100 {
+            let score = plugin.score(&state, &candidate);
+            assert!(
+                (score - 0.5).abs() < f32::EPSILON,
+                "non-canary variant should always get 0.5, got {score}"
+            );
+        }
+    }
+}

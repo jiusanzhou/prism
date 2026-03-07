@@ -42,6 +42,9 @@ pub struct RouteRequest {
     /// Required protocol for this request (e.g., "openai", "anthropic").
     /// If set, only candidates whose provider supports this protocol are considered.
     pub required_protocol: Option<String>,
+    /// Requested model id from client (e.g. from request body "model" field).
+    /// When set, only candidates matching this model are considered.
+    pub requested_model: Option<String>,
 }
 
 /// Extra metadata attached to a routing request.
@@ -177,6 +180,9 @@ pub struct PrismRouter {
     pub l5: Box<dyn L5ResiliencePolicy>,
 
     pub feedback: Arc<FeedbackCollector>,
+
+    /// Per-model strategy overrides (model_id → strategy).
+    pub model_overrides: Vec<(String, ModelSelectionStrategy)>,
 }
 
 impl PrismRouter {
@@ -212,6 +218,7 @@ impl PrismRouter {
             l4: Box::new(BestL4Selector),
             l5,
             feedback,
+            model_overrides: Vec::new(),
         }
     }
 
@@ -312,6 +319,11 @@ impl PrismRouter {
         self
     }
 
+    pub fn with_model_overrides(mut self, overrides: Vec<(String, ModelSelectionStrategy)>) -> Self {
+        self.model_overrides = overrides;
+        self
+    }
+
     // ── Public helpers (backward compat) ──
 
     pub fn record_outcome(&self, report: &OutcomeReport) {
@@ -399,10 +411,29 @@ impl Router for PrismRouter {
             None => self.analyzer.analyze(&request.messages),
         };
 
-        let strategy = request.strategy.as_ref().unwrap_or(&self.default_strategy);
+        let strategy = request.strategy.as_ref().unwrap_or_else(|| {
+            // Check per-model overrides if a specific model was requested
+            if let Some(ref model_id) = request.requested_model {
+                if let Some((_, override_strategy)) = self
+                    .model_overrides
+                    .iter()
+                    .find(|(mid, _)| mid == model_id)
+                {
+                    return override_strategy;
+                }
+            }
+            &self.default_strategy
+        });
 
         // Get candidates
         let candidates = self.get_strategy_candidates(strategy);
+
+        // Filter by requested model if specified
+        let candidates = if let Some(ref model_id) = request.requested_model {
+            candidates.into_iter().filter(|c| c.model.id == *model_id).collect()
+        } else {
+            candidates
+        };
         if candidates.is_empty() {
             return Err(RouterError::NoCandidates);
         }
@@ -444,5 +475,507 @@ impl Router for PrismRouter {
             score: result.score,
             decision_time_us: decision_time.as_micros() as u64,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    // ── Helper: build a minimal but complete registry ──
+
+    fn make_provider(id: &str) -> Provider {
+        Provider {
+            id: id.into(),
+            name: format!("Provider {id}"),
+            auth: AuthConfig::default(),
+            base_url: "https://api.example.com".into(),
+            rate_limit: None,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
+            protocols: vec![],
+        }
+    }
+
+    fn make_endpoint(id: &str, provider_id: &str, region: Option<&str>) -> Endpoint {
+        Endpoint {
+            id: id.into(),
+            provider_id: provider_id.into(),
+            base_url: None,
+            region: region.map(|r| r.into()),
+            auth_override: None,
+            rate_limit: None,
+            priority: 0,
+            status: HealthStatus::Healthy,
+        }
+    }
+
+    fn make_account(id: &str, endpoint_id: &str) -> Account {
+        Account {
+            id: id.into(),
+            endpoint_id: endpoint_id.into(),
+            auth: AuthConfig::default(),
+            project_id: None,
+            rate_limit: None,
+            billing_tag: None,
+            weight: 1.0,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
+        }
+    }
+
+    fn make_model(id: &str, tier: QualityTier) -> Model {
+        Model {
+            id: id.into(),
+            display_name: format!("Model {id}"),
+            quality_tier: tier,
+            capabilities: ModelCapabilities {
+                max_context_window: 128_000,
+                max_output_tokens: 4_096,
+                supports_streaming: true,
+                supports_function_calling: true,
+                supports_vision: false,
+                supports_json_mode: true,
+                supports_reasoning: false,
+            },
+            pricing: ModelPricing {
+                input_per_1m_tokens: 3.0,
+                output_per_1m_tokens: 15.0,
+                currency: "USD".into(),
+            },
+            specialties: vec![],
+            limits: None,
+            status: ModelStatus::Available,
+        }
+    }
+
+    fn make_variant(
+        id: &str,
+        model_id: &str,
+        endpoint_id: &str,
+        account_id: &str,
+    ) -> ModelVariant {
+        ModelVariant {
+            id: id.into(),
+            model_id: model_id.into(),
+            endpoint_id: endpoint_id.into(),
+            account_id: Some(account_id.into()),
+            deployment_name: None,
+            weight: 1.0,
+            performance: ModelPerformance::default(),
+            pricing_override: None,
+            status: VariantStatus::Active,
+            base_url: None,
+            upstream_model_name: None,
+        }
+    }
+
+    fn make_pool(id: &str, variant_ids: Vec<&str>) -> ModelPool {
+        ModelPool {
+            id: id.into(),
+            name: format!("Pool {id}"),
+            variants: variant_ids.into_iter().map(|s| s.into()).collect(),
+            selection_mode: SelectionMode::Scored,
+            description: None,
+        }
+    }
+
+    /// Build a registry with a single complete chain:
+    /// provider-a -> endpoint-a -> account-a -> model-a -> variant-a -> pool-a
+    fn setup_registry() -> InMemoryRegistry {
+        let mut reg = InMemoryRegistry::new();
+        reg.add_provider(make_provider("provider-a"));
+        reg.add_endpoint(make_endpoint("endpoint-a", "provider-a", None));
+        reg.add_account(make_account("account-a", "endpoint-a"));
+        reg.add_model(make_model("model-a", QualityTier::A));
+        reg.add_variant(make_variant("variant-a", "model-a", "endpoint-a", "account-a"));
+        reg.add_pool(make_pool("pool-a", vec!["variant-a"]));
+        reg
+    }
+
+    fn basic_request() -> RouteRequest {
+        RouteRequest {
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: "hello".into(),
+            }],
+            strategy: None,
+            metadata: RouteMetadata::default(),
+            analyze_context: None,
+            required_protocol: None,
+            requested_model: None,
+        }
+    }
+
+    // ── Tests ──
+
+    #[test]
+    fn test_router_route_basic() {
+        let registry = setup_registry();
+        let router = PrismRouter::new(registry);
+
+        let decision = router.route(&basic_request()).expect("routing should succeed");
+
+        assert_eq!(decision.selected_model, "model-a");
+        assert_eq!(decision.selected_variant, "variant-a");
+        assert_eq!(decision.selected_account, "account-a");
+        assert_eq!(decision.selected_provider, "provider-a");
+        assert!(!decision.reason.l1_model.is_empty());
+        assert!(decision.decision_time_us > 0 || decision.decision_time_us == 0);
+    }
+
+    #[test]
+    fn test_router_route_pinned_model() {
+        let mut reg = setup_registry();
+
+        // Add a second chain: model-b via provider-a/endpoint-a/account-a
+        reg.add_model(make_model("model-b", QualityTier::B));
+        reg.add_variant(make_variant(
+            "variant-b",
+            "model-b",
+            "endpoint-a",
+            "account-a",
+        ));
+        reg.add_pool(make_pool("pool-ab", vec!["variant-a", "variant-b"]));
+
+        let router = PrismRouter::new(reg);
+
+        let request = RouteRequest {
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: "hello".into(),
+            }],
+            strategy: Some(ModelSelectionStrategy::Pinned {
+                model_id: "model-b".into(),
+            }),
+            metadata: RouteMetadata::default(),
+            analyze_context: None,
+            required_protocol: None,
+            requested_model: None,
+        };
+
+        let decision = router.route(&request).expect("pinned routing should succeed");
+        assert_eq!(
+            decision.selected_model, "model-b",
+            "pinned strategy must select the requested model"
+        );
+        assert_eq!(decision.selected_variant, "variant-b");
+    }
+
+    #[test]
+    fn test_router_route_no_candidates() {
+        // Empty registry -- no variants at all.
+        let reg = InMemoryRegistry::new();
+        let router = PrismRouter::new(reg);
+
+        let result = router.route(&basic_request());
+        assert!(result.is_err(), "expected NoCandidates error");
+
+        match result.unwrap_err() {
+            RouterError::NoCandidates => {} // correct
+            other => panic!("expected NoCandidates, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_router_route_with_metadata() {
+        let mut reg = InMemoryRegistry::new();
+
+        // Provider shared by both endpoints.
+        reg.add_provider(make_provider("provider-geo"));
+
+        // Endpoint in us-east
+        reg.add_endpoint(make_endpoint("ep-us-east", "provider-geo", Some("us-east")));
+        reg.add_account(make_account("acct-us-east", "ep-us-east"));
+        reg.add_model(make_model("model-geo", QualityTier::A));
+        reg.add_variant(make_variant(
+            "var-us-east",
+            "model-geo",
+            "ep-us-east",
+            "acct-us-east",
+        ));
+
+        // Endpoint in eu-west
+        reg.add_endpoint(make_endpoint("ep-eu-west", "provider-geo", Some("eu-west")));
+        reg.add_account(make_account("acct-eu-west", "ep-eu-west"));
+        reg.add_variant(make_variant(
+            "var-eu-west",
+            "model-geo",
+            "ep-eu-west",
+            "acct-eu-west",
+        ));
+
+        reg.add_pool(make_pool("pool-geo", vec!["var-us-east", "var-eu-west"]));
+
+        let router = PrismRouter::new(reg);
+
+        // Request with region preference for us-east.
+        let request = RouteRequest {
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: "hello from east coast".into(),
+            }],
+            strategy: None,
+            metadata: RouteMetadata {
+                region: Some("us-east".into()),
+                ..Default::default()
+            },
+            analyze_context: None,
+            required_protocol: None,
+            requested_model: None,
+        };
+
+        let decision = router.route(&request).expect("geo routing should succeed");
+
+        // The GeoProximityPlugin scores exact region matches higher, so the
+        // us-east variant should be selected.
+        assert_eq!(
+            decision.selected_variant, "var-us-east",
+            "geo proximity should prefer the endpoint in the requested region"
+        );
+    }
+
+    #[test]
+    fn test_router_feedback_loop() {
+        let registry = setup_registry();
+        let router = PrismRouter::new(registry);
+
+        // Record positive feedback for variant-a.
+        router.record_outcome(&OutcomeReport {
+            variant_id: "variant-a".into(),
+            success: true,
+            latency_ms: 120,
+            prompt_tokens: Some(50),
+            completion_tokens: Some(100),
+            cost: Some(0.002),
+            user_rating: Some(5),
+        });
+
+        // Routing should still succeed after feedback.
+        let decision = router
+            .route(&basic_request())
+            .expect("routing after positive feedback should succeed");
+        assert_eq!(decision.selected_variant, "variant-a");
+
+        // Record negative feedback for a hypothetical other variant (won't
+        // affect routing because the variant is not in the registry, but
+        // exercises the feedback path).
+        router.record_outcome(&OutcomeReport {
+            variant_id: "variant-nonexistent".into(),
+            success: false,
+            latency_ms: 5000,
+            prompt_tokens: Some(50),
+            completion_tokens: None,
+            cost: None,
+            user_rating: Some(1),
+        });
+
+        // Verify the collector recorded both reports.
+        let stats_a = router
+            .feedback
+            .get_stats("variant-a")
+            .expect("stats for variant-a should exist");
+        assert_eq!(stats_a.total_requests, 1);
+        assert_eq!(stats_a.successful_requests, 1);
+        assert_eq!(stats_a.user_ratings, vec![5]);
+
+        let stats_bad = router
+            .feedback
+            .get_stats("variant-nonexistent")
+            .expect("stats for nonexistent variant should exist");
+        assert_eq!(stats_bad.total_requests, 1);
+        assert_eq!(stats_bad.error_count, 1);
+        assert_eq!(stats_bad.user_ratings, vec![1]);
+
+        // Routing still works after mixed feedback.
+        let decision2 = router
+            .route(&basic_request())
+            .expect("routing after mixed feedback should succeed");
+        assert_eq!(decision2.selected_variant, "variant-a");
+    }
+
+    #[test]
+    fn test_router_with_strategy_override() {
+        let registry = setup_registry();
+        let router = PrismRouter::new(registry).with_strategy(ModelSelectionStrategy::Auto {
+            objective: RoutingObjective::CostFirst {
+                min_quality_score: 0.0,
+                budget_per_request: None,
+            },
+            pool_ids: None,
+            required_capabilities: None,
+        });
+
+        let decision = router.route(&basic_request()).expect("routing should succeed");
+        assert_eq!(decision.selected_variant, "variant-a");
+    }
+
+    #[test]
+    fn test_router_per_model_override_applies() {
+        let mut reg = setup_registry();
+
+        // Add a second model + variant
+        let mut cheap_model = make_model("model-cheap", QualityTier::C);
+        cheap_model.pricing = ModelPricing {
+            input_per_1m_tokens: 0.1,
+            output_per_1m_tokens: 0.2,
+            currency: "USD".into(),
+        };
+        reg.add_model(cheap_model);
+        reg.add_variant(make_variant(
+            "variant-cheap",
+            "model-cheap",
+            "endpoint-a",
+            "account-a",
+        ));
+        reg.add_pool(make_pool("pool-both", vec!["variant-a", "variant-cheap"]));
+
+        // Default strategy is balanced; override model-cheap to use cost_first
+        let router = PrismRouter::new(reg).with_model_overrides(vec![(
+            "model-cheap".into(),
+            ModelSelectionStrategy::Auto {
+                objective: RoutingObjective::CostFirst {
+                    min_quality_score: 0.0,
+                    budget_per_request: None,
+                },
+                pool_ids: None,
+                required_capabilities: None,
+            },
+        )]);
+
+        // Request for model-cheap should use the cost_first override
+        let request = RouteRequest {
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: "hello".into(),
+            }],
+            strategy: None,
+            metadata: RouteMetadata::default(),
+            analyze_context: None,
+            required_protocol: None,
+            requested_model: Some("model-cheap".into()),
+        };
+
+        let decision = router.route(&request).expect("routing should succeed");
+        assert_eq!(
+            decision.selected_model, "model-cheap",
+            "per-model override should route to the overridden model"
+        );
+    }
+
+    #[test]
+    fn test_router_per_model_override_not_applied_for_other_model() {
+        let mut reg = setup_registry();
+
+        reg.add_model(make_model("model-b", QualityTier::B));
+        reg.add_variant(make_variant(
+            "variant-b",
+            "model-b",
+            "endpoint-a",
+            "account-a",
+        ));
+
+        // Override only model-b
+        let router = PrismRouter::new(reg).with_model_overrides(vec![(
+            "model-b".into(),
+            ModelSelectionStrategy::Auto {
+                objective: RoutingObjective::CostFirst {
+                    min_quality_score: 0.0,
+                    budget_per_request: None,
+                },
+                pool_ids: None,
+                required_capabilities: None,
+            },
+        )]);
+
+        // Request for model-a (no override) should use default strategy
+        let request = RouteRequest {
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: "hello".into(),
+            }],
+            strategy: None,
+            metadata: RouteMetadata::default(),
+            analyze_context: None,
+            required_protocol: None,
+            requested_model: Some("model-a".into()),
+        };
+
+        let decision = router.route(&request).expect("routing should succeed");
+        assert_eq!(
+            decision.selected_model, "model-a",
+            "non-overridden model uses default strategy"
+        );
+    }
+
+    #[test]
+    fn test_router_explicit_strategy_overrides_per_model() {
+        let reg = setup_registry();
+
+        // Set per-model override for model-a
+        let router = PrismRouter::new(reg).with_model_overrides(vec![(
+            "model-a".into(),
+            ModelSelectionStrategy::Auto {
+                objective: RoutingObjective::CostFirst {
+                    min_quality_score: 0.0,
+                    budget_per_request: None,
+                },
+                pool_ids: None,
+                required_capabilities: None,
+            },
+        )]);
+
+        // Explicit request strategy should take precedence over per-model override
+        let request = RouteRequest {
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: "hello".into(),
+            }],
+            strategy: Some(ModelSelectionStrategy::Pinned {
+                model_id: "model-a".into(),
+            }),
+            metadata: RouteMetadata::default(),
+            analyze_context: None,
+            required_protocol: None,
+            requested_model: Some("model-a".into()),
+        };
+
+        let decision = router.route(&request).expect("routing should succeed");
+        assert_eq!(
+            decision.selected_model, "model-a",
+            "explicit strategy takes priority over per-model override"
+        );
+    }
+
+    #[test]
+    fn test_router_with_custom_l2_l3_l4() {
+        let registry = setup_registry();
+        let router = PrismRouter::new(registry)
+            .with_l2(create_l2_selector("lowest_latency"))
+            .with_l3(create_l3_selector("round_robin"))
+            .with_l4(create_l4_selector("weighted"));
+
+        let decision = router.route(&basic_request()).expect("routing should succeed");
+        assert_eq!(decision.selected_variant, "variant-a");
+    }
+
+    #[test]
+    fn test_router_with_resilience_policy() {
+        let registry = setup_registry();
+        let custom_policy = ResiliencePolicy {
+            retry: RetryPolicy {
+                max_retries: 5,
+                retry_on: vec![RetryCondition::RateLimit],
+                backoff: BackoffStrategy::Fixed { delay_ms: 500 },
+                retry_scope: RetryScope::SameProvider,
+            },
+            ..ResiliencePolicy::default()
+        };
+
+        let router = PrismRouter::new(registry).with_resilience_policy(custom_policy);
+
+        let decision = router.route(&basic_request()).expect("routing should succeed");
+        assert_eq!(decision.selected_variant, "variant-a");
     }
 }

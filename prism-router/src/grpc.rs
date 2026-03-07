@@ -72,6 +72,7 @@ impl RouterService for GrpcRouterService {
             strategy,
             metadata,
             analyze_context: None,
+            requested_model: None,
             required_protocol: None,
         };
 

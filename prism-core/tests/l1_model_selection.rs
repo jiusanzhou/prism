@@ -277,6 +277,7 @@ fn simple_request(content: &str) -> RouteRequest {
         metadata: RouteMetadata::default(),
         analyze_context: None,
         required_protocol: None,
+        requested_model: None,
     }
 }
 
