@@ -44,10 +44,11 @@ impl PDRole {
 pub enum PDDecision {
     /// Colocated — single variant handles both.
     Single { variant_id: String },
-    /// P/D split — two variants in the same group.
+    /// P/D split — prefill + decode candidates from the same group.
+    /// decode_variant_ids contains all D leaders; proxy picks one (e.g. by load).
     Split {
         prefill_variant_id: String,
-        decode_variant_id: String,
+        decode_variant_ids: Vec<String>,
         pd_group: String,
     },
 }
@@ -112,6 +113,10 @@ impl PDGroupResult {
     }
 
     /// Resolve a selected variant into a P/D decision.
+    ///
+    /// For 1P-多D scenarios: the selected variant determines the group,
+    /// then we pick the P leader and **all** D leaders are returned as candidates.
+    /// The proxy layer picks the best D (e.g. by load).
     pub fn resolve(
         &self,
         selected_variant_id: &str,
@@ -137,12 +142,12 @@ impl PDGroupResult {
         match role {
             PDRole::Prefill => PDDecision::Split {
                 prefill_variant_id: selected_variant_id.into(),
-                decode_variant_id: group.decode_leaders.first().cloned().unwrap_or_default(),
+                decode_variant_ids: group.decode_leaders.clone(),
                 pd_group,
             },
             PDRole::Decode => PDDecision::Split {
                 prefill_variant_id: group.prefill_leaders.first().cloned().unwrap_or_default(),
-                decode_variant_id: selected_variant_id.into(),
+                decode_variant_ids: group.decode_leaders.clone(),
                 pd_group,
             },
             PDRole::Colocated => PDDecision::Single { variant_id: selected_variant_id.into() },
@@ -204,9 +209,9 @@ mod tests {
         let r = group_pd_variants(&v);
         let all: HashMap<String, HashMap<String, String>> = v.into_iter().collect();
         match r.resolve("p1", &all) {
-            PDDecision::Split { prefill_variant_id, decode_variant_id, pd_group } => {
+            PDDecision::Split { prefill_variant_id, decode_variant_ids, pd_group } => {
                 assert_eq!(prefill_variant_id, "p1");
-                assert_eq!(decode_variant_id, "d1");
+                assert_eq!(decode_variant_ids, vec!["d1"]);
                 assert_eq!(pd_group, "g1");
             }
             _ => panic!("expected Split"),
@@ -222,9 +227,9 @@ mod tests {
         let r = group_pd_variants(&v);
         let all: HashMap<String, HashMap<String, String>> = v.into_iter().collect();
         match r.resolve("d1", &all) {
-            PDDecision::Split { prefill_variant_id, decode_variant_id, .. } => {
+            PDDecision::Split { prefill_variant_id, decode_variant_ids, .. } => {
                 assert_eq!(prefill_variant_id, "p1");
-                assert_eq!(decode_variant_id, "d1");
+                assert!(decode_variant_ids.contains(&"d1".to_string()));
             }
             _ => panic!("expected Split"),
         }
@@ -251,6 +256,30 @@ mod tests {
         let r = group_pd_variants(&v);
         assert_eq!(r.pd_groups.len(), 2);
         assert_eq!(r.all_valid_variant_ids().len(), 4);
+    }
+
+    #[test]
+    fn test_1p_multi_d() {
+        let v = vec![
+            ("p1".into(), meta("prefill", "g1", true)),
+            ("d1".into(), meta("decode", "g1", true)),
+            ("d2".into(), meta("decode", "g1", true)),
+            ("d3".into(), meta("decode", "g1", true)),
+        ];
+        let r = group_pd_variants(&v);
+        assert_eq!(r.pd_groups["g1"].decode_leaders.len(), 3);
+
+        let all: HashMap<String, HashMap<String, String>> = v.into_iter().collect();
+        match r.resolve("p1", &all) {
+            PDDecision::Split { prefill_variant_id, decode_variant_ids, .. } => {
+                assert_eq!(prefill_variant_id, "p1");
+                assert_eq!(decode_variant_ids.len(), 3);
+                assert!(decode_variant_ids.contains(&"d1".to_string()));
+                assert!(decode_variant_ids.contains(&"d2".to_string()));
+                assert!(decode_variant_ids.contains(&"d3".to_string()));
+            }
+            _ => panic!("expected Split"),
+        }
     }
 
     #[test]

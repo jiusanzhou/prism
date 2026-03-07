@@ -756,7 +756,7 @@ impl ProxyHttp for PrismProxy {
                         }
                     }
 
-                    let (host, port, use_tls) = Self::parse_upstream(base_url)?;
+                    let (host, port, use_tls) = Self::parse_upstream(&base_url)?;
                     info!(
                         variant = %variant_id,
                         provider = %provider_id,
@@ -905,9 +905,9 @@ impl ProxyHttp for PrismProxy {
                 // Look up the provider's base_url and protocols
                 let provider = router.registry.providers.get(&chosen_provider);
 
-                let base_url = provider
-                    .map(|p| p.base_url.as_str())
-                    .unwrap_or("https://api.openai.com/v1");
+                let mut base_url = provider
+                    .map(|p| p.base_url.clone())
+                    .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
                 // Extract auth header from provider
                 // First try account auth (preferred — accounts carry the real API keys)
@@ -1031,6 +1031,7 @@ impl ProxyHttp for PrismProxy {
                 ctx.pd_decision = decision.pd_decision.clone();
                 if let Some(prism_core::plugins::pd_routing::PDDecision::Split {
                     ref prefill_variant_id,
+                    ref decode_variant_ids,
                     ..
                 }) = decision.pd_decision
                 {
@@ -1104,7 +1105,38 @@ impl ProxyHttp for PrismProxy {
                     }
                 }
 
-                let (host, port, use_tls) = Self::parse_upstream(base_url).inspect_err(|_| {
+                // ── P/D: override upstream to decode variant ──
+                if let Some(prism_core::plugins::pd_routing::PDDecision::Split {
+                    ref decode_variant_ids,
+                    ..
+                }) = ctx.pd_decision
+                {
+                    if !decode_variant_ids.is_empty() {
+                        // Pick decode variant: for now round-robin via attempt count
+                        // TODO: load-based selection
+                        let d_idx = (ctx.upstream_request_attempt_count as usize) % decode_variant_ids.len();
+                        let d_variant_id = &decode_variant_ids[d_idx];
+
+                        if let Some(d_variant) = router.registry.variants.get(d_variant_id) {
+                            if let Some(ref d_url) = d_variant.base_url {
+                                info!(
+                                    decode_variant = %d_variant_id,
+                                    decode_url = %d_url,
+                                    candidates = decode_variant_ids.len(),
+                                    "P/D Split: routing upstream to decode variant"
+                                );
+                                base_url = d_url.clone();
+                                // Update provider context with decode variant info
+                                if let Some(ref mut pctx) = ctx.provider_ctx {
+                                    pctx.variant_id = d_variant_id.clone();
+                                    pctx.base_url = d_url.clone();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let (host, port, use_tls) = Self::parse_upstream(&base_url).inspect_err(|_| {
                     error!(
                         provider = %decision.selected_provider,
                         base_url = %base_url,
