@@ -1,14 +1,17 @@
-//! Discovery Runner — loads WASM discovery plugins and runs them periodically.
+//! Discovery Runner — loads WASM discovery plugins and runs them.
 //!
-//! Replaces the old HTTP-based discovery_poller with a unified WASM plugin approach.
-//! All discovery sources go through the Discovery trait (WASM or static).
+//! Two modes:
+//! - **Streaming** (preferred): plugin exports `prism_discovery_run()`, runs in its
+//!   own thread, pushes events via `prism_discovery_push_event()`. Real-time.
+//! - **Polling** (fallback): plugin exports `prism_discovery_discover()`, host calls
+//!   it periodically. For backward compat with simple plugins.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use tracing::{error, info, warn};
 
-use prism_core::discovery::{Discovery, DiscoveryResult};
+use prism_core::discovery::Discovery;
 
 #[cfg(feature = "wasm")]
 use prism_core::discovery::WasmDiscovery;
@@ -17,12 +20,18 @@ use crate::config::{build_registry, build_router_from_config, load_config};
 use crate::config::types::{DiscoverySourceType, PrismConfig};
 use crate::state::AppState;
 
-/// Default interval for running discovery plugins.
-const DEFAULT_INTERVAL_SECS: u64 = 15;
+const DEFAULT_POLL_INTERVAL_SECS: u64 = 15;
+
+/// A loaded discovery plugin — either WASM (with streaming support) or generic.
+enum DiscoveryPlugin {
+    #[cfg(feature = "wasm")]
+    Wasm(WasmDiscovery),
+    Generic(Box<dyn Discovery>),
+}
 
 /// Build discovery plugins from config.
-fn load_discovery_plugins(config: &PrismConfig) -> Vec<Box<dyn Discovery>> {
-    let mut plugins: Vec<Box<dyn Discovery>> = Vec::new();
+fn load_discovery_plugins(config: &PrismConfig) -> Vec<(String, DiscoveryPlugin)> {
+    let mut plugins = Vec::new();
 
     for dc in config.all_discovery_configs() {
         if !dc.enabled {
@@ -34,13 +43,11 @@ fn load_discovery_plugins(config: &PrismConfig) -> Vec<Box<dyn Discovery>> {
             DiscoverySourceType::Wasm { wasm } => {
                 match WasmDiscovery::from_file(&dc.name, &wasm.path) {
                     Ok(mut discovery) => {
-                        // Pass plugin config as JSON string
                         if !dc.config.is_null() {
-                            let config_str = dc.config.to_string();
-                            discovery = discovery.with_config(config_str);
+                            discovery = discovery.with_config(dc.config.to_string());
                         }
                         info!(name = %dc.name, path = %wasm.path, "Loaded WASM discovery plugin");
-                        plugins.push(Box::new(discovery));
+                        plugins.push((dc.name.clone(), DiscoveryPlugin::Wasm(discovery)));
                     }
                     Err(e) => {
                         error!(name = %dc.name, path = %wasm.path, "Failed to load WASM discovery: {}", e);
@@ -49,70 +56,39 @@ fn load_discovery_plugins(config: &PrismConfig) -> Vec<Box<dyn Discovery>> {
             }
             #[cfg(not(feature = "wasm"))]
             DiscoverySourceType::Wasm { wasm } => {
-                warn!(
-                    name = %dc.name,
-                    path = %wasm.path,
-                    "WASM discovery plugin configured but 'wasm' feature is not enabled — skipping"
-                );
+                warn!(name = %dc.name, path = %wasm.path, "WASM feature not enabled — skipping");
             }
-            DiscoverySourceType::Static(_) => {
-                // Static discovery is handled by build_registry directly
-            }
+            DiscoverySourceType::Static(_) => {}
         }
     }
 
     plugins
 }
 
-/// Run all discovery plugins once and merge results into the registry.
-/// Returns the merged DiscoveryResult for logging.
-fn run_discovery_cycle(
-    state: &AppState,
-    plugins: &[Box<dyn Discovery>],
-) -> (usize, usize, usize) {
+/// Rebuild router from base config + discovery result, then swap.
+fn rebuild_and_swap(state: &AppState, event: &prism_core::discovery::DiscoveryEvent) {
+    use prism_core::discovery::DiscoveryEvent;
+
     let base_config = match load_config(&state.config_path) {
         Ok(c) => c,
         Err(e) => {
-            warn!("Discovery runner: failed to reload config: {}", e);
-            return (0, 0, 0);
+            warn!("Discovery runner: config reload failed: {}", e);
+            return;
         }
     };
 
     let mut registry = build_registry(&base_config);
-
-    let mut total_models = 0usize;
-    let mut total_variants = 0usize;
-    let mut errors = 0usize;
-
-    for plugin in plugins {
-        match plugin.discover() {
-            Ok(result) => {
-                total_models += result.models.len();
-                total_variants += result.variants.len();
-                info!(
-                    source = %plugin.name(),
-                    models = result.models.len(),
-                    variants = result.variants.len(),
-                    "Discovery OK"
-                );
-                registry.apply_discovery(&result);
-            }
-            Err(e) => {
-                errors += 1;
-                error!(source = %plugin.name(), "Discovery failed: {}", e);
-            }
-        }
-    }
+    registry.apply_event(event);
 
     let new_router = build_router_from_config(registry, &base_config.routing);
     state.swap_router(new_router);
-
-    (total_models, total_variants, errors)
 }
 
-/// Spawn the discovery runner background task.
+/// Spawn the discovery runner.
 ///
-/// Returns `None` if no WASM discovery plugins are configured.
+/// For each plugin:
+/// - If it supports streaming (`prism_discovery_run`): spawn a thread, consume events.
+/// - Otherwise: poll `discover()` periodically.
 pub fn spawn_discovery_runner(
     state: AppState,
     config: &PrismConfig,
@@ -125,52 +101,79 @@ pub fn spawn_discovery_runner(
         return None;
     }
 
-    let interval = Duration::from_secs(interval_secs.unwrap_or(DEFAULT_INTERVAL_SECS));
-    let plugin_names: Vec<&str> = plugins.iter().map(|p| p.name()).collect();
-
+    let interval = Duration::from_secs(interval_secs.unwrap_or(DEFAULT_POLL_INTERVAL_SECS));
+    let plugin_names: Vec<&str> = plugins.iter().map(|(n, _)| n.as_str()).collect();
     info!(
-        "🔍 Discovery runner starting — {} plugin(s): [{}], interval: {:?}",
+        "🔍 Discovery runner: {} plugin(s): [{}]",
         plugins.len(),
         plugin_names.join(", "),
-        interval,
     );
-
-    // Initial discovery run
-    let (models, variants, errors) = run_discovery_cycle(&state, &plugins);
-    info!(
-        "Initial discovery: {} models, {} variants, {} errors",
-        models, variants, errors
-    );
-
-    let plugins = Arc::new(plugins);
 
     let handle = tokio::spawn(async move {
-        let mut tick = tokio::time::interval(interval);
-        tick.tick().await; // skip first (already did initial run)
+        let mut poll_plugins: Vec<Box<dyn Discovery>> = Vec::new();
 
-        loop {
-            tick.tick().await;
-
-            // Run discovery in a blocking task (WASM execution is synchronous)
-            let state_clone = state.clone();
-            let plugins_clone = Arc::clone(&plugins);
-            let result = tokio::task::spawn_blocking(move || {
-                run_discovery_cycle(&state_clone, &plugins_clone)
-            }).await;
-
-            match result {
-                Ok((models, variants, errors)) => {
-                    info!(
-                        generation = state.generation(),
-                        models = models,
-                        variants = variants,
-                        errors = errors,
-                        "Discovery cycle complete"
-                    );
+        for (name, plugin) in plugins {
+            match plugin {
+                #[cfg(feature = "wasm")]
+                DiscoveryPlugin::Wasm(wasm_disc) => {
+                    if wasm_disc.supports_streaming() {
+                        let state_clone = state.clone();
+                        match wasm_disc.run_streaming() {
+                            Ok(rx) => {
+                                info!(plugin = %name, "Started in streaming mode (real-time)");
+                                let consumer_name = name.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    for event in rx {
+                                        log_event(&consumer_name, &event);
+                                        rebuild_and_swap(&state_clone, &event);
+                                    }
+                                    warn!(plugin = %consumer_name, "Event channel closed");
+                                });
+                                continue;
+                            }
+                            Err(e) => {
+                                warn!(plugin = %name, "Streaming failed, falling back to poll: {}", e);
+                                poll_plugins.push(Box::new(wasm_disc));
+                            }
+                        }
+                    } else {
+                        info!(plugin = %name, interval = ?interval, "Using poll mode (no prism_discovery_run export)");
+                        poll_plugins.push(Box::new(wasm_disc));
+                    }
                 }
-                Err(e) => {
-                    error!("Discovery task panicked: {}", e);
+                DiscoveryPlugin::Generic(p) => {
+                    info!(plugin = %name, interval = ?interval, "Using poll mode");
+                    poll_plugins.push(p);
                 }
+            }
+        }
+
+        // Poll loop for non-streaming plugins
+        if !poll_plugins.is_empty() {
+            let poll_plugins = Arc::new(poll_plugins);
+            let mut tick = tokio::time::interval(interval);
+
+            // Initial poll
+            {
+                let state_clone = state.clone();
+                let plugins_clone = Arc::clone(&poll_plugins);
+                let _ = tokio::task::spawn_blocking(move || {
+                    poll_once(&state_clone, &plugins_clone);
+                }).await;
+            }
+
+            loop {
+                tick.tick().await;
+                let state_clone = state.clone();
+                let plugins_clone = Arc::clone(&poll_plugins);
+                let _ = tokio::task::spawn_blocking(move || {
+                    poll_once(&state_clone, &plugins_clone);
+                }).await;
+            }
+        } else {
+            // All plugins are streaming — keep task alive
+            loop {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
             }
         }
     });
@@ -178,50 +181,62 @@ pub fn spawn_discovery_runner(
     Some(handle)
 }
 
+fn log_event(plugin: &str, event: &prism_core::discovery::DiscoveryEvent) {
+    use prism_core::discovery::DiscoveryEvent;
+    let desc = match event {
+        DiscoveryEvent::FullSync(r) => format!("full_sync ({} models, {} variants)", r.models.len(), r.variants.len()),
+        DiscoveryEvent::IncrementalUpsert(r) => format!("upsert ({} variants)", r.variants.len()),
+        DiscoveryEvent::Remove { variant_ids, .. } => format!("remove ({} variants)", variant_ids.len()),
+        DiscoveryEvent::VariantUpsert(v) => format!("variant_upsert({})", v.id),
+        DiscoveryEvent::VariantRemove(id) => format!("variant_remove({})", id),
+    };
+    info!(plugin = %plugin, "{}", desc);
+}
+
+/// Run one poll cycle for non-streaming plugins.
+fn poll_once(state: &AppState, plugins: &[Box<dyn Discovery>]) {
+    let base_config = match load_config(&state.config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Poll: config reload failed: {}", e);
+            return;
+        }
+    };
+
+    let mut registry = build_registry(&base_config);
+    let mut total_v = 0;
+
+    for plugin in plugins {
+        match plugin.discover() {
+            Ok(result) => {
+                total_v += result.variants.len();
+                registry.apply_discovery(&result);
+            }
+            Err(e) => {
+                error!(source = %plugin.name(), "Poll discover failed: {}", e);
+            }
+        }
+    }
+
+    let new_router = build_router_from_config(registry, &base_config.routing);
+    state.swap_router(new_router);
+
+    info!(generation = state.generation(), variants = total_v, "Poll cycle done");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_load_discovery_plugins_empty_config() {
+    fn test_load_empty_config() {
         let config = PrismConfig::default();
         let plugins = load_discovery_plugins(&config);
         assert!(plugins.is_empty());
     }
 
     #[test]
-    fn test_load_discovery_plugins_static_only() {
-        let mut config = PrismConfig::default();
-        config.discoveries.push(crate::config::types::DiscoveryConfig {
-            name: "static".into(),
-            source_type: DiscoverySourceType::Static("static".into()),
-            config: serde_json::Value::Null,
-            enabled: true,
-        });
-        let plugins = load_discovery_plugins(&config);
-        assert!(plugins.is_empty()); // Static is handled by build_registry
-    }
-
-    #[cfg(not(feature = "wasm"))]
-    #[test]
-    fn test_load_discovery_plugins_wasm_without_feature() {
-        let mut config = PrismConfig::default();
-        config.discoveries.push(crate::config::types::DiscoveryConfig {
-            name: "k8s".into(),
-            source_type: DiscoverySourceType::Wasm {
-                wasm: crate::config::types::DiscoveryWasmConfig {
-                    path: "./nonexistent.wasm".into(),
-                },
-            },
-            config: serde_json::Value::Null,
-            enabled: true,
-        });
-        let plugins = load_discovery_plugins(&config);
-        assert!(plugins.is_empty()); // No wasm feature
-    }
-
-    #[test]
-    fn test_load_discovery_plugins_disabled_skipped() {
+    fn test_disabled_plugin_skipped() {
         let mut config = PrismConfig::default();
         config.discoveries.push(crate::config::types::DiscoveryConfig {
             name: "disabled".into(),
