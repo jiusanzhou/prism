@@ -85,7 +85,7 @@ struct SSEEvent {
     models: HashMap<String, Vec<SidecarInstance>>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 struct SidecarInstance {
     address: String,
     #[serde(default)]
@@ -474,10 +474,53 @@ fn apply_sse_event(
     }
 }
 
-/// Rebuild registry from local instance map and swap router.
+/// Persist local state into AppState and rebuild registry from ALL providers.
 fn rebuild_from_local(state: &AppState, provider_id: &str, local: &InstanceMap) {
-    let result = instances_to_discovery_result(provider_id, local);
-    apply_discovery_result(state, provider_id, DiscoveryEvent::FullSync(result));
+    // 1. Serialize local InstanceMap to JSON Values for storage in AppState
+    let serialized: HashMap<String, Vec<serde_json::Value>> = local
+        .iter()
+        .map(|(k, v)| {
+            let vals: Vec<serde_json::Value> = v
+                .iter()
+                .filter_map(|inst| serde_json::to_value(inst).ok())
+                .collect();
+            (k.clone(), vals)
+        })
+        .collect();
+
+    // 2. Store in AppState (scoped to this provider)
+    {
+        let mut states = state.discovery_states.write().unwrap();
+        states.insert(provider_id.to_string(), serialized);
+    }
+
+    // 3. Merge all providers' discovery states into a single DiscoveryResult
+    let merged = {
+        let states = state.discovery_states.read().unwrap();
+        let mut merged = DiscoveryResult::default();
+        for (pid, provider_map) in states.iter() {
+            // Deserialize back to InstanceMap
+            let instance_map: InstanceMap = provider_map
+                .iter()
+                .map(|(model, vals)| {
+                    let instances: Vec<SidecarInstance> = vals
+                        .iter()
+                        .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                        .collect();
+                    (model.clone(), instances)
+                })
+                .collect();
+            let result = instances_to_discovery_result(pid, &instance_map);
+            // Merge into combined result
+            merged.models.extend(result.models);
+            merged.variants.extend(result.variants);
+            merged.pools.extend(result.pools);
+        }
+        merged
+    };
+
+    // 4. Build registry from static config + merged discovery
+    apply_discovery_result(state, provider_id, DiscoveryEvent::FullSync(merged));
 }
 
 /// Fetch /prism and apply as full sync.

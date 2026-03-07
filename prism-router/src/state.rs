@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use arc_swap::ArcSwap;
 
@@ -20,6 +21,9 @@ pub struct AppState {
     pub config_path: Arc<PathBuf>,
     /// Generation counter — incremented on each reload.
     pub config_generation: Arc<AtomicU64>,
+    /// Per-provider discovery state: provider_id → models→instances.
+    /// Written by individual sidecar consumers, read during registry rebuild.
+    pub discovery_states: Arc<RwLock<HashMap<String, HashMap<String, Vec<serde_json::Value>>>>>,
 }
 
 impl AppState {
@@ -30,6 +34,7 @@ impl AppState {
             metrics: Arc::new(MetricsCollector::new(1000)),
             config_path: Arc::new(config_path),
             config_generation: Arc::new(AtomicU64::new(0)),
+            discovery_states: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
