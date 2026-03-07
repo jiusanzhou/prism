@@ -202,6 +202,7 @@ mod tests {
                 // Self-hosted pod — has base_url so prefix affinity activates
                 base_url: Some(format!("http://{variant_id}:8000")),
                 upstream_model_name: None,
+            metadata: std::collections::HashMap::new(),
             },
             model: Model {
                 id: "model-1".into(),

@@ -311,6 +311,9 @@ pub struct ModelVariant {
     /// E.g., user sees "deepseek-r1" but upstream expects "deepseek-reasoner".
     #[serde(default)]
     pub upstream_model_name: Option<String>,
+    /// Arbitrary key-value metadata (e.g. P/D role, pd_group, dc).
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub metadata: std::collections::HashMap<String, String>,
 }
 
 // ──────────────────────────────────────────────

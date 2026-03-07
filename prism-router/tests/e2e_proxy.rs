@@ -192,6 +192,7 @@ fn build_test_registry(mock_port: u16) -> InMemoryRegistry {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
+    metadata: std::collections::HashMap::new(),
     });
 
     // Pool
@@ -234,6 +235,7 @@ fn build_test_registry_with_model_rewrite(mock_port: u16) -> InMemoryRegistry {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: Some("deepseek-reasoner".to_string()),
+    metadata: std::collections::HashMap::new(),
     });
 
     // Add to pool
@@ -610,6 +612,7 @@ mod proxy_tests {
             status: VariantStatus::Active,
             base_url: None,
             upstream_model_name: None,
+        metadata: std::collections::HashMap::new(),
         });
         registry.add_pool(ModelPool {
             id: "default".into(),
@@ -1091,6 +1094,7 @@ mod provider_plugin_e2e {
             performance: ModelPerformance::default(),
             pricing_override: None, status: VariantStatus::Active,
             base_url: None, upstream_model_name: None,
+        metadata: std::collections::HashMap::new(),
         });
         registry.add_pool(ModelPool {
             id: "default".into(), name: "Default".into(),

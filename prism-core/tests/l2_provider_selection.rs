@@ -154,6 +154,7 @@ fn build_multi_provider_registry() -> InMemoryRegistry {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
+    metadata: std::collections::HashMap::new(),
     });
 
     reg.add_variant(ModelVariant {
@@ -183,6 +184,7 @@ fn build_multi_provider_registry() -> InMemoryRegistry {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
+    metadata: std::collections::HashMap::new(),
     });
 
     reg.add_variant(ModelVariant {
@@ -197,6 +199,7 @@ fn build_multi_provider_registry() -> InMemoryRegistry {
         status: VariantStatus::Disabled,
         base_url: None,
         upstream_model_name: None,
+    metadata: std::collections::HashMap::new(),
     });
 
     reg.add_pool(ModelPool {
@@ -403,6 +406,7 @@ fn test_quota_aware_selection() {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
+    metadata: std::collections::HashMap::new(),
     });
 
     // Cheap variant: current_qps = 0.08 (~5% of limit)
@@ -429,6 +433,7 @@ fn test_quota_aware_selection() {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
+    metadata: std::collections::HashMap::new(),
     });
 
     reg.add_pool(ModelPool {

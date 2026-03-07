@@ -146,6 +146,7 @@ fn build_resilience_registry() -> InMemoryRegistry {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
+    metadata: std::collections::HashMap::new(),
     });
 
     reg.add_variant(ModelVariant {
@@ -171,6 +172,7 @@ fn build_resilience_registry() -> InMemoryRegistry {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
+    metadata: std::collections::HashMap::new(),
     });
 
     reg.add_pool(ModelPool {

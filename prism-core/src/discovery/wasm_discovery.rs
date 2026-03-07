@@ -887,6 +887,7 @@ mod tests {
                 status: VariantStatus::Active,
                 base_url: None,
                 upstream_model_name: None,
+            metadata: std::collections::HashMap::new(),
             }],
             pools: vec![ModelPool {
                 id: "test-pool".to_string(),

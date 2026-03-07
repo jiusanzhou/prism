@@ -1155,6 +1155,7 @@ mod tests {
                 status: VariantStatus::Active,
                 base_url: None,
                 upstream_model_name: None,
+            metadata: std::collections::HashMap::new(),
             },
             model: Model {
                 id: opts.model_id.into(),
@@ -2416,6 +2417,7 @@ mod tests {
                 status: VariantStatus::Active,
                 base_url: None,
                 upstream_model_name: None,
+            metadata: std::collections::HashMap::new(),
             },
         );
         reg.variants.insert(
@@ -2432,6 +2434,7 @@ mod tests {
                 status: VariantStatus::Active,
                 base_url: None,
                 upstream_model_name: None,
+            metadata: std::collections::HashMap::new(),
             },
         );
 

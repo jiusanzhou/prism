@@ -95,6 +95,7 @@ fn build_multi_account_registry() -> InMemoryRegistry {
             status: VariantStatus::Active,
             base_url: None,
             upstream_model_name: None,
+        metadata: std::collections::HashMap::new(),
         });
     }
 
@@ -267,6 +268,7 @@ fn test_soft_affinity_migrates_on_overload() {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
+    metadata: std::collections::HashMap::new(),
     });
 
     reg.add_variant(ModelVariant {
@@ -292,6 +294,7 @@ fn test_soft_affinity_migrates_on_overload() {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
+    metadata: std::collections::HashMap::new(),
     });
 
     reg.add_pool(ModelPool {
@@ -408,6 +411,7 @@ fn test_hard_affinity_rejects_on_overload() {
             status: VariantStatus::Active,
             base_url: None,
             upstream_model_name: None,
+        metadata: std::collections::HashMap::new(),
         });
     }
 

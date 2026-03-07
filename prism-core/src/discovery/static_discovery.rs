@@ -177,6 +177,7 @@ impl StaticDiscovery {
                 status: VariantStatus::Active,
                 base_url: vc.base_url.clone(),
                 upstream_model_name: vc.upstream_model_name.clone(),
+                metadata: std::collections::HashMap::new(),
             });
         }
 

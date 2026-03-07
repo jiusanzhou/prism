@@ -559,6 +559,7 @@ mod tests {
             status: VariantStatus::Active,
             base_url: None,
             upstream_model_name: None,
+        metadata: std::collections::HashMap::new(),
         });
 
         registry.add_pool(ModelPool {

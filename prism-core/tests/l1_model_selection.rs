@@ -110,6 +110,7 @@ fn make_variant(
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
+    metadata: std::collections::HashMap::new(),
     }
 }
 
