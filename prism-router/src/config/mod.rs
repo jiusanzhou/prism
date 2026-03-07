@@ -423,7 +423,7 @@ mod tests {
             ProviderConfig {
                 provider_type: None,
                 api_key: Some("sk-base".into()),
-                base_url: "https://base.com".into(),
+                base_url: Some("https://base.com".to_string()),
                 timeout_ms: None,
                 protocols: vec![],
                 headers: std::collections::HashMap::new(),
@@ -433,6 +433,7 @@ mod tests {
                 aws_secret_key: None,
                 circuit_breaker_threshold: 5,
                 circuit_breaker_recovery_secs: 30,
+                discovery: None,
             },
         );
 
@@ -442,7 +443,7 @@ mod tests {
             ProviderConfig {
                 provider_type: None,
                 api_key: Some("sk-ant".into()),
-                base_url: "https://anthropic.com".into(),
+                base_url: Some("https://anthropic.com".to_string()),
                 timeout_ms: None,
                 protocols: vec![],
                 headers: std::collections::HashMap::new(),
@@ -452,6 +453,7 @@ mod tests {
                 aws_secret_key: None,
                 circuit_breaker_threshold: 5,
                 circuit_breaker_recovery_secs: 30,
+                discovery: None,
             },
         );
 

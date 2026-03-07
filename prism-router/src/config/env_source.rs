@@ -94,7 +94,8 @@ impl ConfigSource for EnvSource {
                             .or_insert_with(|| ProviderConfig {
                                 provider_type: None,
                                 api_key: None,
-                                base_url: String::new(),
+                                base_url: None,
+                                    discovery: None,
                                 timeout_ms: None,
                                 protocols: vec![],
                                 auth_type: Default::default(),
@@ -108,7 +109,7 @@ impl ConfigSource for EnvSource {
 
                     match field {
                         "URL" | "BASEURL" => {
-                            entry.base_url = value;
+                            entry.base_url = Some(value);
                         }
                         "KEY" | "APIKEY" => {
                             entry.api_key = Some(value);
@@ -149,7 +150,7 @@ mod tests {
         let source = EnvSource::with_prefix("PRISM_ENV2_");
         let config = source.load().unwrap();
         let provider = config.providers.get("openai").expect("openai provider");
-        assert_eq!(provider.base_url, "https://api.openai.com/v1");
+        assert_eq!(provider.base_url, Some("https://api.openai.com/v1".to_string()));
         assert_eq!(provider.api_key.as_deref(), Some("sk-test"));
         std::env::remove_var("PRISM_ENV2_PROVIDER_OPENAI_BASEURL");
         std::env::remove_var("PRISM_ENV2_PROVIDER_OPENAI_APIKEY");

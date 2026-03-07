@@ -287,7 +287,7 @@ fn to_static_discovery_config(config: &PrismConfig) -> StaticDiscoveryConfig {
                 StaticProviderConfig {
                     provider_type: pc.provider_type.clone(),
                     api_key: pc.api_key.clone(),
-                    base_url: pc.base_url.clone(),
+                    base_url: pc.base_url.clone().unwrap_or_default(),
                     protocols: pc.protocols.clone(),
                     headers: pc.headers.clone(),
                 },

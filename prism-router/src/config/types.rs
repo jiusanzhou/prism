@@ -203,7 +203,8 @@ pub struct ProviderConfig {
     pub provider_type: Option<String>,
     #[serde(default)]
     pub api_key: Option<String>,
-    pub base_url: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
     #[serde(default)]
     pub timeout_ms: Option<u32>,
     #[serde(default)]
@@ -230,12 +231,48 @@ pub struct ProviderConfig {
     /// When set, these take precedence over the default `Authorization: Bearer <api_key>`.
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// Discovery configuration for dynamic instance discovery (e.g. K8s).
+    /// When set, Prism will auto-discover instances and register them as variants.
+    #[serde(default)]
+    pub discovery: Option<ProviderDiscoveryConfig>,
     /// Circuit breaker: consecutive failures before opening circuit.
     #[serde(default = "default_circuit_breaker_threshold")]
     pub circuit_breaker_threshold: u32,
     /// Circuit breaker: seconds to wait before half-open probe.
     #[serde(default = "default_circuit_breaker_recovery_secs")]
     pub circuit_breaker_recovery_secs: u64,
+}
+
+/// Discovery configuration embedded in a provider.
+/// Allows providers to auto-discover instances from K8s clusters, etc.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderDiscoveryConfig {
+    /// Kubeconfig file path (empty = in-cluster).
+    #[serde(default)]
+    pub kubeconfig: Option<String>,
+    /// Kubernetes namespace to watch (empty = all namespaces).
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// Pod label selector override (default: "app=inference-service").
+    #[serde(default)]
+    pub label_selector: Option<String>,
+    /// Enable P/D topology filtering.
+    #[serde(default)]
+    pub enable_pd_filter: bool,
+    /// Cluster name for multi-cluster identification.
+    #[serde(default)]
+    pub cluster_name: Option<String>,
+    /// Sidecar address override — when set, uses an external Go sidecar
+    /// instead of built-in discovery. Format: "host:port" or "http://host:port".
+    #[serde(default)]
+    pub sidecar_url: Option<String>,
+    /// Poll interval in seconds (for HTTP-based sidecar polling fallback).
+    #[serde(default = "default_discovery_poll_secs")]
+    pub poll_interval_secs: u64,
+}
+
+fn default_discovery_poll_secs() -> u64 {
+    30
 }
 
 /// Model configuration.
