@@ -1,6 +1,8 @@
-//! K8s Sidecar Discovery — connects to Go k8s-discovery sidecar via SSE or HTTP poll.
+//! Sidecar Discovery — connects to any discovery sidecar implementing the Prism
+//! Sidecar Discovery Protocol (SSE `/events` + HTTP `/prism`).
 //!
-//! Spawned automatically for providers with `type: k8s` and `discovery` config.
+//! Spawned automatically for providers with `discovery.sidecar_url` config.
+//! Works with the Go k8s-discovery sidecar or any compatible implementation.
 
 use std::collections::HashMap;
 use std::io::BufRead;
@@ -240,15 +242,15 @@ fn apply_discovery_result(state: &AppState, provider_id: &str, event: DiscoveryE
         provider = %provider_id,
         variants = n_variants,
         generation = state.generation(),
-        "Registry updated from K8s discovery"
+        "Registry updated from Sidecar discovery"
     );
 }
 
-/// Spawn a K8s discovery consumer for a provider.
+/// Spawn a Sidecar discovery consumer for a provider.
 ///
 /// Connects to the Go sidecar via SSE for real-time updates.
 /// Falls back to HTTP polling on error, auto-reconnects.
-pub fn spawn_k8s_discovery(
+pub fn spawn_sidecar_discovery(
     state: AppState,
     provider_id: String,
     discovery_config: ProviderDiscoveryConfig,
@@ -261,7 +263,7 @@ pub fn spawn_k8s_discovery(
     info!(
         provider = %provider_id,
         sidecar = %sidecar_url,
-        "Starting K8s discovery consumer"
+        "Starting Sidecar discovery consumer"
     );
 
     tokio::spawn(async move {

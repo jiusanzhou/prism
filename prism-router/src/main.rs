@@ -33,7 +33,7 @@ pub mod ratelimit;
 #[cfg(feature = "proxy")]
 mod circuit_breaker;
 mod discovery_runner;
-mod k8s_discovery;
+mod sidecar_discovery;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -126,16 +126,16 @@ async fn main() {
     );
 
     // Start K8s discovery consumers for providers with type: k8s
-    let mut _k8s_handles = Vec::new();
+    let mut _sidecar_handles = Vec::new();
     for (provider_id, provider_config) in &config.providers {
         if provider_config.provider_type.as_deref() == Some("k8s") {
             if let Some(ref disc_config) = provider_config.discovery {
-                let handle = k8s_discovery::spawn_k8s_discovery(
+                let handle = sidecar_discovery::spawn_sidecar_discovery(
                     state.clone(),
                     provider_id.clone(),
                     disc_config.clone(),
                 );
-                _k8s_handles.push(handle);
+                _sidecar_handles.push(handle);
             } else {
                 tracing::warn!(
                     provider = %provider_id,
