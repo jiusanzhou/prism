@@ -147,6 +147,14 @@ impl HealthChecker {
                 s.consecutive_failures = 1;
                 s.last_check = Some(Instant::now());
                 s.last_failure_reason = Some(reason.to_string());
+                if 1 >= threshold {
+                    s.status = EndpointHealthStatus::Unhealthy;
+                    warn!(
+                        endpoint = %endpoint_id,
+                        reason = %reason,
+                        "Endpoint marked UNHEALTHY on first failure"
+                    );
+                }
                 s
             });
     }
