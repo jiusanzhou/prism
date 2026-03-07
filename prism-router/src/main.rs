@@ -103,7 +103,7 @@ async fn main() {
 
     // Build registry and router
     let registry = build_registry(&config);
-    let router = prism_core::router::PrismRouter::new(registry);
+    let router = crate::config::build_router_from_config(registry, &config.routing);
     let state = AppState::new(router, cli.config.clone());
 
     // Start config watcher

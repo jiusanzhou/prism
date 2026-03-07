@@ -12,7 +12,7 @@ pub use env_source::EnvSource;
 #[allow(unused_imports)]
 pub use file_source::{ConfigFormat, FileSource};
 #[allow(unused_imports)]
-pub use registry::{build_registry, build_registry_with_discoveries};
+pub use registry::{build_registry, build_registry_with_discoveries, build_router_from_config, parse_strategy_from_config};
 pub use types::*;
 #[cfg(feature = "wasm")]
 #[allow(unused_imports)]
