@@ -32,6 +32,8 @@ mod proxy;
 pub mod ratelimit;
 #[cfg(feature = "proxy")]
 mod circuit_breaker;
+mod http_discovery;
+mod discovery_poller;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -114,6 +116,12 @@ async fn main() {
             debounce: Duration::from_secs(2),
             ..Default::default()
         },
+    );
+
+    // Start HTTP discovery poller (if any HTTP discovery sources configured)
+    let _discovery_poller = discovery_poller::spawn_discovery_poller(
+        state.clone(),
+        &config,
     );
 
     // Start metrics flush background task (every 5 seconds)

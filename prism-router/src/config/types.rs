@@ -638,10 +638,36 @@ pub struct DiscoveryConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum DiscoverySourceType {
+    /// HTTP endpoint: `{ http: { url: "http://localhost:9091/prism" } }`
+    Http { http: DiscoveryHttpConfig },
     /// WASM module: `{ wasm: { path: "./path.wasm" } }`
     Wasm { wasm: DiscoveryWasmConfig },
     /// Static inline config: `"static"`
     Static(String),
+}
+
+/// HTTP discovery source configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveryHttpConfig {
+    /// HTTP endpoint URL.
+    pub url: String,
+    /// Poll interval in seconds (default: 30).
+    #[serde(default = "default_discovery_interval")]
+    pub interval_secs: u64,
+    /// Request timeout in seconds (default: 10).
+    #[serde(default = "default_discovery_timeout")]
+    pub timeout_secs: u64,
+    /// Optional bearer token.
+    #[serde(default)]
+    pub bearer_token: Option<String>,
+}
+
+fn default_discovery_interval() -> u64 {
+    30
+}
+
+fn default_discovery_timeout() -> u64 {
+    10
 }
 
 /// WASM discovery source configuration.
