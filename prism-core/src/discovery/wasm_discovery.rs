@@ -31,6 +31,9 @@ use wasmtime::{Caller, Engine, Extern, Linker, Module, Store};
 
 use crate::discovery::{Discovery, DiscoveryError, DiscoveryResult};
 
+use std::collections::HashMap;
+use std::io::BufRead;
+
 // ════════════════════════════════════════════════
 // Host state
 // ════════════════════════════════════════════════
@@ -41,6 +44,15 @@ struct HostState {
     result_json: Option<Vec<u8>>,
     /// Log messages captured from `proxy_log` calls.
     log_messages: Vec<(i32, String)>,
+    /// Open SSE connections keyed by handle.
+    sse_streams: HashMap<i32, SseStream>,
+    /// Next SSE handle counter.
+    next_sse_handle: i32,
+}
+
+/// An open SSE connection.
+struct SseStream {
+    reader: std::io::BufReader<Box<dyn std::io::Read + Send + Sync>>,
 }
 
 // ════════════════════════════════════════════════
@@ -164,7 +176,321 @@ impl WasmDiscovery {
             )
             .map_err(|e| format!("Failed to link prism_discovery_set_result: {}", e))?;
 
+        // ── prism_http_fetch(url_ptr, url_len, opts_ptr, opts_len) -> result_ptr ──
+        linker
+            .func_wrap(
+                "env",
+                "prism_http_fetch",
+                |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
+                 url_ptr: i32,
+                 url_len: i32,
+                 opts_ptr: i32,
+                 opts_len: i32|
+                 -> i32 {
+                    let memory = match caller.get_export("memory") {
+                        Some(Extern::Memory(m)) => m,
+                        _ => return 0,
+                    };
+                    let data = memory.data(&caller);
+
+                    // Read URL
+                    let url = {
+                        let p = url_ptr as usize;
+                        let l = url_len as usize;
+                        if p + l > data.len() { return 0; }
+                        String::from_utf8_lossy(&data[p..p + l]).to_string()
+                    };
+
+                    // Read options JSON
+                    let opts_json = if opts_len > 0 {
+                        let p = opts_ptr as usize;
+                        let l = opts_len as usize;
+                        if p + l > data.len() { return 0; }
+                        String::from_utf8_lossy(&data[p..p + l]).to_string()
+                    } else {
+                        "{}".to_string()
+                    };
+
+                    #[derive(serde::Deserialize, Default)]
+                    struct FetchOpts {
+                        #[serde(default = "default_get")]
+                        method: String,
+                        #[serde(default)]
+                        headers: std::collections::HashMap<String, String>,
+                        #[serde(default)]
+                        body: Option<String>,
+                    }
+                    fn default_get() -> String { "GET".to_string() }
+
+                    let opts: FetchOpts = serde_json::from_str(&opts_json).unwrap_or_default();
+
+                    // Execute HTTP request via ureq
+                    let response_json = match execute_http_fetch(&url, &opts.method, &opts.headers, opts.body.as_deref()) {
+                        Ok(json) => json,
+                        Err(e) => {
+                            serde_json::json!({"error": e}).to_string()
+                        }
+                    };
+
+                    // Write response back to WASM memory
+                    let resp_bytes = response_json.as_bytes();
+                    let total = 4 + resp_bytes.len();
+
+                    let alloc_fn = match caller.get_export("proxy_on_memory_allocate") {
+                        Some(Extern::Func(f)) => f,
+                        _ => return 0,
+                    };
+                    let mut results = [wasmtime::Val::I32(0)];
+                    if alloc_fn.call(&mut caller, &[wasmtime::Val::I32(total as i32)], &mut results).is_err() {
+                        return 0;
+                    }
+                    let ptr = results[0].unwrap_i32();
+
+                    let mem = match caller.get_export("memory") {
+                        Some(Extern::Memory(m)) => m,
+                        _ => return 0,
+                    };
+                    let mem_data = mem.data_mut(&mut caller);
+                    let p = ptr as usize;
+                    if p + total > mem_data.len() { return 0; }
+                    mem_data[p..p + 4].copy_from_slice(&(resp_bytes.len() as u32).to_le_bytes());
+                    mem_data[p + 4..p + 4 + resp_bytes.len()].copy_from_slice(resp_bytes);
+                    ptr
+                },
+            )
+            .map_err(|e| format!("Failed to link prism_http_fetch: {}", e))?;
+
+        // ── prism_sse_open(url_ptr, url_len, opts_ptr, opts_len) -> handle ──
+        linker
+            .func_wrap(
+                "env",
+                "prism_sse_open",
+                |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
+                 url_ptr: i32,
+                 url_len: i32,
+                 opts_ptr: i32,
+                 opts_len: i32|
+                 -> i32 {
+                    let memory = match caller.get_export("memory") {
+                        Some(Extern::Memory(m)) => m,
+                        _ => return -1,
+                    };
+                    let data = memory.data(&caller);
+
+                    let url = {
+                        let p = url_ptr as usize;
+                        let l = url_len as usize;
+                        if p + l > data.len() { return -1; }
+                        String::from_utf8_lossy(&data[p..p + l]).to_string()
+                    };
+
+                    // Parse optional headers
+                    let mut headers: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                    if opts_len > 0 {
+                        let p = opts_ptr as usize;
+                        let l = opts_len as usize;
+                        if p + l <= data.len() {
+                            let opts_str = String::from_utf8_lossy(&data[p..p + l]).to_string();
+                            if let Ok(h) = serde_json::from_str::<std::collections::HashMap<String, String>>(&opts_str) {
+                                headers = h;
+                            }
+                        }
+                    }
+
+                    // Open SSE connection
+                    let mut req = ureq::get(&url)
+                        .set("Accept", "text/event-stream")
+                        .set("Cache-Control", "no-cache");
+                    for (k, v) in &headers {
+                        req = req.set(k, v);
+                    }
+
+                    match req.call() {
+                        Ok(resp) => {
+                            let reader = std::io::BufReader::new(resp.into_reader());
+                            let state = caller.data().clone();
+                            let mut s = match state.lock() {
+                                Ok(s) => s,
+                                Err(_) => return -1,
+                            };
+                            let handle = s.next_sse_handle;
+                            s.next_sse_handle += 1;
+                            s.sse_streams.insert(handle, SseStream { reader });
+                            handle
+                        }
+                        Err(e) => {
+                            tracing::error!(target: "wasm_discovery", "SSE open failed: {}", e);
+                            -1
+                        }
+                    }
+                },
+            )
+            .map_err(|e| format!("Failed to link prism_sse_open: {}", e))?;
+
+        // ── prism_sse_next(handle) -> ptr ──
+        // Returns len-prefixed JSON: {"event":"type","data":"..."} or {"done":true}
+        linker
+            .func_wrap(
+                "env",
+                "prism_sse_next",
+                |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
+                 handle: i32|
+                 -> i32 {
+                    let state = caller.data().clone();
+                    let event_json = {
+                        let mut s = match state.lock() {
+                            Ok(s) => s,
+                            Err(_) => return 0,
+                        };
+                        let stream = match s.sse_streams.get_mut(&handle) {
+                            Some(s) => s,
+                            None => return 0,
+                        };
+                        read_sse_event(&mut stream.reader)
+                    };
+
+                    let json_str = match event_json {
+                        Some(json) => json,
+                        None => r#"{"done":true}"#.to_string(),
+                    };
+
+                    // Write to WASM memory
+                    let bytes = json_str.as_bytes();
+                    let total = 4 + bytes.len();
+
+                    let alloc_fn = match caller.get_export("proxy_on_memory_allocate") {
+                        Some(Extern::Func(f)) => f,
+                        _ => return 0,
+                    };
+                    let mut results = [wasmtime::Val::I32(0)];
+                    if alloc_fn.call(&mut caller, &[wasmtime::Val::I32(total as i32)], &mut results).is_err() {
+                        return 0;
+                    }
+                    let ptr = results[0].unwrap_i32();
+
+                    let mem = match caller.get_export("memory") {
+                        Some(Extern::Memory(m)) => m,
+                        _ => return 0,
+                    };
+                    let mem_data = mem.data_mut(&mut caller);
+                    let p = ptr as usize;
+                    if p + total > mem_data.len() { return 0; }
+                    mem_data[p..p + 4].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
+                    mem_data[p + 4..p + 4 + bytes.len()].copy_from_slice(bytes);
+                    ptr
+                },
+            )
+            .map_err(|e| format!("Failed to link prism_sse_next: {}", e))?;
+
+        // ── prism_sse_close(handle) ──
+        linker
+            .func_wrap(
+                "env",
+                "prism_sse_close",
+                |caller: Caller<'_, Arc<Mutex<HostState>>>,
+                 handle: i32| {
+                    let state = caller.data().clone();
+                    let _ = state.lock().map(|mut s| { s.sse_streams.remove(&handle); });
+                },
+            )
+            .map_err(|e| format!("Failed to link prism_sse_close: {}", e))?;
+
         Ok(())
+    }
+}
+
+/// Execute an HTTP request via ureq and return JSON response string.
+fn execute_http_fetch(
+    url: &str,
+    method: &str,
+    headers: &std::collections::HashMap<String, String>,
+    body: Option<&str>,
+) -> Result<String, String> {
+    let mut req = match method.to_uppercase().as_str() {
+        "GET" => ureq::get(url),
+        "POST" => ureq::post(url),
+        "PUT" => ureq::put(url),
+        "DELETE" => ureq::delete(url),
+        "PATCH" => ureq::patch(url),
+        "HEAD" => ureq::head(url),
+        other => return Err(format!("unsupported method: {}", other)),
+    };
+
+    for (k, v) in headers {
+        req = req.set(k, v);
+    }
+
+    let resp = if let Some(b) = body {
+        req.send_string(b)
+    } else {
+        req.call()
+    };
+
+    match resp {
+        Ok(r) => {
+            let status = r.status();
+            let resp_headers: std::collections::HashMap<String, String> = r
+                .headers_names()
+                .into_iter()
+                .filter_map(|name| {
+                    r.header(&name).map(|v| (name, v.to_string()))
+                })
+                .collect();
+            let body_str = r.into_string().unwrap_or_default();
+            Ok(serde_json::json!({
+                "status": status,
+                "headers": resp_headers,
+                "body": body_str,
+            }).to_string())
+        }
+        Err(ureq::Error::Status(code, r)) => {
+            let body_str = r.into_string().unwrap_or_default();
+            Ok(serde_json::json!({
+                "status": code,
+                "body": body_str,
+            }).to_string())
+        }
+        Err(e) => Err(format!("request failed: {}", e)),
+    }
+}
+
+/// Read one SSE event from a BufReader. Returns None on EOF/error.
+fn read_sse_event(reader: &mut std::io::BufReader<Box<dyn std::io::Read + Send + Sync>>) -> Option<String> {
+    let mut event_type = String::new();
+    let mut data_lines = Vec::new();
+    let mut got_data = false;
+
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => return None, // EOF
+            Err(_) => return None,
+            Ok(_) => {}
+        }
+
+        let line = line.trim_end_matches('\n').trim_end_matches('\r');
+
+        if line.is_empty() {
+            // Empty line = end of event
+            if got_data {
+                let data = data_lines.join("\n");
+                return Some(serde_json::json!({
+                    "event": if event_type.is_empty() { "message" } else { &event_type },
+                    "data": data,
+                }).to_string());
+            }
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("event:") {
+            event_type = rest.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix("data:") {
+            data_lines.push(rest.trim().to_string());
+            got_data = true;
+        } else if line.starts_with(':') {
+            // Comment (keepalive), skip
+            continue;
+        }
     }
 }
 
@@ -178,6 +504,8 @@ impl Discovery for WasmDiscovery {
         let host_state = Arc::new(Mutex::new(HostState {
             result_json: None,
             log_messages: Vec::new(),
+            sse_streams: HashMap::new(),
+            next_sse_handle: 1,
         }));
 
         let mut store = Store::new(&self.engine, host_state.clone());
