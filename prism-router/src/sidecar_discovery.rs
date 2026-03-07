@@ -69,7 +69,7 @@ struct SidecarPool {
 }
 
 /// SSE event data from `/events`.
-/// All event types (full_sync, instance_add, instance_del, model_remove) share this structure.
+/// Go sidecar sends: { type, model?, instance?, timestamp, models? (full_sync only) }
 #[derive(Debug, Deserialize)]
 struct SSEEvent {
     #[serde(default, rename = "type")]
@@ -80,11 +80,7 @@ struct SSEEvent {
     instance: Option<SidecarInstance>,
     #[serde(default)]
     timestamp: i64,
-    /// Post-event snapshot of all models→instances. Present on incremental events
-    /// to allow immediate full-sync without HTTP re-poll.
-    #[serde(default)]
-    snapshot: Option<HashMap<String, Vec<SidecarInstance>>>,
-    /// Legacy full_sync format: models map directly in event data.
+    /// full_sync: complete models→instances map.
     #[serde(default)]
     models: HashMap<String, Vec<SidecarInstance>>,
 }
@@ -222,6 +218,24 @@ fn instances_to_discovery_result(
     result
 }
 
+/// Fetch /discover — raw models→instances map (used for initial sync + local state seed).
+fn fetch_discover(sidecar_url: &str) -> Result<InstanceMap, String> {
+    #[derive(Deserialize)]
+    struct DiscoverResp {
+        #[serde(default)]
+        models: HashMap<String, Vec<SidecarInstance>>,
+    }
+    let url = format!("{}/discover", sidecar_url.trim_end_matches('/'));
+    let resp = ureq::get(&url)
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .map_err(|e| format!("HTTP /discover: {}", e))?;
+    let dr: DiscoverResp = resp
+        .into_json()
+        .map_err(|e| format!("parse /discover: {}", e))?;
+    Ok(dr.models)
+}
+
 /// Fetch /prism payload from sidecar via HTTP.
 fn fetch_prism_payload(sidecar_url: &str) -> Result<SidecarPrismPayload, String> {
     let url = format!("{}/prism", sidecar_url.trim_end_matches('/'));
@@ -321,7 +335,13 @@ pub fn spawn_sidecar_discovery(
     })
 }
 
-/// Blocking SSE event loop.
+/// Local state maintained from SSE events — the single source of truth for this provider.
+type InstanceMap = HashMap<String, Vec<SidecarInstance>>;
+
+/// Blocking SSE event loop with local state management.
+///
+/// Maintains a local `InstanceMap` that is updated incrementally from SSE events.
+/// On each state change, rebuilds the registry from the local map (no HTTP round-trip).
 fn run_sse_loop(
     state: &AppState,
     provider_id: &str,
@@ -335,10 +355,20 @@ fn run_sse_loop(
 
     info!(provider = %provider_id, "SSE connected");
 
-    // Initial sync: fetch full state via HTTP (SSE initial full_sync may be empty)
-    if let Err(e) = poll_and_apply(state, provider_id, sidecar_url) {
-        warn!(provider = %provider_id, "Initial poll failed: {}", e);
-    }
+    // Initial sync via HTTP /prism (SSE initial full_sync may arrive empty)
+    let mut local: InstanceMap = match fetch_discover(sidecar_url) {
+        Ok(models) => {
+            let n_models = models.len();
+            let n_inst: usize = models.values().map(|v| v.len()).sum();
+            info!(provider = %provider_id, models = n_models, instances = n_inst, "Initial sync from /discover");
+            rebuild_from_local(state, provider_id, &models);
+            models
+        }
+        Err(e) => {
+            warn!(provider = %provider_id, "Initial /discover failed: {}", e);
+            HashMap::new()
+        }
+    };
 
     let reader = std::io::BufReader::new(resp.into_reader());
     let mut event_type = String::new();
@@ -352,7 +382,9 @@ fn run_sse_loop(
         } else if line.starts_with("data:") {
             data_buf = line[5..].trim().to_string();
         } else if line.is_empty() && !data_buf.is_empty() {
-            process_sse_event(state, provider_id, &event_type, &data_buf, sidecar_url);
+            if apply_sse_event(&mut local, state, provider_id, &event_type, &data_buf) {
+                rebuild_from_local(state, provider_id, &local);
+            }
             event_type.clear();
             data_buf.clear();
         }
@@ -361,76 +393,91 @@ fn run_sse_loop(
     Ok(())
 }
 
-/// Process a single SSE event.
-fn process_sse_event(
-    state: &AppState,
+/// Apply a single SSE event to local state. Returns true if state changed.
+fn apply_sse_event(
+    local: &mut InstanceMap,
+    _state: &AppState,
     provider_id: &str,
     event_type: &str,
     data: &str,
-    sidecar_url: &str,
-) {
+) -> bool {
+    let event: SSEEvent = match serde_json::from_str(data) {
+        Ok(e) => e,
+        Err(e) => {
+            error!(provider = %provider_id, event = event_type, "Parse SSE event: {}", e);
+            return false;
+        }
+    };
+
     match event_type {
         "full_sync" => {
-            match serde_json::from_str::<SSEEvent>(data) {
-                Ok(event) => {
-                    // full_sync: use snapshot if present, else fall back to .models
-                    let models = event.snapshot.as_ref().unwrap_or(&event.models);
-                    let n_models = models.len();
-                    let n_instances: usize = models.values().map(|v| v.len()).sum();
-                    if n_models == 0 {
-                        debug!(provider = %provider_id, "SSE full_sync empty — skipping");
-                        return;
-                    }
-                    info!(
-                        provider = %provider_id,
-                        models = n_models,
-                        instances = n_instances,
-                        "SSE full_sync"
-                    );
-                    let result = instances_to_discovery_result(provider_id, models);
-                    apply_discovery_result(state, provider_id, DiscoveryEvent::FullSync(result));
-                }
-                Err(e) => {
-                    error!(provider = %provider_id, "Parse full_sync: {}", e);
-                }
+            if event.models.is_empty() {
+                debug!(provider = %provider_id, "SSE full_sync empty — skipping");
+                return false;
             }
+            let n_models = event.models.len();
+            let n_inst: usize = event.models.values().map(|v| v.len()).sum();
+            info!(provider = %provider_id, models = n_models, instances = n_inst, "SSE full_sync");
+            *local = event.models;
+            true
         }
-        "instance_add" | "instance_del" | "model_remove" => {
-            // Use snapshot from event data for instant update (no HTTP round-trip).
-            match serde_json::from_str::<SSEEvent>(data) {
-                Ok(event) => {
-                    if let Some(snapshot) = &event.snapshot {
-                        let n_instances: usize = snapshot.values().map(|v| v.len()).sum();
-                        info!(
-                            provider = %provider_id,
-                            event = event_type,
-                            model = ?event.model,
-                            instances = n_instances,
-                            "SSE {} — applying snapshot",
-                            event_type
-                        );
-                        let result = instances_to_discovery_result(provider_id, snapshot);
-                        apply_discovery_result(state, provider_id, DiscoveryEvent::FullSync(result));
-                    } else {
-                        // No snapshot — fallback to HTTP poll (backward compat with old sidecars)
-                        debug!(provider = %provider_id, event = event_type, "No snapshot in event → HTTP poll");
-                        if let Err(e) = poll_and_apply(state, provider_id, sidecar_url) {
-                            error!(provider = %provider_id, "Refresh after {} failed: {}", event_type, e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!(provider = %provider_id, "Parse {} event: {} — falling back to poll", event_type, e);
-                    if let Err(e) = poll_and_apply(state, provider_id, sidecar_url) {
-                        error!(provider = %provider_id, "Fallback poll failed: {}", e);
-                    }
+        "instance_add" => {
+            let model = match &event.model {
+                Some(m) => m.clone(),
+                None => { warn!(provider = %provider_id, "instance_add missing model"); return false; }
+            };
+            let inst = match &event.instance {
+                Some(i) => i.clone(),
+                None => { warn!(provider = %provider_id, "instance_add missing instance"); return false; }
+            };
+            info!(provider = %provider_id, model = %model, addr = %inst.address, "SSE instance_add");
+            let entries = local.entry(model).or_default();
+            // Upsert by address
+            if let Some(existing) = entries.iter_mut().find(|e| e.address == inst.address) {
+                *existing = inst;
+            } else {
+                entries.push(inst);
+            }
+            true
+        }
+        "instance_del" => {
+            let model = match &event.model {
+                Some(m) => m.clone(),
+                None => { warn!(provider = %provider_id, "instance_del missing model"); return false; }
+            };
+            let inst = match &event.instance {
+                Some(i) => i.clone(),
+                None => { warn!(provider = %provider_id, "instance_del missing instance"); return false; }
+            };
+            info!(provider = %provider_id, model = %model, addr = %inst.address, "SSE instance_del");
+            if let Some(entries) = local.get_mut(&model) {
+                entries.retain(|e| e.address != inst.address);
+                if entries.is_empty() {
+                    local.remove(&model);
                 }
             }
+            true
+        }
+        "model_remove" => {
+            let model = match &event.model {
+                Some(m) => m.clone(),
+                None => { warn!(provider = %provider_id, "model_remove missing model"); return false; }
+            };
+            info!(provider = %provider_id, model = %model, "SSE model_remove");
+            local.remove(&model);
+            true
         }
         _ => {
             debug!(provider = %provider_id, event = event_type, "Unknown SSE event");
+            false
         }
     }
+}
+
+/// Rebuild registry from local instance map and swap router.
+fn rebuild_from_local(state: &AppState, provider_id: &str, local: &InstanceMap) {
+    let result = instances_to_discovery_result(provider_id, local);
+    apply_discovery_result(state, provider_id, DiscoveryEvent::FullSync(result));
 }
 
 /// Fetch /prism and apply as full sync.
