@@ -118,7 +118,18 @@ pub struct ProxyContext {
     pub concurrency_guards: Vec<crate::ratelimit::concurrency::ConcurrencyGuard>,
     /// Whether X-Prism-Debug header was set on the request.
     pub debug_mode: bool,
+
+    // ── Routing decision metadata ──
+    /// Routing strategy description (from RoutingReason).
+    pub route_strategy: Option<String>,
+    /// Routing score (from RoutingDecision.score).
+    pub route_score: Option<f64>,
+    /// Number of candidates considered/filtered during routing.
+    pub route_candidates: Option<u32>,
+    /// Pool name associated with the selected variant.
+    pub pool_name: Option<String>,
 }
+
 
 impl Default for ProxyContext {
     fn default() -> Self {
@@ -166,6 +177,10 @@ impl Default for ProxyContext {
             requested_model: None,
             concurrency_guards: Vec::new(),
             debug_mode: false,
+            route_strategy: None,
+            route_score: None,
+            route_candidates: None,
+            pool_name: None,
         }
     }
 }
@@ -778,6 +793,17 @@ impl ProxyHttp for PrismProxy {
             Ok(decision) => {
                 ctx.decision_time_us = Some(route_start.elapsed().as_micros() as u64);
 
+                // Capture routing decision metadata for access log
+                ctx.route_strategy = Some(format!(
+                    "L1:{} L2:{} L3:{} L4:{}",
+                    decision.reason.l1_model,
+                    decision.reason.l2_provider,
+                    decision.reason.l3_account,
+                    decision.reason.l4_variant,
+                ));
+                ctx.route_score = Some(decision.score as f64);
+                ctx.route_candidates = Some(decision.reason.candidates_filtered);
+
                 // Build candidate list: primary + fallback chain
                 let mut candidates = vec![decision.selected_variant.clone()];
                 candidates.extend(decision.fallback_chain.iter().cloned());
@@ -855,6 +881,11 @@ impl ProxyHttp for PrismProxy {
                 // Store remaining fallback chain (after chosen)
                 let chosen_idx = candidates.iter().position(|c| c == &chosen_variant).unwrap_or(0);
                 ctx.retry_fallback_chain = candidates[chosen_idx + 1..].to_vec();
+
+                // Look up pool name for the chosen variant
+                ctx.pool_name = router.registry.pools.values()
+                    .find(|p| p.variants.contains(&chosen_variant))
+                    .map(|p| p.name.clone());
 
                 // Look up upstream_model_name from the chosen variant
                 if let Some(variant) = router.registry.variants.get(&chosen_variant) {
@@ -1767,9 +1798,9 @@ impl ProxyHttp for PrismProxy {
                 ratelimit_matched: ctx.ratelimit_matched,
                 ratelimit_rule: ctx.ratelimit_rule.clone(),
                 error: ctx.error_message.clone(),
-                route_strategy: None,
-                route_score: None,
-                route_candidates: None,
+                route_strategy: ctx.route_strategy.clone(),
+                route_score: ctx.route_score,
+                route_candidates: ctx.route_candidates,
                 upstream_response_time_ms: ctx.upstream_first_byte_at.map(|t| t.duration_since(ctx.request_start).as_millis() as u64),
                 response_flags: if ctx.response_flags.is_empty() {
                     None
@@ -1797,7 +1828,7 @@ impl ProxyHttp for PrismProxy {
                 upstream_transport_failure_reason: ctx.upstream_transport_failure_reason.clone(),
                 connection_termination_details: ctx.connection_termination_details.clone(),
                 response_code_details: ctx.response_code_details.clone(),
-                pool_name: None,
+                pool_name: ctx.pool_name.clone(),
                 request_id: Some(ctx.request_id.clone()),
                 downstream_tls_version: None,
             };
