@@ -118,6 +118,9 @@ pub struct ServerConfig {
     /// CORS allowed origins (empty = allow all, default: ["*"]).
     #[serde(default = "default_cors_origins")]
     pub cors_origins: Vec<String>,
+    /// Discovery plugin poll interval in seconds (default: 15).
+    #[serde(default)]
+    pub discovery_interval_secs: Option<u64>,
 }
 
 impl Default for ServerConfig {
@@ -132,6 +135,7 @@ impl Default for ServerConfig {
             shutdown_timeout_secs: default_shutdown_timeout_secs(),
             max_request_body_bytes: default_max_request_body_bytes(),
             cors_origins: default_cors_origins(),
+            discovery_interval_secs: None,
         }
     }
 }
@@ -638,36 +642,10 @@ pub struct DiscoveryConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum DiscoverySourceType {
-    /// HTTP endpoint: `{ http: { url: "http://localhost:9091/prism" } }`
-    Http { http: DiscoveryHttpConfig },
     /// WASM module: `{ wasm: { path: "./path.wasm" } }`
     Wasm { wasm: DiscoveryWasmConfig },
     /// Static inline config: `"static"`
     Static(String),
-}
-
-/// HTTP discovery source configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DiscoveryHttpConfig {
-    /// HTTP endpoint URL.
-    pub url: String,
-    /// Poll interval in seconds (default: 30).
-    #[serde(default = "default_discovery_interval")]
-    pub interval_secs: u64,
-    /// Request timeout in seconds (default: 10).
-    #[serde(default = "default_discovery_timeout")]
-    pub timeout_secs: u64,
-    /// Optional bearer token.
-    #[serde(default)]
-    pub bearer_token: Option<String>,
-}
-
-fn default_discovery_interval() -> u64 {
-    30
-}
-
-fn default_discovery_timeout() -> u64 {
-    10
 }
 
 /// WASM discovery source configuration.

@@ -32,8 +32,7 @@ mod proxy;
 pub mod ratelimit;
 #[cfg(feature = "proxy")]
 mod circuit_breaker;
-mod http_discovery;
-mod discovery_poller;
+mod discovery_runner;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -118,10 +117,11 @@ async fn main() {
         },
     );
 
-    // Start HTTP discovery poller (if any HTTP discovery sources configured)
-    let _discovery_poller = discovery_poller::spawn_discovery_poller(
+    // Start WASM discovery runner (if discovery plugins configured)
+    let _discovery_runner = discovery_runner::spawn_discovery_runner(
         state.clone(),
         &config,
+        config.server.discovery_interval_secs,
     );
 
     // Start metrics flush background task (every 5 seconds)
