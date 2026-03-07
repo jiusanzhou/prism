@@ -29,8 +29,10 @@
 //!   7. ProviderPlugin::transform_response_body() / transform_stream_chunk()
 //! ```
 
+pub mod bedrock;
 pub mod openai;
 pub mod registry;
+pub mod vertex;
 #[cfg(feature = "wasm")]
 pub mod wasm_host;
 #[cfg(test)]

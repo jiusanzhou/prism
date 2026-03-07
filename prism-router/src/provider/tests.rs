@@ -1,8 +1,10 @@
 //! Integration tests for the provider plugin framework.
 
 use super::*;
+use super::bedrock::BedrockPlugin;
 use super::openai::OpenAICompatPlugin;
 use super::registry::ProviderPluginRegistry;
+use super::vertex::VertexPlugin;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -134,6 +136,127 @@ fn test_provider_request_context_serde() {
     let j = serde_json::to_string(&ctx).unwrap();
     let d: ProviderRequestContext = serde_json::from_str(&j).unwrap();
     assert_eq!(d.provider_id, "test-provider");
+}
+
+// ── Bedrock & Vertex registry integration tests ──
+
+#[test]
+fn test_registry_has_bedrock() {
+    let registry = ProviderPluginRegistry::new();
+    assert!(registry.has("bedrock"));
+    assert_eq!(registry.get("bedrock").id(), "bedrock");
+    assert_eq!(registry.get("bedrock").display_name(), "AWS Bedrock");
+}
+
+#[test]
+fn test_registry_has_vertex() {
+    let registry = ProviderPluginRegistry::new();
+    assert!(registry.has("vertex"));
+    assert_eq!(registry.get("vertex").id(), "vertex");
+    assert_eq!(registry.get("vertex").display_name(), "Google Vertex AI");
+}
+
+#[test]
+fn test_registry_all_three_types() {
+    let registry = ProviderPluginRegistry::new();
+    let mut types = registry.provider_types();
+    types.sort();
+    assert_eq!(types, vec!["bedrock", "openai", "vertex"]);
+}
+
+#[test]
+fn test_registry_bedrock_schema() {
+    let registry = ProviderPluginRegistry::new();
+    let schemas = registry.all_schemas();
+    let bedrock = &schemas["bedrock"];
+    assert_eq!(bedrock.provider_fields.len(), 3);
+    assert!(bedrock.account_fields.is_empty());
+}
+
+#[test]
+fn test_registry_vertex_schema() {
+    let registry = ProviderPluginRegistry::new();
+    let schemas = registry.all_schemas();
+    let vertex = &schemas["vertex"];
+    assert_eq!(vertex.provider_fields.len(), 3);
+    assert!(vertex.account_fields.is_empty());
+}
+
+#[test]
+fn test_dispatch_bedrock_auth() {
+    let registry = ProviderPluginRegistry::new();
+    let plugin = registry.get("bedrock");
+
+    let mut extra = HashMap::new();
+    extra.insert("aws_region".into(), serde_json::json!("us-west-2"));
+    extra.insert("aws_access_key".into(), serde_json::json!("AKIAEXAMPLE"));
+    extra.insert("aws_secret_key".into(), serde_json::json!("secretkey"));
+
+    let ctx = ProviderRequestContext {
+        provider_id: "bedrock-test".into(),
+        provider_type: "bedrock".into(),
+        base_url: "https://bedrock-runtime.us-west-2.amazonaws.com".into(),
+        provider_extra: extra,
+        account_id: "acct".into(),
+        account_api_key: None,
+        account_headers: HashMap::new(),
+        variant_id: "v1".into(),
+        model_id: "anthropic.claude-3-haiku-20240307-v1:0".into(),
+        upstream_model_name: None,
+        deployment_name: None,
+        original_path: "/v1/chat/completions".into(),
+        method: "POST".into(),
+        is_streaming: false,
+    };
+
+    let auth = plugin.build_auth(&ctx).unwrap();
+    assert!(auth.headers.iter().any(|(k, v)| k == "Authorization" && v.starts_with("AWS4-HMAC-SHA256")));
+}
+
+#[test]
+fn test_dispatch_vertex_url_rewrite() {
+    let registry = ProviderPluginRegistry::new();
+    let plugin = registry.get("vertex");
+
+    let mut extra = HashMap::new();
+    extra.insert("project_id".into(), serde_json::json!("my-project"));
+    extra.insert("region".into(), serde_json::json!("us-central1"));
+
+    let ctx = ProviderRequestContext {
+        provider_id: "vertex-test".into(),
+        provider_type: "vertex".into(),
+        base_url: "https://us-central1-aiplatform.googleapis.com".into(),
+        provider_extra: extra,
+        account_id: "acct".into(),
+        account_api_key: None,
+        account_headers: HashMap::new(),
+        variant_id: "v1".into(),
+        model_id: "gemini-pro".into(),
+        upstream_model_name: None,
+        deployment_name: None,
+        original_path: "/v1/chat/completions".into(),
+        method: "POST".into(),
+        is_streaming: false,
+    };
+
+    let url = plugin.rewrite_url(&ctx).unwrap();
+    assert_eq!(
+        url.path,
+        "/v1beta1/projects/my-project/locations/us-central1/endpoints/openapi/v1/chat/completions"
+    );
+    assert_eq!(url.host_override, Some("us-central1-aiplatform.googleapis.com".into()));
+}
+
+#[test]
+fn test_bedrock_is_object_safe() {
+    let _: Box<dyn ProviderPlugin> = Box::new(BedrockPlugin);
+    let _: Arc<dyn ProviderPlugin> = Arc::new(BedrockPlugin);
+}
+
+#[test]
+fn test_vertex_is_object_safe() {
+    let _: Box<dyn ProviderPlugin> = Box::new(VertexPlugin::new());
+    let _: Arc<dyn ProviderPlugin> = Arc::new(VertexPlugin::new());
 }
 
 // ── WASM provider plugin tests ──

@@ -8,7 +8,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::{ProviderConfigSchema, ProviderPlugin};
+use super::bedrock::BedrockPlugin;
 use super::openai::OpenAICompatPlugin;
+use super::vertex::VertexPlugin;
 
 /// Registry of provider plugins, keyed by provider type.
 pub struct ProviderPluginRegistry {
@@ -21,8 +23,12 @@ impl ProviderPluginRegistry {
     /// Create a new registry with the built-in OpenAI-compatible plugin.
     pub fn new() -> Self {
         let openai: Arc<dyn ProviderPlugin> = Arc::new(OpenAICompatPlugin);
+        let bedrock: Arc<dyn ProviderPlugin> = Arc::new(BedrockPlugin);
+        let vertex: Arc<dyn ProviderPlugin> = Arc::new(VertexPlugin::new());
         let mut plugins = HashMap::new();
         plugins.insert("openai".to_string(), openai.clone());
+        plugins.insert("bedrock".to_string(), bedrock);
+        plugins.insert("vertex".to_string(), vertex);
         Self {
             plugins,
             fallback: openai,
@@ -186,7 +192,7 @@ mod tests {
 
         let mut types = registry.provider_types();
         types.sort();
-        assert_eq!(types, vec!["azure", "bedrock", "openai"]);
+        assert_eq!(types, vec!["azure", "bedrock", "openai", "vertex"]);
     }
 
     #[test]

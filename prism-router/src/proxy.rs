@@ -1054,10 +1054,20 @@ impl ProxyHttp for PrismProxy {
             // we replace the /v1 prefix with /llm-serve/v1.
             if !base_path.is_empty() {
                 let original_path = upstream_request.uri.path().to_string();
-                // Try to replace the standard API prefix (/v1) with the base path
+                // Try to replace the standard API prefix (/v1) with the base path.
+                // Handles base_urls ending with any version prefix: /v1, /v2, /v3, etc.
                 let new_path = if original_path.starts_with("/v1/") || original_path == "/v1" {
-                    // Replace /v1 with base_path (which may end with /v1 or another version)
-                    if base_path.ends_with("/v1") {
+                    // Check if base_path ends with a versioned prefix (/v1, /v2, /v3, ...)
+                    let base_ends_with_version = {
+                        let bytes = base_path.as_bytes();
+                        bytes.len() >= 3
+                            && bytes[bytes.len() - 3] == b'/'
+                            && bytes[bytes.len() - 2] == b'v'
+                            && bytes[bytes.len() - 1].is_ascii_digit()
+                    };
+                    if base_ends_with_version {
+                        // base_path = "/api/v3", original = "/v1/chat/completions"
+                        // → "/api/v3/chat/completions" (replace /v1 with base's version)
                         format!("{}{}", base_path, &original_path[3..]) // skip "/v1"
                     } else {
                         format!("{}{}", base_path, original_path)

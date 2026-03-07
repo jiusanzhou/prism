@@ -30,9 +30,11 @@ interface MappedProvider {
     base_url: string
     auth_type: string
     protocols: string[]
+    provider_type?: string
     aws_region?: string
     aws_access_key?: string
     aws_secret_key?: string
+    extra?: Record<string, unknown>
     circuit_breaker_threshold: number
     circuit_breaker_recovery_secs: number
   }
@@ -110,6 +112,7 @@ function inferAuthType(raw: RawProvider): string {
   const rawType = (raw.rawConfigs?.type || raw.type || "").toLowerCase()
   if (rawType === "azure") return "api_key"   // Azure uses api-key header
   if (rawType === "bedrock") return "bearer"   // Bedrock: handled separately (AWS SigV4)
+  if (rawType === "vertex") return "bearer"    // Vertex: OAuth2 bearer token
   return "bearer"
 }
 
@@ -145,23 +148,54 @@ function mapProvider(raw: RawProvider): MappedProvider {
     circuit_breaker_recovery_secs: 30,
   }
 
-  // Bedrock: store AWS credentials and compute base_url
-  if (rawType === "bedrock") {
-    provider.auth_type = "aws_sig_v4"
-    provider.aws_region = rc.awsRegion as string || "us-east-1"
-    provider.aws_access_key = rc.awsAccessKey as string || ""
-    provider.aws_secret_key = rc.awsSecretKey as string || ""
-    provider.base_url = `https://bedrock-runtime.${provider.aws_region}.amazonaws.com`
-  }
-
   const tokens = raw.tokens || raw.rawConfigs?.apiTokens || []
-  const accounts = tokens.map((token: string, i: number) => ({
+  const accounts: MappedProvider["accounts"] = (tokens as string[]).map((token: string, i: number) => ({
     id: `${raw.name}-${i + 1}`,
     provider_id: raw.name,
     api_key: token,
     enabled: true,
     weight: 1.0,
   }))
+
+  // Bedrock: store AWS credentials and compute base_url
+  if (rawType === "bedrock") {
+    provider.auth_type = "aws_sig_v4"
+    provider.provider_type = "bedrock"
+    provider.aws_region = rc.awsRegion as string || "us-east-1"
+    provider.aws_access_key = rc.awsAccessKey as string || ""
+    provider.aws_secret_key = rc.awsSecretKey as string || ""
+    provider.base_url = `https://bedrock-runtime.${provider.aws_region}.amazonaws.com`
+  }
+
+  // Vertex AI: store service account JSON and GCP config
+  if (rawType === "vertex") {
+    const vertexRegion = (rc.vertexRegion || rc.region || "us-central1") as string
+    provider.auth_type = "bearer"
+    provider.provider_type = "vertex"
+    provider.base_url = `https://${vertexRegion}-aiplatform.googleapis.com`
+    provider.extra = {
+      project_id: rc.vertexProjectId || rc.projectId || "",
+      region: vertexRegion,
+      ...(rc.vertexAuthKey ? {
+        service_account_json: typeof rc.vertexAuthKey === "string"
+          ? rc.vertexAuthKey
+          : JSON.stringify(rc.vertexAuthKey),
+      } : {}),
+    }
+    // Create an account with the service account JSON as the credential
+    if (rc.vertexAuthKey) {
+      const saKey = typeof rc.vertexAuthKey === "string"
+        ? rc.vertexAuthKey
+        : JSON.stringify(rc.vertexAuthKey)
+      accounts.push({
+        id: `${raw.name}-sa`,
+        provider_id: raw.name,
+        api_key: saKey,
+        enabled: true,
+        weight: 1.0,
+      })
+    }
+  }
 
   return { provider, accounts }
 }
@@ -259,9 +293,11 @@ export default function Tools() {
             base_url: m.provider.base_url,
             auth_type: m.provider.auth_type,
             protocols: m.provider.protocols,
+            ...(m.provider.provider_type && { provider_type: m.provider.provider_type }),
             ...(m.provider.aws_region && { aws_region: m.provider.aws_region }),
             ...(m.provider.aws_access_key && { aws_access_key: m.provider.aws_access_key }),
             ...(m.provider.aws_secret_key && { aws_secret_key: m.provider.aws_secret_key }),
+            ...(m.provider.extra && { extra: m.provider.extra }),
             circuit_breaker_threshold: m.provider.circuit_breaker_threshold,
             circuit_breaker_recovery_secs: m.provider.circuit_breaker_recovery_secs,
           }),
@@ -442,6 +478,7 @@ export default function Tools() {
                       </th>
                       <th className="text-left py-2 px-2">Name</th>
                       <th className="text-left py-2 px-2">Type</th>
+                      <th className="text-left py-2 px-2">Auth</th>
                       <th className="text-left py-2 px-2">Base URL</th>
                       <th className="text-left py-2 px-2">Tokens</th>
                     </tr>
@@ -462,6 +499,9 @@ export default function Tools() {
                           {m.provider.protocols.map(p => (
                             <Badge key={p} variant="secondary" className="mr-1">{p}</Badge>
                           ))}
+                        </td>
+                        <td className="py-2 px-2">
+                          <Badge variant="outline">{m.provider.auth_type}</Badge>
                         </td>
                         <td className="py-2 px-2 text-[hsl(var(--muted-foreground))] truncate max-w-[200px]">
                           {m.provider.base_url || "—"}

@@ -49,6 +49,10 @@ ureq = { version = "2", features = ["json"] }
 # Health checker
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
+# Provider plugins (Bedrock SigV4, Vertex JWT)
+hmac = "0.12"
+jsonwebtoken = "9"
+
 # Access log
 chrono = { version = "0.4", features = ["serde"] }
 
