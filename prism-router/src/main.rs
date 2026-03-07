@@ -33,6 +33,7 @@ pub mod ratelimit;
 #[cfg(feature = "proxy")]
 mod circuit_breaker;
 mod discovery_runner;
+mod k8s_discovery;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -123,6 +124,26 @@ async fn main() {
         &config,
         config.server.discovery_interval_secs,
     );
+
+    // Start K8s discovery consumers for providers with type: k8s
+    let mut _k8s_handles = Vec::new();
+    for (provider_id, provider_config) in &config.providers {
+        if provider_config.provider_type.as_deref() == Some("k8s") {
+            if let Some(ref disc_config) = provider_config.discovery {
+                let handle = k8s_discovery::spawn_k8s_discovery(
+                    state.clone(),
+                    provider_id.clone(),
+                    disc_config.clone(),
+                );
+                _k8s_handles.push(handle);
+            } else {
+                tracing::warn!(
+                    provider = %provider_id,
+                    "K8s provider missing discovery config — skipping"
+                );
+            }
+        }
+    }
 
     // Start metrics flush background task (every 5 seconds)
     let _metrics_flush = metrics::spawn_metrics_flush(
