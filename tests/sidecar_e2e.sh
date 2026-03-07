@@ -23,11 +23,12 @@ SIDECAR_PORT=19091
 PRISM_HTTP_PORT=19080
 PRISM_GRPC_PORT=19090
 PRISM_PROXY_PORT=19000
-PF_LOCAL_PORT=19011
 
 PRISM_CONFIG="/tmp/prism-sidecar-e2e.yaml"
 PRISM_LOG="/tmp/prism-sidecar-e2e.log"
 SIDECAR_LOG="/tmp/sidecar-e2e.log"
+
+strip_ansi() { perl -pe 's/\e\[[0-9;]*m//g'; }
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -39,16 +40,13 @@ cleanup() {
     echo "=== Cleanup ==="
     kill $SIDECAR_PID 2>/dev/null && echo "  Killed sidecar" || true
     kill $PRISM_PID 2>/dev/null && echo "  Killed prism" || true
-    kill $PF_PID 2>/dev/null && echo "  Killed port-forward" || true
     wait $SIDECAR_PID 2>/dev/null || true
     wait $PRISM_PID 2>/dev/null || true
-    wait $PF_PID 2>/dev/null || true
 }
 trap cleanup EXIT
 
 SIDECAR_PID=0
 PRISM_PID=0
-PF_PID=0
 PASS=0
 FAIL=0
 
@@ -183,18 +181,19 @@ for i in $(seq 1 30); do
     sleep 0.5
 done
 
-REGISTERED=$(grep "Registry updated" "$PRISM_LOG" 2>/dev/null | tail -1 | sed 's/\x1b\[[0-9;]*m//g' | sed -n 's/.*variants=\([0-9]*\).*/\1/p')
+REGISTERED=$(grep "Registry updated" "$PRISM_LOG" 2>/dev/null | tail -1 | strip_ansi | sed -n 's/.*variants=\([0-9]*\).*/\1/p')
 REGISTERED=${REGISTERED:-0}
 [ "$REGISTERED" -gt 0 ] && pass "Prism registered $REGISTERED variants" || { fail "No variants registered"; cat "$PRISM_LOG"; exit 1; }
 
-# ── Step 5: Port-forward a pod for local access ───────────────────
+# ── Step 5: Find reachable pod a pod for local access ───────────────────
 
 echo ""
-echo "=== Step 5: Port-forward ==="
+echo "=== Step 5: Find reachable pod ==="
 
 # Find a colocated pod (qwen3 preferred for fast response)
 TARGET_POD=""
 TARGET_MODEL=""
+TARGET_IP=""
 TARGET_PORT=""
 
 python3 << 'PYEOF' > /tmp/e2e_target.env
@@ -224,35 +223,34 @@ for pod in data["items"]:
     for i, prefix in enumerate(preferred):
         if model.startswith(prefix):
             priority = i; break
-    candidates.append((priority, name, model, port))
+    ip = pod["status"].get("podIP","")
+    candidates.append((priority, name, model, ip, port))
 
 candidates.sort()
 if candidates:
-    _, name, model, port = candidates[0]
+    _, name, model, ip, port = candidates[0]
     print(f"TARGET_POD={name}")
     print(f"TARGET_MODEL={model}")
+    print(f"TARGET_IP={ip}")
     print(f"TARGET_PORT={port}")
 PYEOF
 
 source /tmp/e2e_target.env
 
 if [ -z "${TARGET_POD:-}" ]; then
-    fail "No suitable pod for port-forward"
+    fail "No suitable pod found"
     exit 1
 fi
 
-echo "  Target: $TARGET_POD ($TARGET_MODEL, port $TARGET_PORT)"
+echo "  Target: $TARGET_POD ($TARGET_MODEL @ $TARGET_IP:$TARGET_PORT)"
 
-kubectl port-forward "$TARGET_POD" "$PF_LOCAL_PORT:$TARGET_PORT" > /dev/null 2>&1 &
-PF_PID=$!
-sleep 3
 
-# Verify port-forward works (direct)
+# Verify direct Pod IP access
 DIRECT_HTTP=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 10 \
-    "http://127.0.0.1:$PF_LOCAL_PORT/v1/chat/completions" \
+    "http://$TARGET_IP:$TARGET_PORT/v1/chat/completions" \
     -H "Content-Type: application/json" \
     -d "{\"model\":\"$TARGET_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":8}" 2>/dev/null || echo "000")
-[ "$DIRECT_HTTP" = "200" ] && pass "Direct pod access: HTTP $DIRECT_HTTP" || { fail "Direct pod access failed: HTTP $DIRECT_HTTP"; exit 1; }
+[ "$DIRECT_HTTP" = "200" ] && pass "Direct Pod IP access: HTTP $DIRECT_HTTP" || { fail "Direct Pod IP access failed: HTTP $DIRECT_HTTP"; exit 1; }
 
 # ── Step 6: Route through Prism ───────────────────────────────────
 
@@ -274,16 +272,16 @@ PRISM_HTTP=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 10 \
     -d "{\"model\":\"$TARGET_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":8}" 2>/dev/null || echo "000")
 
 # Check routing log
-ROUTE_LOG=$(grep "Routing to upstream.*$TARGET_MODEL" "$PRISM_LOG" | tail -1)
+ROUTE_LOG=$(grep "Routing to upstream.*$TARGET_MODEL" "$PRISM_LOG" | tail -1 | strip_ansi)
 if [ -n "$ROUTE_LOG" ]; then
-    ROUTED_VARIANT=$(echo "$ROUTE_LOG" | sed 's/\x1b\[[0-9;]*m//g' | sed -n 's/.*variant=\([^ ]*\).*/\1/p')
+    ROUTED_VARIANT=$(echo "$ROUTE_LOG" | strip_ansi | sed -n 's/.*variant=\([^ ]*\).*/\1/p')
     pass "Prism routed to variant: $ROUTED_VARIANT"
 else
     fail "No routing log for $TARGET_MODEL"
 fi
 
-# 502 = routed correctly but can't reach pod IP (expected from local)
-# 200 = somehow reached (port-forward coincidence)
+# 502 = pod IP unreachable
+# 200 = full chain working
 if [ "$PRISM_HTTP" = "200" ]; then
     pass "Prism proxy: HTTP 200 (response from pod)"
 elif [ "$PRISM_HTTP" = "502" ]; then
@@ -306,14 +304,13 @@ if [ "$PD_MODELS" != "none" ]; then
         -H "Content-Type: application/json" \
         -d "{\"model\":\"$PD_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":8}" 2>/dev/null || true
 
-    PD_LOG=$(grep "P/D Split" "$PRISM_LOG" | tail -1)
+    PD_LOG=$(grep "P/D Split" "$PRISM_LOG" | strip_ansi)
     if [ -n "$PD_LOG" ]; then
         pass "P/D Split detected in logs"
-        PF_VARIANT=$(echo "$PD_LOG" | sed 's/\x1b\[[0-9;]*m//g' | sed -n 's/.*prefill_variant=\([^ ]*\).*/\1/p')
+        PF_VARIANT=$(echo "$PD_LOG" | sed -n 's/.*prefill_variant=\([^ ]*\).*/\1/p' | head -1)
         PF_VARIANT=${PF_VARIANT:-?}
         echo "    Prefill: $PF_VARIANT"
-        DECODE_LOG=$(grep "routing upstream to decode" "$PRISM_LOG" | tail -1)
-        DEC_VARIANT=$(echo "$DECODE_LOG" | sed 's/\x1b\[[0-9;]*m//g' | sed -n 's/.*decode_variant=\([^ ]*\).*/\1/p')
+        DEC_VARIANT=$(echo "$PD_LOG" | sed -n 's/.*decode_variant=\([^ ]*\).*/\1/p' | head -1)
         DEC_VARIANT=${DEC_VARIANT:-?}
         echo "    Decode:  $DEC_VARIANT"
     else
@@ -328,7 +325,7 @@ fi
 echo ""
 echo "=== Step 8: SSE connectivity ==="
 
-SSE_LOG=$(grep "SSE connected" "$PRISM_LOG" | tail -1)
+SSE_LOG=$(grep "SSE connected" "$PRISM_LOG" | tail -1 | strip_ansi)
 if [ -n "$SSE_LOG" ]; then
     pass "Prism SSE connected to sidecar"
 else
