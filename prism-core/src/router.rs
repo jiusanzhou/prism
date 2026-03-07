@@ -474,7 +474,22 @@ impl Router for PrismRouter {
             },
             score: result.score,
             decision_time_us: decision_time.as_micros() as u64,
-            pd_decision: None,
+            pd_decision: {
+                // Build P/D decision from variant metadata
+                let variant_meta: Vec<(String, std::collections::HashMap<String, String>)> = candidates
+                    .iter()
+                    .map(|c| (c.variant.id.clone(), c.variant.metadata.clone()))
+                    .collect();
+                let pd_result = crate::plugins::pd_routing::group_pd_variants(&variant_meta);
+
+                if pd_result.pd_groups.is_empty() {
+                    None // No P/D split variants, normal routing
+                } else {
+                    let all_meta: std::collections::HashMap<String, std::collections::HashMap<String, String>> =
+                        variant_meta.into_iter().collect();
+                    Some(pd_result.resolve(&winner.variant.id, &all_meta))
+                }
+            },
         })
     }
 }
