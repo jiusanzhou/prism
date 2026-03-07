@@ -297,6 +297,21 @@ pub struct RoutingConfig {
     pub default_strategy: String,
     #[serde(default)]
     pub balanced: Option<BalancedConfig>,
+    /// L2 provider selection strategy name.
+    #[serde(default = "default_l2_selector")]
+    pub l2_selector: String,
+    /// L3 account selection strategy name.
+    #[serde(default = "default_l3_selector")]
+    pub l3_selector: String,
+    /// L4 variant selection strategy name.
+    #[serde(default = "default_l4_selector")]
+    pub l4_selector: String,
+    /// Per-model strategy overrides.
+    #[serde(default)]
+    pub model_overrides: Vec<ModelStrategyOverride>,
+    /// Resilience configuration.
+    #[serde(default)]
+    pub resilience: ResilienceConfig,
 }
 
 impl Default for RoutingConfig {
@@ -304,12 +319,152 @@ impl Default for RoutingConfig {
         Self {
             default_strategy: default_strategy(),
             balanced: None,
+            l2_selector: default_l2_selector(),
+            l3_selector: default_l3_selector(),
+            l4_selector: default_l4_selector(),
+            model_overrides: Vec::new(),
+            resilience: ResilienceConfig::default(),
         }
     }
 }
 
 fn default_strategy() -> String {
     "balanced".to_string()
+}
+
+fn default_l2_selector() -> String {
+    "default".to_string()
+}
+fn default_l3_selector() -> String {
+    "affinity".to_string()
+}
+fn default_l4_selector() -> String {
+    "best".to_string()
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModelStrategyOverride {
+    pub model_id: String,
+    #[serde(default = "default_strategy")]
+    pub strategy: String,
+    #[serde(default)]
+    pub pool: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResilienceConfig {
+    #[serde(default)]
+    pub retry: RetryConfig,
+    #[serde(default)]
+    pub circuit_breaker: CircuitBreakerConfig,
+    #[serde(default)]
+    pub timeout: TimeoutConfig,
+}
+
+impl Default for ResilienceConfig {
+    fn default() -> Self {
+        Self {
+            retry: RetryConfig::default(),
+            circuit_breaker: CircuitBreakerConfig::default(),
+            timeout: TimeoutConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryConfig {
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    #[serde(default = "default_retry_on")]
+    pub retry_on: Vec<String>,
+    #[serde(default = "default_backoff")]
+    pub backoff: String,
+    #[serde(default = "default_retry_scope")]
+    pub retry_scope: String,
+}
+
+fn default_max_retries() -> u32 {
+    2
+}
+fn default_retry_on() -> Vec<String> {
+    vec!["RateLimit".into(), "Timeout".into()]
+}
+fn default_backoff() -> String {
+    "Exponential".into()
+}
+fn default_retry_scope() -> String {
+    "CrossProvider".into()
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: default_max_retries(),
+            retry_on: default_retry_on(),
+            backoff: default_backoff(),
+            retry_scope: default_retry_scope(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CircuitBreakerConfig {
+    #[serde(default = "default_error_threshold")]
+    pub error_threshold_pct: f32,
+    #[serde(default = "default_window_seconds")]
+    pub window_seconds: u32,
+    #[serde(default = "default_open_duration")]
+    pub open_duration_seconds: u32,
+}
+
+fn default_error_threshold() -> f32 {
+    50.0
+}
+fn default_window_seconds() -> u32 {
+    60
+}
+fn default_open_duration() -> u32 {
+    30
+}
+
+impl Default for CircuitBreakerConfig {
+    fn default() -> Self {
+        Self {
+            error_threshold_pct: default_error_threshold(),
+            window_seconds: default_window_seconds(),
+            open_duration_seconds: default_open_duration(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeoutConfig {
+    #[serde(default = "default_connect_ms")]
+    pub connect_ms: u32,
+    #[serde(default = "default_request_ms")]
+    pub request_ms: u32,
+    #[serde(default = "default_ttft_ms")]
+    pub ttft_ms: u32,
+}
+
+fn default_connect_ms() -> u32 {
+    3000
+}
+fn default_request_ms() -> u32 {
+    30000
+}
+fn default_ttft_ms() -> u32 {
+    10000
+}
+
+impl Default for TimeoutConfig {
+    fn default() -> Self {
+        Self {
+            connect_ms: default_connect_ms(),
+            request_ms: default_request_ms(),
+            ttft_ms: default_ttft_ms(),
+        }
+    }
 }
 
 /// Balanced strategy weights.

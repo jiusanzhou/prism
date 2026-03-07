@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { BrowserRouter, Routes, Route, NavLink, useLocation } from "react-router-dom"
-import { LayoutDashboard, Box, Brain, GitBranch, Gauge, Layers, Puzzle, Shield, ScrollText, FileCode, Menu, Sun, Moon, Monitor, Server, Activity, Wrench } from "lucide-react"
+import { LayoutDashboard, Box, Brain, GitBranch, Gauge, Layers, Puzzle, Shield, ScrollText, FileCode, Menu, Sun, Moon, Monitor, Server, Activity, Wrench, Shuffle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useTheme } from "@/hooks/useTheme"
 import { Sheet, SheetTrigger, SheetContent } from "@/components/ui/sheet"
@@ -16,6 +16,7 @@ import AccessLog from "./pages/AccessLog"
 import ConfigEditor from "./pages/ConfigEditor"
 import Clusters from "./pages/Clusters"
 import Proxies from "./pages/Proxies"
+import Routing from "./pages/Routing"
 import Tools from "./pages/Tools"
 
 const resourceNav = [
@@ -25,6 +26,7 @@ const resourceNav = [
   { to: "/variants", label: "All Variants", icon: GitBranch },
   { to: "/rate-limits", label: "Rate Limits", icon: Gauge },
   { to: "/pools", label: "Pools", icon: Layers },
+  { to: "/routing", label: "Routing", icon: Shuffle },
   { to: "/plugins", label: "Plugins", icon: Puzzle },
 ]
 
@@ -169,6 +171,7 @@ function AppLayout() {
             <Route path="/variants" element={<Variants />} />
             <Route path="/rate-limits" element={<RateLimits />} />
             <Route path="/pools" element={<Pools />} />
+            <Route path="/routing" element={<Routing />} />
             <Route path="/plugins" element={<Plugins />} />
             <Route path="/clusters" element={<Clusters />} />
             <Route path="/proxies" element={<Proxies />} />

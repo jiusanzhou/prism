@@ -456,3 +456,321 @@ impl Router for PrismRouter {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    // ── Helper: build a minimal but complete registry ──
+
+    fn make_provider(id: &str) -> Provider {
+        Provider {
+            id: id.into(),
+            name: format!("Provider {id}"),
+            auth: AuthConfig::default(),
+            base_url: "https://api.example.com".into(),
+            rate_limit: None,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
+            protocols: vec![],
+        }
+    }
+
+    fn make_endpoint(id: &str, provider_id: &str, region: Option<&str>) -> Endpoint {
+        Endpoint {
+            id: id.into(),
+            provider_id: provider_id.into(),
+            base_url: None,
+            region: region.map(|r| r.into()),
+            auth_override: None,
+            rate_limit: None,
+            priority: 0,
+            status: HealthStatus::Healthy,
+        }
+    }
+
+    fn make_account(id: &str, endpoint_id: &str) -> Account {
+        Account {
+            id: id.into(),
+            endpoint_id: endpoint_id.into(),
+            auth: AuthConfig::default(),
+            project_id: None,
+            rate_limit: None,
+            billing_tag: None,
+            weight: 1.0,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
+        }
+    }
+
+    fn make_model(id: &str, tier: QualityTier) -> Model {
+        Model {
+            id: id.into(),
+            display_name: format!("Model {id}"),
+            quality_tier: tier,
+            capabilities: ModelCapabilities {
+                max_context_window: 128_000,
+                max_output_tokens: 4_096,
+                supports_streaming: true,
+                supports_function_calling: true,
+                supports_vision: false,
+                supports_json_mode: true,
+                supports_reasoning: false,
+            },
+            pricing: ModelPricing {
+                input_per_1m_tokens: 3.0,
+                output_per_1m_tokens: 15.0,
+                currency: "USD".into(),
+            },
+            specialties: vec![],
+            limits: None,
+            status: ModelStatus::Available,
+        }
+    }
+
+    fn make_variant(
+        id: &str,
+        model_id: &str,
+        endpoint_id: &str,
+        account_id: &str,
+    ) -> ModelVariant {
+        ModelVariant {
+            id: id.into(),
+            model_id: model_id.into(),
+            endpoint_id: endpoint_id.into(),
+            account_id: Some(account_id.into()),
+            deployment_name: None,
+            weight: 1.0,
+            performance: ModelPerformance::default(),
+            pricing_override: None,
+            status: VariantStatus::Active,
+            base_url: None,
+            upstream_model_name: None,
+        }
+    }
+
+    fn make_pool(id: &str, variant_ids: Vec<&str>) -> ModelPool {
+        ModelPool {
+            id: id.into(),
+            name: format!("Pool {id}"),
+            variants: variant_ids.into_iter().map(|s| s.into()).collect(),
+            selection_mode: SelectionMode::Scored,
+            description: None,
+        }
+    }
+
+    /// Build a registry with a single complete chain:
+    /// provider-a -> endpoint-a -> account-a -> model-a -> variant-a -> pool-a
+    fn setup_registry() -> InMemoryRegistry {
+        let mut reg = InMemoryRegistry::new();
+        reg.add_provider(make_provider("provider-a"));
+        reg.add_endpoint(make_endpoint("endpoint-a", "provider-a", None));
+        reg.add_account(make_account("account-a", "endpoint-a"));
+        reg.add_model(make_model("model-a", QualityTier::A));
+        reg.add_variant(make_variant("variant-a", "model-a", "endpoint-a", "account-a"));
+        reg.add_pool(make_pool("pool-a", vec!["variant-a"]));
+        reg
+    }
+
+    fn basic_request() -> RouteRequest {
+        RouteRequest {
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: "hello".into(),
+            }],
+            strategy: None,
+            metadata: RouteMetadata::default(),
+            analyze_context: None,
+            required_protocol: None,
+            requested_model: None,
+        }
+    }
+
+    // ── Tests ──
+
+    #[test]
+    fn test_router_route_basic() {
+        let registry = setup_registry();
+        let router = PrismRouter::new(registry);
+
+        let decision = router.route(&basic_request()).expect("routing should succeed");
+
+        assert_eq!(decision.selected_model, "model-a");
+        assert_eq!(decision.selected_variant, "variant-a");
+        assert_eq!(decision.selected_account, "account-a");
+        assert_eq!(decision.selected_provider, "provider-a");
+        assert!(!decision.reason.l1_model.is_empty());
+        assert!(decision.decision_time_us > 0 || decision.decision_time_us == 0);
+    }
+
+    #[test]
+    fn test_router_route_pinned_model() {
+        let mut reg = setup_registry();
+
+        // Add a second chain: model-b via provider-a/endpoint-a/account-a
+        reg.add_model(make_model("model-b", QualityTier::B));
+        reg.add_variant(make_variant(
+            "variant-b",
+            "model-b",
+            "endpoint-a",
+            "account-a",
+        ));
+        reg.add_pool(make_pool("pool-ab", vec!["variant-a", "variant-b"]));
+
+        let router = PrismRouter::new(reg);
+
+        let request = RouteRequest {
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: "hello".into(),
+            }],
+            strategy: Some(ModelSelectionStrategy::Pinned {
+                model_id: "model-b".into(),
+            }),
+            metadata: RouteMetadata::default(),
+            analyze_context: None,
+            required_protocol: None,
+            requested_model: None,
+        };
+
+        let decision = router.route(&request).expect("pinned routing should succeed");
+        assert_eq!(
+            decision.selected_model, "model-b",
+            "pinned strategy must select the requested model"
+        );
+        assert_eq!(decision.selected_variant, "variant-b");
+    }
+
+    #[test]
+    fn test_router_route_no_candidates() {
+        // Empty registry -- no variants at all.
+        let reg = InMemoryRegistry::new();
+        let router = PrismRouter::new(reg);
+
+        let result = router.route(&basic_request());
+        assert!(result.is_err(), "expected NoCandidates error");
+
+        match result.unwrap_err() {
+            RouterError::NoCandidates => {} // correct
+            other => panic!("expected NoCandidates, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_router_route_with_metadata() {
+        let mut reg = InMemoryRegistry::new();
+
+        // Provider shared by both endpoints.
+        reg.add_provider(make_provider("provider-geo"));
+
+        // Endpoint in us-east
+        reg.add_endpoint(make_endpoint("ep-us-east", "provider-geo", Some("us-east")));
+        reg.add_account(make_account("acct-us-east", "ep-us-east"));
+        reg.add_model(make_model("model-geo", QualityTier::A));
+        reg.add_variant(make_variant(
+            "var-us-east",
+            "model-geo",
+            "ep-us-east",
+            "acct-us-east",
+        ));
+
+        // Endpoint in eu-west
+        reg.add_endpoint(make_endpoint("ep-eu-west", "provider-geo", Some("eu-west")));
+        reg.add_account(make_account("acct-eu-west", "ep-eu-west"));
+        reg.add_variant(make_variant(
+            "var-eu-west",
+            "model-geo",
+            "ep-eu-west",
+            "acct-eu-west",
+        ));
+
+        reg.add_pool(make_pool("pool-geo", vec!["var-us-east", "var-eu-west"]));
+
+        let router = PrismRouter::new(reg);
+
+        // Request with region preference for us-east.
+        let request = RouteRequest {
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: "hello from east coast".into(),
+            }],
+            strategy: None,
+            metadata: RouteMetadata {
+                region: Some("us-east".into()),
+                ..Default::default()
+            },
+            analyze_context: None,
+            required_protocol: None,
+            requested_model: None,
+        };
+
+        let decision = router.route(&request).expect("geo routing should succeed");
+
+        // The GeoProximityPlugin scores exact region matches higher, so the
+        // us-east variant should be selected.
+        assert_eq!(
+            decision.selected_variant, "var-us-east",
+            "geo proximity should prefer the endpoint in the requested region"
+        );
+    }
+
+    #[test]
+    fn test_router_feedback_loop() {
+        let registry = setup_registry();
+        let router = PrismRouter::new(registry);
+
+        // Record positive feedback for variant-a.
+        router.record_outcome(&OutcomeReport {
+            variant_id: "variant-a".into(),
+            success: true,
+            latency_ms: 120,
+            prompt_tokens: Some(50),
+            completion_tokens: Some(100),
+            cost: Some(0.002),
+            user_rating: Some(5),
+        });
+
+        // Routing should still succeed after feedback.
+        let decision = router
+            .route(&basic_request())
+            .expect("routing after positive feedback should succeed");
+        assert_eq!(decision.selected_variant, "variant-a");
+
+        // Record negative feedback for a hypothetical other variant (won't
+        // affect routing because the variant is not in the registry, but
+        // exercises the feedback path).
+        router.record_outcome(&OutcomeReport {
+            variant_id: "variant-nonexistent".into(),
+            success: false,
+            latency_ms: 5000,
+            prompt_tokens: Some(50),
+            completion_tokens: None,
+            cost: None,
+            user_rating: Some(1),
+        });
+
+        // Verify the collector recorded both reports.
+        let stats_a = router
+            .feedback
+            .get_stats("variant-a")
+            .expect("stats for variant-a should exist");
+        assert_eq!(stats_a.total_requests, 1);
+        assert_eq!(stats_a.successful_requests, 1);
+        assert_eq!(stats_a.user_ratings, vec![5]);
+
+        let stats_bad = router
+            .feedback
+            .get_stats("variant-nonexistent")
+            .expect("stats for nonexistent variant should exist");
+        assert_eq!(stats_bad.total_requests, 1);
+        assert_eq!(stats_bad.error_count, 1);
+        assert_eq!(stats_bad.user_ratings, vec![1]);
+
+        // Routing still works after mixed feedback.
+        let decision2 = router
+            .route(&basic_request())
+            .expect("routing after mixed feedback should succeed");
+        assert_eq!(decision2.selected_variant, "variant-a");
+    }
+}

@@ -402,3 +402,169 @@ pub struct RoutingDecision {
     pub score: f32,
     pub decision_time_us: u64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_routing_objective_default() {
+        let obj = RoutingObjective::default();
+        match obj {
+            RoutingObjective::Balanced {
+                cost_weight,
+                quality_weight,
+                latency_weight,
+            } => {
+                assert!((cost_weight - 0.3).abs() < f32::EPSILON);
+                assert!((quality_weight - 0.5).abs() < f32::EPSILON);
+                assert!((latency_weight - 0.2).abs() < f32::EPSILON);
+            }
+            _ => panic!("expected Balanced"),
+        }
+    }
+
+    #[test]
+    fn test_model_selection_strategy_default() {
+        let s = ModelSelectionStrategy::default();
+        match s {
+            ModelSelectionStrategy::Auto {
+                objective,
+                pool_ids,
+                required_capabilities,
+            } => {
+                assert!(pool_ids.is_none());
+                assert!(required_capabilities.is_none());
+                assert!(matches!(objective, RoutingObjective::Balanced { .. }));
+            }
+            _ => panic!("expected Auto"),
+        }
+    }
+
+    #[test]
+    fn test_provider_selection_strategy_default() {
+        let s = ProviderSelectionStrategy::default();
+        assert!(matches!(s, ProviderSelectionStrategy::LowestLatency));
+    }
+
+    #[test]
+    fn test_account_selection_strategy_default() {
+        let s = AccountSelectionStrategy::default();
+        match s {
+            AccountSelectionStrategy::LoadBalanced { algorithm } => {
+                assert!(matches!(algorithm, LoadBalanceAlgorithm::RoundRobin));
+            }
+            _ => panic!("expected LoadBalanced(RoundRobin)"),
+        }
+    }
+
+    #[test]
+    fn test_variant_selection_strategy_default() {
+        let s = VariantSelectionStrategy::default();
+        assert!(matches!(s, VariantSelectionStrategy::Default));
+    }
+
+    #[test]
+    fn test_retry_policy_default() {
+        let p = RetryPolicy::default();
+        assert_eq!(p.max_retries, 2);
+        assert!(matches!(p.retry_scope, RetryScope::CrossProvider));
+        assert!(p
+            .retry_on
+            .iter()
+            .any(|c| matches!(c, RetryCondition::RateLimit)));
+        assert!(p
+            .retry_on
+            .iter()
+            .any(|c| matches!(c, RetryCondition::Timeout)));
+    }
+
+    #[test]
+    fn test_backoff_strategy_default() {
+        let b = BackoffStrategy::default();
+        match b {
+            BackoffStrategy::Exponential { base_ms, max_ms } => {
+                assert_eq!(base_ms, 100);
+                assert_eq!(max_ms, 5000);
+            }
+            _ => panic!("expected Exponential"),
+        }
+    }
+
+    #[test]
+    fn test_resilience_policy_default() {
+        let rp = ResiliencePolicy::default();
+        assert_eq!(rp.retry.max_retries, 2);
+        assert!((rp.circuit_breaker.error_threshold_pct - 50.0).abs() < f32::EPSILON);
+        assert_eq!(rp.circuit_breaker.window_seconds, 60);
+        assert_eq!(rp.circuit_breaker.min_requests, 10);
+        assert_eq!(rp.circuit_breaker.open_duration_seconds, 30);
+        assert_eq!(rp.circuit_breaker.half_open_requests, 3);
+        assert_eq!(rp.timeout.connect_ms, 3000);
+        assert_eq!(rp.timeout.request_ms, 30000);
+        assert_eq!(rp.timeout.ttft_ms, Some(10000));
+        assert!(rp.fallback.chain.is_empty());
+        assert!(rp.fallback.allow_model_downgrade);
+        assert!(rp.fallback.notify_client);
+        assert!(rp.hedging.is_none());
+    }
+
+    #[test]
+    fn test_serde_roundtrip_routing_objective() {
+        let variants = vec![
+            RoutingObjective::Balanced {
+                cost_weight: 0.3,
+                quality_weight: 0.5,
+                latency_weight: 0.2,
+            },
+            RoutingObjective::CostFirst {
+                min_quality_score: 0.5,
+                budget_per_request: Some(0.01),
+            },
+            RoutingObjective::QualityFirst {
+                max_latency_ms: Some(500),
+            },
+            RoutingObjective::SloFirst {
+                max_latency_ms: 200,
+                max_ttft_ms: 100,
+                min_quality_score: 0.7,
+            },
+            RoutingObjective::Custom {
+                scorer_id: "my_scorer".into(),
+            },
+        ];
+        for obj in &variants {
+            let json = serde_json::to_string(obj).unwrap();
+            let back: RoutingObjective = serde_json::from_str(&json).unwrap();
+            // Verify via re-serialisation equality
+            let json2 = serde_json::to_string(&back).unwrap();
+            assert_eq!(json, json2);
+        }
+    }
+
+    #[test]
+    fn test_serde_roundtrip_provider_strategy() {
+        let variants = vec![
+            ProviderSelectionStrategy::Priority,
+            ProviderSelectionStrategy::LowestCost,
+            ProviderSelectionStrategy::LowestLatency,
+            ProviderSelectionStrategy::WeightedRoundRobin,
+            ProviderSelectionStrategy::QuotaAware,
+            ProviderSelectionStrategy::GeoProximity {
+                region_preferences: vec!["us-east-1".into()],
+            },
+            ProviderSelectionStrategy::Scored {
+                cost_weight: 0.3,
+                latency_weight: 0.3,
+                availability_weight: 0.2,
+                quota_weight: 0.2,
+            },
+        ];
+        for strat in &variants {
+            let json = serde_json::to_string(strat).unwrap();
+            let back: ProviderSelectionStrategy = serde_json::from_str(&json).unwrap();
+            let json2 = serde_json::to_string(&back).unwrap();
+            assert_eq!(json, json2);
+        }
+    }
+}

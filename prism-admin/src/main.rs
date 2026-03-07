@@ -178,6 +178,9 @@ async fn main() {
         .route("/api/proxies/register", post(api::proxies::register_proxy))
         .route("/api/proxies/heartbeat", post(api::proxies::heartbeat_proxy))
         .route("/api/proxies/{instance_id}", delete(api::proxies::delete_proxy))
+        // Routing
+        .route("/api/routing", get(api::routing::get_routing))
+        .route("/api/routing", put(api::routing::update_routing))
         .fallback(static_handler)
         .layer(CorsLayer::very_permissive())
         .with_state(state);
