@@ -1030,12 +1030,15 @@ impl ProxyHttp for PrismProxy {
                 // ── P/D: store decision and fire prefill if Split ──
                 ctx.pd_decision = decision.pd_decision.clone();
                 if let Some(prism_core::plugins::pd_routing::PDDecision::Split {
-                    ref prefill_variant_id,
-                    ref decode_variant_ids,
+                    ref prefill_variant_ids,
                     ..
                 }) = decision.pd_decision
                 {
-                    // Fire-and-forget prefill request
+                    // Fire-and-forget prefill: pick one P from candidates (round-robin)
+                    let p_idx = if prefill_variant_ids.len() > 1 {
+                        (ctx.upstream_request_attempt_count as usize) % prefill_variant_ids.len()
+                    } else { 0 };
+                    let prefill_variant_id = &prefill_variant_ids[p_idx];
                     let prefill_variant = router.registry.variants.get(prefill_variant_id);
                     if let Some(pv) = prefill_variant {
                         if let Some(ref purl) = pv.base_url {

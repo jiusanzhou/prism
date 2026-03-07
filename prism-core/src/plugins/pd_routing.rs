@@ -45,9 +45,9 @@ pub enum PDDecision {
     /// Colocated — single variant handles both.
     Single { variant_id: String },
     /// P/D split — prefill + decode candidates from the same group.
-    /// decode_variant_ids contains all D leaders; proxy picks one (e.g. by load).
+    /// Proxy picks one from each (e.g. by load or round-robin).
     Split {
-        prefill_variant_id: String,
+        prefill_variant_ids: Vec<String>,
         decode_variant_ids: Vec<String>,
         pd_group: String,
     },
@@ -76,12 +76,10 @@ pub fn group_pd_variants(
             PDRole::Prefill | PDRole::Decode => {
                 let pd_group = meta.get(META_PD_GROUP).cloned().unwrap_or("default".into());
                 let group = groups.entry(pd_group).or_default();
-                if is_leader(meta) {
-                    match role {
-                        PDRole::Prefill => group.prefill_leaders.push(variant_id.clone()),
-                        PDRole::Decode => group.decode_leaders.push(variant_id.clone()),
-                        _ => {}
-                    }
+                match role {
+                    PDRole::Prefill => group.prefill_variants.push(variant_id.clone()),
+                    PDRole::Decode => group.decode_variants.push(variant_id.clone()),
+                    _ => {}
                 }
             }
         }
@@ -89,7 +87,7 @@ pub fn group_pd_variants(
 
     let complete_groups = groups
         .into_iter()
-        .filter(|(_, g)| !g.prefill_leaders.is_empty() && !g.decode_leaders.is_empty())
+        .filter(|(_, g)| !g.prefill_variants.is_empty() && !g.decode_variants.is_empty())
         .collect();
 
     PDGroupResult { colocated, pd_groups: complete_groups }
@@ -106,8 +104,8 @@ impl PDGroupResult {
     pub fn all_valid_variant_ids(&self) -> Vec<String> {
         let mut ids = self.colocated.clone();
         for group in self.pd_groups.values() {
-            ids.extend(group.prefill_leaders.clone());
-            ids.extend(group.decode_leaders.clone());
+            ids.extend(group.prefill_variants.clone());
+            ids.extend(group.decode_variants.clone());
         }
         ids
     }
@@ -141,13 +139,13 @@ impl PDGroupResult {
 
         match role {
             PDRole::Prefill => PDDecision::Split {
-                prefill_variant_id: selected_variant_id.into(),
-                decode_variant_ids: group.decode_leaders.clone(),
+                prefill_variant_ids: group.prefill_variants.clone(),
+                decode_variant_ids: group.decode_variants.clone(),
                 pd_group,
             },
             PDRole::Decode => PDDecision::Split {
-                prefill_variant_id: group.prefill_leaders.first().cloned().unwrap_or_default(),
-                decode_variant_ids: group.decode_leaders.clone(),
+                prefill_variant_ids: group.prefill_variants.clone(),
+                decode_variant_ids: group.decode_variants.clone(),
                 pd_group,
             },
             PDRole::Colocated => PDDecision::Single { variant_id: selected_variant_id.into() },
@@ -157,8 +155,10 @@ impl PDGroupResult {
 
 #[derive(Debug, Default, Clone)]
 pub struct PDGroup {
-    pub prefill_leaders: Vec<String>,
-    pub decode_leaders: Vec<String>,
+    /// All prefill variant IDs in this group.
+    pub prefill_variants: Vec<String>,
+    /// All decode variant IDs in this group.
+    pub decode_variants: Vec<String>,
 }
 
 #[cfg(test)]
@@ -189,8 +189,8 @@ mod tests {
         ];
         let r = group_pd_variants(&v);
         assert_eq!(r.pd_groups.len(), 1);
-        assert_eq!(r.pd_groups["g1"].prefill_leaders, vec!["p1"]);
-        assert_eq!(r.pd_groups["g1"].decode_leaders, vec!["d1"]);
+        assert_eq!(r.pd_groups["g1"].prefill_variants, vec!["p1"]);
+        assert_eq!(r.pd_groups["g1"].decode_variants, vec!["d1"]);
     }
 
     #[test]
@@ -209,8 +209,8 @@ mod tests {
         let r = group_pd_variants(&v);
         let all: HashMap<String, HashMap<String, String>> = v.into_iter().collect();
         match r.resolve("p1", &all) {
-            PDDecision::Split { prefill_variant_id, decode_variant_ids, pd_group } => {
-                assert_eq!(prefill_variant_id, "p1");
+            PDDecision::Split { prefill_variant_ids, decode_variant_ids, pd_group } => {
+                assert!(prefill_variant_ids.contains(&"p1".to_string()));
                 assert_eq!(decode_variant_ids, vec!["d1"]);
                 assert_eq!(pd_group, "g1");
             }
@@ -227,8 +227,8 @@ mod tests {
         let r = group_pd_variants(&v);
         let all: HashMap<String, HashMap<String, String>> = v.into_iter().collect();
         match r.resolve("d1", &all) {
-            PDDecision::Split { prefill_variant_id, decode_variant_ids, .. } => {
-                assert_eq!(prefill_variant_id, "p1");
+            PDDecision::Split { prefill_variant_ids, decode_variant_ids, .. } => {
+                assert!(prefill_variant_ids.contains(&"p1".to_string()));
                 assert!(decode_variant_ids.contains(&"d1".to_string()));
             }
             _ => panic!("expected Split"),
@@ -236,13 +236,15 @@ mod tests {
     }
 
     #[test]
-    fn test_non_leader_excluded() {
+    fn test_non_leader_included() {
+        // All instances in a group are candidates, not just leaders
         let v = vec![
             ("p1".into(), meta("prefill", "g1", false)),
             ("d1".into(), meta("decode", "g1", true)),
         ];
         let r = group_pd_variants(&v);
-        assert!(r.pd_groups.is_empty());
+        assert_eq!(r.pd_groups.len(), 1);
+        assert_eq!(r.pd_groups["g1"].prefill_variants, vec!["p1"]);
     }
 
     #[test]
@@ -259,6 +261,29 @@ mod tests {
     }
 
     #[test]
+    fn test_multi_p_multi_d() {
+        let v = vec![
+            ("p1".into(), meta("prefill", "g1", true)),
+            ("p2".into(), meta("prefill", "g1", false)),
+            ("d1".into(), meta("decode", "g1", true)),
+            ("d2".into(), meta("decode", "g1", false)),
+            ("d3".into(), meta("decode", "g1", true)),
+        ];
+        let r = group_pd_variants(&v);
+        assert_eq!(r.pd_groups["g1"].prefill_variants.len(), 2);
+        assert_eq!(r.pd_groups["g1"].decode_variants.len(), 3);
+
+        let all: HashMap<String, HashMap<String, String>> = v.into_iter().collect();
+        match r.resolve("p1", &all) {
+            PDDecision::Split { prefill_variant_ids, decode_variant_ids, .. } => {
+                assert_eq!(prefill_variant_ids.len(), 2);
+                assert_eq!(decode_variant_ids.len(), 3);
+            }
+            _ => panic!("expected Split"),
+        }
+    }
+
+    #[test]
     fn test_1p_multi_d() {
         let v = vec![
             ("p1".into(), meta("prefill", "g1", true)),
@@ -267,12 +292,12 @@ mod tests {
             ("d3".into(), meta("decode", "g1", true)),
         ];
         let r = group_pd_variants(&v);
-        assert_eq!(r.pd_groups["g1"].decode_leaders.len(), 3);
+        assert_eq!(r.pd_groups["g1"].decode_variants.len(), 3);
 
         let all: HashMap<String, HashMap<String, String>> = v.into_iter().collect();
         match r.resolve("p1", &all) {
-            PDDecision::Split { prefill_variant_id, decode_variant_ids, .. } => {
-                assert_eq!(prefill_variant_id, "p1");
+            PDDecision::Split { prefill_variant_ids, decode_variant_ids, .. } => {
+                assert!(prefill_variant_ids.contains(&"p1".to_string()));
                 assert_eq!(decode_variant_ids.len(), 3);
                 assert!(decode_variant_ids.contains(&"d1".to_string()));
                 assert!(decode_variant_ids.contains(&"d2".to_string()));
