@@ -401,6 +401,8 @@ pub struct RoutingDecision {
     pub reason: RoutingReason,
     pub score: f32,
     pub decision_time_us: u64,
+    /// P/D disaggregation decision. None for colocated/normal routing.
+    pub pd_decision: Option<crate::plugins::pd_routing::PDDecision>,
 }
 
 #[cfg(test)]

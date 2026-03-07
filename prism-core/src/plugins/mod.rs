@@ -16,3 +16,4 @@ pub mod quota_aware;
 pub mod specialty_scorer;
 pub mod strategy_scorer;
 pub mod weighted;
+pub mod pd_routing;
