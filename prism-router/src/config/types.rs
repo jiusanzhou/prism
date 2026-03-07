@@ -278,6 +278,9 @@ pub struct VariantConfig {
     /// Variant status: "active" (default) or "inactive".
     #[serde(default = "default_variant_status")]
     pub status: String,
+    /// Arbitrary metadata (e.g. P/D role).
+    #[serde(default)]
+    pub metadata: std::collections::HashMap<String, String>,
 }
 
 fn default_variant_status() -> String {

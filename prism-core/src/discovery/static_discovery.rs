@@ -59,6 +59,8 @@ pub struct StaticVariantConfig {
     pub upstream_model_name: Option<String>,
     /// Pricing override.
     pub pricing_override: Option<ModelPricing>,
+    /// Arbitrary metadata (e.g. P/D role, pd_group).
+    pub metadata: std::collections::HashMap<String, String>,
 }
 
 /// Pool configuration for static discovery.
@@ -177,7 +179,7 @@ impl StaticDiscovery {
                 status: VariantStatus::Active,
                 base_url: vc.base_url.clone(),
                 upstream_model_name: vc.upstream_model_name.clone(),
-                metadata: std::collections::HashMap::new(),
+                metadata: vc.metadata.clone(),
             });
         }
 

@@ -321,6 +321,7 @@ fn to_static_discovery_config(config: &PrismConfig) -> StaticDiscoveryConfig {
             deployment_name: vc.deployment_name.clone(),
             upstream_model_name: vc.upstream_model_name.clone(),
             pricing_override: vc.pricing_override.clone(),
+            metadata: vc.metadata.clone(),
         })
         .collect();
 
