@@ -103,11 +103,21 @@ impl std::error::Error for DiscoveryError {}
 pub enum DiscoveryEvent {
     /// Full replacement of all discovered objects.
     FullSync(DiscoveryResult),
+    /// Incremental upsert — merge these objects into the registry.
+    IncrementalUpsert(DiscoveryResult),
+    /// Remove objects by ID.
+    Remove {
+        provider_ids: Vec<String>,
+        endpoint_ids: Vec<String>,
+        account_ids: Vec<String>,
+        model_ids: Vec<String>,
+        variant_ids: Vec<String>,
+        pool_ids: Vec<String>,
+    },
     /// A variant was added or updated.
     VariantUpsert(ModelVariant),
     /// A variant was removed (by id).
     VariantRemove(String),
-    // Future extensions: ProviderUpsert, ModelUpsert, EndpointUpsert, etc.
 }
 
 // ════════════════════════════════════════════════

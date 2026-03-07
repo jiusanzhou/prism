@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 
 use wasmtime::{Caller, Engine, Extern, Linker, Module, Store};
 
-use crate::discovery::{Discovery, DiscoveryError, DiscoveryResult};
+use crate::discovery::{Discovery, DiscoveryError, DiscoveryEvent, DiscoveryResult};
 
 use std::collections::HashMap;
 use std::io::BufRead;
@@ -48,6 +48,8 @@ struct HostState {
     sse_streams: HashMap<i32, SseStream>,
     /// Next SSE handle counter.
     next_sse_handle: i32,
+    /// Channel for push_event (streaming mode).
+    event_sender: Option<std::sync::mpsc::Sender<DiscoveryEvent>>,
 }
 
 /// An open SSE connection.
@@ -395,6 +397,119 @@ impl WasmDiscovery {
             )
             .map_err(|e| format!("Failed to link prism_sse_close: {}", e))?;
 
+        // ── prism_discovery_push_event(json_ptr, json_len) -> status ──
+        // Sends a DiscoveryEvent to the host. Used in streaming mode (prism_discovery_run).
+        // JSON format: {"type":"full_sync","data":{...}} or {"type":"upsert","data":{...}}
+        // or {"type":"remove","variant_ids":["v1"],...}
+        linker
+            .func_wrap(
+                "env",
+                "prism_discovery_push_event",
+                |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
+                 json_ptr: i32,
+                 json_len: i32|
+                 -> i32 {
+                    let memory = match caller.get_export("memory") {
+                        Some(Extern::Memory(m)) => m,
+                        _ => return 2,
+                    };
+                    let data = memory.data(&caller);
+                    let ptr = json_ptr as usize;
+                    let len = json_len as usize;
+                    if ptr + len > data.len() {
+                        return 2;
+                    }
+                    let json_bytes = data[ptr..ptr + len].to_vec();
+
+                    // Parse the event
+                    #[derive(serde::Deserialize)]
+                    struct PushEvent {
+                        #[serde(rename = "type")]
+                        event_type: String,
+                        #[serde(default)]
+                        data: Option<serde_json::Value>,
+                        #[serde(default)]
+                        variant_ids: Vec<String>,
+                        #[serde(default)]
+                        provider_ids: Vec<String>,
+                        #[serde(default)]
+                        endpoint_ids: Vec<String>,
+                        #[serde(default)]
+                        account_ids: Vec<String>,
+                        #[serde(default)]
+                        model_ids: Vec<String>,
+                        #[serde(default)]
+                        pool_ids: Vec<String>,
+                    }
+
+                    let push_event: PushEvent = match serde_json::from_slice(&json_bytes) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            tracing::error!(target: "wasm_discovery", "push_event parse error: {}", e);
+                            return 1;
+                        }
+                    };
+
+                    let discovery_event = match push_event.event_type.as_str() {
+                        "full_sync" => {
+                            if let Some(data) = push_event.data {
+                                match serde_json::from_value::<DiscoveryResult>(data) {
+                                    Ok(result) => DiscoveryEvent::FullSync(result),
+                                    Err(e) => {
+                                        tracing::error!(target: "wasm_discovery", "full_sync parse: {}", e);
+                                        return 1;
+                                    }
+                                }
+                            } else {
+                                return 1;
+                            }
+                        }
+                        "upsert" => {
+                            if let Some(data) = push_event.data {
+                                match serde_json::from_value::<DiscoveryResult>(data) {
+                                    Ok(result) => DiscoveryEvent::IncrementalUpsert(result),
+                                    Err(e) => {
+                                        tracing::error!(target: "wasm_discovery", "upsert parse: {}", e);
+                                        return 1;
+                                    }
+                                }
+                            } else {
+                                return 1;
+                            }
+                        }
+                        "remove" => {
+                            DiscoveryEvent::Remove {
+                                provider_ids: push_event.provider_ids,
+                                endpoint_ids: push_event.endpoint_ids,
+                                account_ids: push_event.account_ids,
+                                model_ids: push_event.model_ids,
+                                variant_ids: push_event.variant_ids,
+                                pool_ids: push_event.pool_ids,
+                            }
+                        }
+                        other => {
+                            tracing::warn!(target: "wasm_discovery", "unknown push_event type: {}", other);
+                            return 1;
+                        }
+                    };
+
+                    // Send through channel
+                    let state = caller.data().clone();
+                    let sent = if let Ok(s) = state.lock() {
+                        if let Some(ref tx) = s.event_sender {
+                            tx.send(discovery_event).is_ok()
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    if sent { 0 } else { 1 }
+                },
+            )
+            .map_err(|e| format!("Failed to link prism_discovery_push_event: {}", e))?;
+
         Ok(())
     }
 }
@@ -494,6 +609,110 @@ fn read_sse_event(reader: &mut std::io::BufReader<Box<dyn std::io::Read + Send +
     }
 }
 
+impl WasmDiscovery {
+    /// Run the discovery plugin in streaming mode.
+    ///
+    /// Calls `prism_discovery_run()` export which blocks indefinitely.
+    /// The WASM module calls `prism_discovery_push_event()` host function
+    /// to send incremental events through the returned channel.
+    ///
+    /// This method blocks the calling thread. Run it in a dedicated thread.
+    pub fn run_streaming(
+        &self,
+    ) -> Result<std::sync::mpsc::Receiver<DiscoveryEvent>, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let host_state = Arc::new(Mutex::new(HostState {
+            result_json: None,
+            log_messages: Vec::new(),
+            sse_streams: HashMap::new(),
+            next_sse_handle: 1,
+            event_sender: Some(tx),
+        }));
+
+        let mut store = Store::new(&self.engine, host_state.clone());
+        let mut linker = Linker::new(&self.engine);
+
+        Self::register_host_functions(&mut linker)
+            .map_err(|e| format!("link host functions: {}", e))?;
+
+        let instance = linker
+            .instantiate(&mut store, &self.module)
+            .map_err(|e| format!("instantiation: {}", e))?;
+
+        // Call init if config exists
+        if let Some(ref config) = self.config {
+            if let Ok(init_fn) =
+                instance.get_typed_func::<(i32, i32), i32>(&mut store, "prism_discovery_init")
+            {
+                let alloc_fn = instance
+                    .get_typed_func::<i32, i32>(&mut store, "proxy_on_memory_allocate")
+                    .map_err(|e| format!("missing allocator: {}", e))?;
+
+                let config_bytes = config.as_bytes();
+                let ptr = alloc_fn
+                    .call(&mut store, config_bytes.len() as i32)
+                    .map_err(|e| format!("alloc: {}", e))?;
+
+                let mem = instance
+                    .get_memory(&mut store, "memory")
+                    .ok_or("no memory")?;
+                mem.data_mut(&mut store)[ptr as usize..ptr as usize + config_bytes.len()]
+                    .copy_from_slice(config_bytes);
+
+                let status = init_fn
+                    .call(&mut store, (ptr, config_bytes.len() as i32))
+                    .map_err(|e| format!("init: {}", e))?;
+                if status != 0 {
+                    return Err(format!("init returned {}", status));
+                }
+            }
+        }
+
+        // Check if module exports prism_discovery_run
+        let run_fn = instance
+            .get_typed_func::<(), i32>(&mut store, "prism_discovery_run")
+            .map_err(|e| format!("missing prism_discovery_run: {}", e))?;
+
+        // Spawn blocking thread to run the WASM module
+        let name = self.name.clone();
+        std::thread::Builder::new()
+            .name(format!("wasm-discovery-{}", name))
+            .spawn(move || {
+                tracing::info!(plugin = %name, "WASM discovery streaming started");
+                match run_fn.call(&mut store, ()) {
+                    Ok(0) => tracing::info!(plugin = %name, "WASM discovery run() returned 0"),
+                    Ok(code) => tracing::warn!(plugin = %name, code, "WASM discovery run() returned non-zero"),
+                    Err(e) => tracing::error!(plugin = %name, "WASM discovery run() trapped: {}", e),
+                }
+            })
+            .map_err(|e| format!("spawn thread: {}", e))?;
+
+        Ok(rx)
+    }
+
+    /// Check if the WASM module exports `prism_discovery_run` (streaming mode).
+    pub fn supports_streaming(&self) -> bool {
+        // Quick check by trying to compile and inspect exports
+        let mut store = Store::new(&self.engine, Arc::new(Mutex::new(HostState {
+            result_json: None,
+            log_messages: Vec::new(),
+            sse_streams: HashMap::new(),
+            next_sse_handle: 1,
+            event_sender: None,
+        })));
+        let mut linker = Linker::new(&self.engine);
+        if Self::register_host_functions(&mut linker).is_err() {
+            return false;
+        }
+        if let Ok(instance) = linker.instantiate(&mut store, &self.module) {
+            instance.get_typed_func::<(), i32>(&mut store, "prism_discovery_run").is_ok()
+        } else {
+            false
+        }
+    }
+}
+
 impl Discovery for WasmDiscovery {
     fn name(&self) -> &str {
         &self.name
@@ -506,6 +725,7 @@ impl Discovery for WasmDiscovery {
             log_messages: Vec::new(),
             sse_streams: HashMap::new(),
             next_sse_handle: 1,
+            event_sender: None,
         }));
 
         let mut store = Store::new(&self.engine, host_state.clone());

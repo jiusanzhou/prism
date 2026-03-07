@@ -173,6 +173,47 @@ impl InMemoryRegistry {
         }
     }
 
+    /// Apply a single discovery event (incremental update).
+    pub fn apply_event(&mut self, event: &crate::discovery::DiscoveryEvent) {
+        use crate::discovery::DiscoveryEvent;
+        match event {
+            DiscoveryEvent::FullSync(result) => {
+                // Clear and replace
+                self.providers.clear();
+                self.endpoints.clear();
+                self.accounts.clear();
+                self.models.clear();
+                self.variants.clear();
+                self.pools.clear();
+                self.apply_discovery(result);
+            }
+            DiscoveryEvent::IncrementalUpsert(result) => {
+                self.apply_discovery(result);
+            }
+            DiscoveryEvent::Remove {
+                provider_ids,
+                endpoint_ids,
+                account_ids,
+                model_ids,
+                variant_ids,
+                pool_ids,
+            } => {
+                for id in provider_ids { self.providers.remove(id); }
+                for id in endpoint_ids { self.endpoints.remove(id); }
+                for id in account_ids { self.accounts.remove(id); }
+                for id in model_ids { self.models.remove(id); }
+                for id in variant_ids { self.variants.remove(id); }
+                for id in pool_ids { self.pools.remove(id); }
+            }
+            DiscoveryEvent::VariantUpsert(variant) => {
+                self.variants.insert(variant.id.clone(), variant.clone());
+            }
+            DiscoveryEvent::VariantRemove(id) => {
+                self.variants.remove(id);
+            }
+        }
+    }
+
     /// Refresh the registry from multiple discovery sources.
     ///
     /// Clears all existing data and re-populates from the given discoveries.
