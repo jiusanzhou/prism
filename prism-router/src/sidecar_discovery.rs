@@ -68,9 +68,23 @@ struct SidecarPool {
     variants: Vec<String>,
 }
 
-/// SSE full_sync event data from `/events`.
+/// SSE event data from `/events`.
+/// All event types (full_sync, instance_add, instance_del, model_remove) share this structure.
 #[derive(Debug, Deserialize)]
-struct SSEFullSync {
+struct SSEEvent {
+    #[serde(default, rename = "type")]
+    event_type: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    instance: Option<SidecarInstance>,
+    #[serde(default)]
+    timestamp: i64,
+    /// Post-event snapshot of all models→instances. Present on incremental events
+    /// to allow immediate full-sync without HTTP re-poll.
+    #[serde(default)]
+    snapshot: Option<HashMap<String, Vec<SidecarInstance>>>,
+    /// Legacy full_sync format: models map directly in event data.
     #[serde(default)]
     models: HashMap<String, Vec<SidecarInstance>>,
 }
@@ -357,10 +371,12 @@ fn process_sse_event(
 ) {
     match event_type {
         "full_sync" => {
-            match serde_json::from_str::<SSEFullSync>(data) {
+            match serde_json::from_str::<SSEEvent>(data) {
                 Ok(event) => {
-                    let n_models = event.models.len();
-                    let n_instances: usize = event.models.values().map(|v| v.len()).sum();
+                    // full_sync: use snapshot if present, else fall back to .models
+                    let models = event.snapshot.as_ref().unwrap_or(&event.models);
+                    let n_models = models.len();
+                    let n_instances: usize = models.values().map(|v| v.len()).sum();
                     if n_models == 0 {
                         debug!(provider = %provider_id, "SSE full_sync empty — skipping");
                         return;
@@ -371,7 +387,7 @@ fn process_sse_event(
                         instances = n_instances,
                         "SSE full_sync"
                     );
-                    let result = instances_to_discovery_result(provider_id, &event.models);
+                    let result = instances_to_discovery_result(provider_id, models);
                     apply_discovery_result(state, provider_id, DiscoveryEvent::FullSync(result));
                 }
                 Err(e) => {
@@ -380,11 +396,35 @@ fn process_sse_event(
             }
         }
         "instance_add" | "instance_del" | "model_remove" => {
-            // On incremental events, re-fetch full state from /prism.
-            // Simple and correct — sidecar is authoritative.
-            debug!(provider = %provider_id, event = event_type, "Incremental event → full refresh");
-            if let Err(e) = poll_and_apply(state, provider_id, sidecar_url) {
-                error!(provider = %provider_id, "Refresh after {} failed: {}", event_type, e);
+            // Use snapshot from event data for instant update (no HTTP round-trip).
+            match serde_json::from_str::<SSEEvent>(data) {
+                Ok(event) => {
+                    if let Some(snapshot) = &event.snapshot {
+                        let n_instances: usize = snapshot.values().map(|v| v.len()).sum();
+                        info!(
+                            provider = %provider_id,
+                            event = event_type,
+                            model = ?event.model,
+                            instances = n_instances,
+                            "SSE {} — applying snapshot",
+                            event_type
+                        );
+                        let result = instances_to_discovery_result(provider_id, snapshot);
+                        apply_discovery_result(state, provider_id, DiscoveryEvent::FullSync(result));
+                    } else {
+                        // No snapshot — fallback to HTTP poll (backward compat with old sidecars)
+                        debug!(provider = %provider_id, event = event_type, "No snapshot in event → HTTP poll");
+                        if let Err(e) = poll_and_apply(state, provider_id, sidecar_url) {
+                            error!(provider = %provider_id, "Refresh after {} failed: {}", event_type, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(provider = %provider_id, "Parse {} event: {} — falling back to poll", event_type, e);
+                    if let Err(e) = poll_and_apply(state, provider_id, sidecar_url) {
+                        error!(provider = %provider_id, "Fallback poll failed: {}", e);
+                    }
+                }
             }
         }
         _ => {

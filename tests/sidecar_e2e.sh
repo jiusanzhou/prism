@@ -332,6 +332,97 @@ else
     fail "No SSE connection log"
 fi
 
+# ── Step 9: Instance fault/recovery (informer event-driven) ───────
+
+echo ""
+echo "=== Step 9: Fault/recovery ==="
+
+# Pick a sacrificial pod (non-P/D, non-test target)
+# Find a sacrificial pod (not the test target, not P/D, not embedding)
+SACRIFICE_POD=""
+SACRIFICE_MODEL=""
+while IFS= read -r line; do
+    POD_NAME=$(echo "$line" | awk '{print $1}')
+    POD_MODEL=$(kubectl get pod "$POD_NAME" -o jsonpath='{.metadata.labels.modelServiceName}' 2>/dev/null)
+    POD_ROLE=$(kubectl get pod "$POD_NAME" -o jsonpath='{.metadata.labels.wanqing\.inference\.instance/role}' 2>/dev/null)
+    [ "$POD_NAME" = "$TARGET_POD" ] && continue
+    [ -n "$POD_ROLE" ] && continue
+    echo "$POD_MODEL" | grep -q "bge" && continue
+    SACRIFICE_POD="$POD_NAME"
+    SACRIFICE_MODEL="$POD_MODEL"
+    break
+done < <(kubectl get pods -l app=inference-service --field-selector=status.phase=Running --no-headers 2>/dev/null)
+
+if [ -z "$SACRIFICE_POD" ]; then
+    echo -e "  ${YELLOW}⊘${NC} No sacrificial pod available — skipped"
+else
+    echo "  Killing: $SACRIFICE_POD ($SACRIFICE_MODEL)"
+
+    # Record baseline
+    BEFORE_COUNT=$(curl -sf http://127.0.0.1:$SIDECAR_PORT/discover | python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(len(v) for v in d['models'].values()))" 2>/dev/null || echo 0)
+    BEFORE_PRISM=$(grep "variants=" "$PRISM_LOG" | tail -1 | strip_ansi | sed -n 's/.*variants=\([0-9]*\).*//p')
+    BEFORE_PRISM=${BEFORE_PRISM:-0}
+
+    # Delete with minimal grace period
+    kubectl delete pod "$SACRIFICE_POD" --grace-period=1 > /dev/null 2>&1 || true &
+
+    # Poll for removal (max 15s)
+    REMOVED=false
+    for i in $(seq 1 30); do
+        sleep 0.5
+        NOW_COUNT=$(curl -sf http://127.0.0.1:$SIDECAR_PORT/discover | python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(len(v) for v in d['models'].values()))" 2>/dev/null || echo "$BEFORE_COUNT")
+        if [ "$NOW_COUNT" -lt "$BEFORE_COUNT" ]; then
+            REMOVED=true
+            break
+        fi
+    done
+
+    if [ "$REMOVED" = "true" ]; then
+        pass "Instance removed from sidecar (<${i}x0.5s)"
+    else
+        fail "Instance not removed after 15s"
+    fi
+
+    # Wait for Prism to catch up (max 10s)
+    sleep 5
+    AFTER_PRISM=$(grep "variants=" "$PRISM_LOG" | tail -1 | strip_ansi | sed -n 's/.*variants=\([0-9]*\).*//p')
+    AFTER_PRISM=${AFTER_PRISM:-0}
+    if [ "$AFTER_PRISM" -lt "$BEFORE_PRISM" ]; then
+        pass "Prism registry shrunk ($BEFORE_PRISM → $AFTER_PRISM variants)"
+    else
+        fail "Prism registry not updated ($BEFORE_PRISM → $AFTER_PRISM)"
+    fi
+
+    # Wait for recovery (max 5min) — deployment controller recreates pod
+    echo "  Waiting for pod recovery (may take 1-5 min)..."
+    RECOVERED=false
+    for i in $(seq 1 150); do
+        sleep 2
+        NOW_COUNT=$(curl -sf http://127.0.0.1:$SIDECAR_PORT/discover | python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(len(v) for v in d['models'].values()))" 2>/dev/null || echo 0)
+        if [ "$NOW_COUNT" -ge "$BEFORE_COUNT" ]; then
+            RECOVERED=true
+            RECOVER_SECS=$((i * 2))
+            break
+        fi
+        [ $((i % 15)) -eq 0 ] && echo "    ... ${i}x2s elapsed, sidecar=$NOW_COUNT"
+    done
+
+    if [ "$RECOVERED" = "true" ]; then
+        pass "Instance recovered in sidecar (~${RECOVER_SECS}s)"
+        # Verify Prism catches up
+        sleep 8
+        FINAL_PRISM=$(grep "variants=" "$PRISM_LOG" | tail -1 | strip_ansi | sed -n 's/.*variants=\([0-9]*\).*//p')
+        FINAL_PRISM=${FINAL_PRISM:-0}
+        if [ "$FINAL_PRISM" -ge "$BEFORE_PRISM" ]; then
+            pass "Prism registry recovered ($FINAL_PRISM variants)"
+        else
+            fail "Prism not recovered ($FINAL_PRISM < $BEFORE_PRISM)"
+        fi
+    else
+        fail "Instance not recovered after 5min"
+    fi
+fi
+
 # ── Summary ────────────────────────────────────────────────────────
 
 echo ""
