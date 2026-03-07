@@ -909,6 +909,13 @@ impl ProxyHttp for PrismProxy {
                     .map(|p| p.base_url.clone())
                     .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
+                // Variant base_url overrides provider base_url (for self-hosted/k8s instances)
+                if let Some(variant) = router.registry.variants.get(&chosen_variant) {
+                    if let Some(ref vurl) = variant.base_url {
+                        base_url = vurl.clone();
+                    }
+                }
+
                 // Extract auth header from provider
                 // First try account auth (preferred — accounts carry the real API keys)
                 // Resolve account from chosen variant
