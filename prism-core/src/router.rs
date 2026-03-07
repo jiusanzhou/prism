@@ -474,6 +474,7 @@ impl Router for PrismRouter {
             },
             score: result.score,
             decision_time_us: decision_time.as_micros() as u64,
+            pd_decision: None,
         })
     }
 }

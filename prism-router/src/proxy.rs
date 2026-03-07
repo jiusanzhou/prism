@@ -112,6 +112,10 @@ pub struct ProxyContext {
     pub request_id: String,
     /// Fallback chain from routing decision for retry/failover.
     pub retry_fallback_chain: Vec<String>,
+    /// P/D routing decision from RoutingDecision.
+    pub pd_decision: Option<prism_core::plugins::pd_routing::PDDecision>,
+    /// Captured request body bytes for P/D prefill fire-and-forget.
+    pub original_body_bytes: Option<Vec<u8>>,
     /// Client-requested model name extracted from request body.
     pub requested_model: Option<String>,
     /// Active concurrency guards — dropped when request completes.
@@ -149,6 +153,8 @@ impl Default for ProxyContext {
             provider_ctx: None,
             request_body_buffer: None,
             response_body_buffer: None,
+            pd_decision: None,
+            original_body_bytes: None,
             outbound_protocol: None,
             upstream_model_name: None,
             request_method: String::new(),
@@ -685,6 +691,10 @@ impl ProxyHttp for PrismProxy {
                     }
                 }
             }
+            // Store body for P/D prefill fire-and-forget
+            if !body_bytes.is_empty() {
+                ctx.original_body_bytes = Some(body_bytes);
+            }
             ctx.request_body_received_at = Some(Instant::now());
         }
 
@@ -1015,6 +1025,83 @@ impl ProxyHttp for PrismProxy {
                         provider = %provider_id,
                         "Protocol conversion enabled via codec plugin chain"
                     );
+                }
+
+                // ── P/D: store decision and fire prefill if Split ──
+                ctx.pd_decision = decision.pd_decision.clone();
+                if let Some(prism_core::plugins::pd_routing::PDDecision::Split {
+                    ref prefill_variant_id,
+                    ..
+                }) = decision.pd_decision
+                {
+                    // Fire-and-forget prefill request
+                    let prefill_variant = router.registry.variants.get(prefill_variant_id);
+                    if let Some(pv) = prefill_variant {
+                        if let Some(ref purl) = pv.base_url {
+                            let prefill_url = format!("{}{}", purl,
+                                ctx.provider_ctx.as_ref().map(|p| p.original_path.as_str()).unwrap_or("/v1/chat/completions"));
+                            let body = ctx.original_body_bytes.clone();
+                            let headers = ctx.provider_ctx.as_ref().and_then(|p| {
+                                let mut h = reqwest::header::HeaderMap::new();
+                                if let Some(ref key) = p.account_api_key {
+                                    if let Ok(v) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", key)) {
+                                        h.insert(reqwest::header::AUTHORIZATION, v);
+                                    }
+                                }
+                                for (k, v) in &p.account_headers {
+                                    if let (Ok(name), Ok(val)) = (
+                                        reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+                                        reqwest::header::HeaderValue::from_str(v),
+                                    ) {
+                                        h.insert(name, val);
+                                    }
+                                }
+                                Some(h)
+                            });
+
+                            info!(
+                                prefill_variant = %prefill_variant_id,
+                                prefill_url = %prefill_url,
+                                "P/D Split: firing prefill request (fire-and-forget)"
+                            );
+
+                            tokio::spawn(async move {
+                                let client = reqwest::Client::builder()
+                                    .timeout(std::time::Duration::from_secs(120))
+                                    .build()
+                                    .unwrap_or_default();
+                                let mut req = client.post(&prefill_url);
+                                if let Some(h) = headers {
+                                    req = req.headers(h);
+                                }
+                                if let Some(b) = body {
+                                    req = req.body(b);
+                                    req = req.header("content-type", "application/json");
+                                }
+                                match req.send().await {
+                                    Ok(resp) => {
+                                        // Drain the response body to prevent connection issues
+                                        let status = resp.status();
+                                        let _ = resp.bytes().await;
+                                        if !status.is_success() {
+                                            tracing::warn!(
+                                                url = %prefill_url,
+                                                status = %status,
+                                                "Prefill fire-and-forget got error status"
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            url = %prefill_url,
+                                            error = %e,
+                                            "Prefill fire-and-forget failed"
+                                        );
+                                    }
+                                }
+                            });
+                        }
+                    }
                 }
 
                 let (host, port, use_tls) = Self::parse_upstream(base_url).inspect_err(|_| {
