@@ -54,7 +54,7 @@ axum-server = { version = "0.7", features = ["tls-rustls"] }
 
 # Provider plugins (Bedrock SigV4, Vertex JWT)
 hmac = "0.12"
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 
 # Access log
 chrono = { version = "0.4", features = ["serde"] }
