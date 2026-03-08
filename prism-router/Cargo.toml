@@ -34,7 +34,7 @@ prost = { version = "0.13", optional = true }
 prost-types = { version = "0.13", optional = true }
 
 # proxy feature deps
-pingora = { version = "0.7", features = ["lb", "proxy", "openssl"], optional = true }
+pingora = { version = "0.8", features = ["lb", "proxy", "openssl"], optional = true }
 async-trait = { version = "0.1", optional = true }
 bytes = { version = "1", optional = true }
 
@@ -54,7 +54,7 @@ axum-server = { version = "0.7", features = ["tls-rustls"] }
 
 # Provider plugins (Bedrock SigV4, Vertex JWT)
 hmac = "0.12"
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 
 # Access log
 chrono = { version = "0.4", features = ["serde"] }

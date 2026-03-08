@@ -40,8 +40,18 @@ client_keys:
     allowed_models: []
     quota:
       max_requests_per_minute: 200
+      max_tokens_per_minute: 500000      # Global TPM fallback
       max_tokens_per_day: 5000000
       max_concurrent: 20
+    model_quotas:                         # Per-model overrides
+      gpt-4o:
+        max_requests_per_minute: 30
+        max_tokens_per_minute: 100000
+        max_tokens_per_day: 1000000
+        max_concurrent: 5
+      deepseek-r1:
+        max_requests_per_minute: 60
+        max_tokens_per_minute: 200000
     metadata:
       team: "alpha"
       tier: "enterprise"
@@ -51,6 +61,7 @@ client_keys:
     allowed_models: ["gpt-4o-mini", "qwen3-0.6b"]
     quota:
       max_requests_per_minute: 60
+      max_tokens_per_minute: 100000
       max_tokens_per_day: 500000
       max_concurrent: 5
 
