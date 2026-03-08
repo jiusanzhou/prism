@@ -173,6 +173,9 @@ fn simple_request() -> RouteRequest {
         metadata: RouteMetadata::default(),
         analyze_context: None,
         required_protocol: None,
+        requested_model: None,
+        inflight_snapshot: None,
+        prefix_cache_index: None,
     }
 }
 
@@ -199,6 +202,9 @@ fn complex_request() -> RouteRequest {
         metadata: RouteMetadata::default(),
         analyze_context: None,
         required_protocol: None,
+        requested_model: None,
+        inflight_snapshot: None,
+        prefix_cache_index: None,
     }
 }
 

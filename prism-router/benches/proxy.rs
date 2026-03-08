@@ -687,6 +687,9 @@ fn simple_route_request() -> prism_core::router::RouteRequest {
         metadata: prism_core::router::RouteMetadata::default(),
         analyze_context: None,
         required_protocol: None,
+        requested_model: None,
+        inflight_snapshot: None,
+        prefix_cache_index: None,
     }
 }
 
@@ -710,6 +713,9 @@ fn complex_route_request() -> prism_core::router::RouteRequest {
         metadata: prism_core::router::RouteMetadata::default(),
         analyze_context: None,
         required_protocol: None,
+        requested_model: None,
+        inflight_snapshot: None,
+        prefix_cache_index: None,
     }
 }
 

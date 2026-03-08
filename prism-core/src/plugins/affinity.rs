@@ -227,9 +227,7 @@ mod tests {
         let score_b = plugin.score(&state_b, &candidate);
         // They could theoretically collide, but with these distinct keys they likely differ
         // This is a probabilistic assertion; if it flakes, the hash space is 100
-        assert!(
-            (score_a - score_b).abs() > f32::EPSILON || true,
-            "different keys may produce different scores (non-deterministic)",
-        );
+        // Different keys likely produce different scores (probabilistic, not guaranteed)
+        let _ = (score_a, score_b);
     }
 }
