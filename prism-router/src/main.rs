@@ -8,6 +8,8 @@ pub mod plugin_loader;
 pub mod plugin_manager;
 mod state;
 pub mod unified_plugin;
+#[cfg(feature = "proxy")]
+mod client_keys;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;
@@ -446,6 +448,15 @@ async fn main() {
                 .with_max_request_body(config.server.max_request_body_bytes)
                 .with_auth(config.auth.clone())
                 .with_health_checker(health_checker);
+
+            // Build client key manager from config
+            if !config.client_keys.is_empty() {
+                if let Some(ckm) = client_keys::ClientKeyManager::new(&config.client_keys) {
+                    info!("  Client keys → {} keys configured", config.client_keys.len());
+                    prism_proxy = prism_proxy.with_client_key_manager(Arc::new(ckm));
+                }
+            }
+
             let prism_proxy = prism_proxy;
 
             // Pingora runs in its own thread

@@ -23,6 +23,7 @@ use crate::protocol::LlmProtocol;
 use crate::ratelimit::RateLimiter;
 use crate::codec::usage_extractor::{ExtractedUsage, USAGE_KEY};
 use crate::codec::quota_recorder::{HEADERS_KEY, LIMITER_KEY};
+use crate::client_keys::{ClientKeyManager, ConcurrencyGuard as ClientKeyConcurrencyGuard};
 
 /// Per-request context stored across Pingora proxy phases.
 pub struct ProxyContext {
@@ -123,6 +124,14 @@ pub struct ProxyContext {
     /// Whether X-Prism-Debug header was set on the request.
     pub debug_mode: bool,
 
+    // ── Client key quota ──
+    /// Authenticated client key name (for access log).
+    pub client_key_name: Option<String>,
+    /// Authenticated client key string (for usage recording).
+    pub client_key: Option<String>,
+    /// Concurrency guard from client key validation (dropped on request end).
+    pub client_key_guard: Option<ClientKeyConcurrencyGuard>,
+
     // ── Routing decision metadata ──
     /// Routing strategy description (from RoutingReason).
     pub route_strategy: Option<String>,
@@ -191,6 +200,9 @@ impl Default for ProxyContext {
             requested_model: None,
             concurrency_guards: Vec::new(),
             debug_mode: false,
+            client_key_name: None,
+            client_key: None,
+            client_key_guard: None,
             route_strategy: None,
             route_score: None,
             route_candidates: None,
@@ -231,6 +243,8 @@ pub struct PrismProxy {
     pub prefix_cache: Arc<dyn prism_core::prefix_cache::PrefixCacheIndex>,
     /// Active health checker for upstream endpoints.
     pub health_checker: Option<Arc<crate::health::HealthChecker>>,
+    /// Per-client-key quota manager.
+    pub client_key_manager: Option<Arc<ClientKeyManager>>,
 }
 
 impl PrismProxy {
@@ -251,6 +265,7 @@ impl PrismProxy {
             circuit_breaker: None,
             auth: None,
             health_checker: None,
+            client_key_manager: None,
             inflight: Arc::new(prism_core::inflight::InFlightTracker::new()),
             prefix_cache: prism_core::prefix_cache::default_prefix_cache(),
         }
@@ -277,6 +292,7 @@ impl PrismProxy {
             circuit_breaker: None,
             auth: None,
             health_checker: None,
+            client_key_manager: None,
             inflight: Arc::new(prism_core::inflight::InFlightTracker::new()),
             prefix_cache: prism_core::prefix_cache::default_prefix_cache(),
         }
@@ -296,6 +312,13 @@ impl PrismProxy {
     #[allow(dead_code)]
     pub fn with_health_checker(mut self, hc: Arc<crate::health::HealthChecker>) -> Self {
         self.health_checker = Some(hc);
+        self
+    }
+
+    /// Set client key manager for per-key quota enforcement.
+    #[allow(dead_code)]
+    pub fn with_client_key_manager(mut self, mgr: Arc<ClientKeyManager>) -> Self {
+        self.client_key_manager = Some(mgr);
         self
     }
 
@@ -518,6 +541,109 @@ impl ProxyHttp for PrismProxy {
             }
         }
 
+        // ── Client key quota validation (QPM, concurrency — model checked after body read) ──
+        if let Some(ref ckm) = self.client_key_manager {
+            let skip = self.auth.as_ref()
+                .map(|a| a.skip_paths.iter().any(|p| path.starts_with(p)))
+                .unwrap_or(false)
+                || ["/health", "/readyz", "/version"].iter().any(|p| path.starts_with(p));
+
+            if !skip {
+                // Extract the API key using same logic as auth
+                let api_key = {
+                    let auth = self.auth.as_ref();
+                    let header_name = auth.map(|a| a.header.as_str()).unwrap_or("authorization");
+                    let strip_prefix = auth.and_then(|a| a.strip_prefix.as_deref());
+                    let header_val = ctx.request_headers_snapshot
+                        .iter()
+                        .find(|(k, _)| k == header_name)
+                        .map(|(_, v)| v.as_str())
+                        .unwrap_or("");
+                    if let Some(prefix) = strip_prefix {
+                        header_val.strip_prefix(prefix).unwrap_or(header_val)
+                    } else {
+                        header_val
+                    }
+                };
+
+                // Validate key without model (model checked after body read)
+                match ckm.validate_key(api_key, None) {
+                    Ok((key_ref, guard)) => {
+                        ctx.client_key_name = Some(key_ref.name);
+                        ctx.client_key = Some(key_ref.key);
+                        ctx.client_key_guard = guard;
+                        debug!(client_key = %api_key, "Client key quota check passed");
+                    }
+                    Err(crate::client_keys::ClientKeyError::InvalidKey) => {
+                        // Key not in client_keys config — might still be valid
+                        // via plain auth.keys allowlist. Let it through.
+                    }
+                    Err(crate::client_keys::ClientKeyError::RateLimited { retry_after_secs }) => {
+                        warn!(path = %path, "Client key QPM quota exceeded");
+                        ctx.response_flags.push("CQ".to_string());
+
+                        let mut header = pingora::http::ResponseHeader::build(429, None).unwrap();
+                        header.insert_header("Retry-After", retry_after_secs.to_string()).unwrap();
+                        header.insert_header("Content-Type", "application/json").unwrap();
+                        let body = serde_json::json!({
+                            "error": {
+                                "type": "quota_exceeded",
+                                "message": "Requests per minute quota exceeded",
+                                "code": "qpm_exceeded",
+                                "retry_after": retry_after_secs,
+                            }
+                        });
+                        session.set_keepalive(None);
+                        session.write_response_header(Box::new(header), true).await.ok();
+                        session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                        return Ok(true);
+                    }
+                    Err(crate::client_keys::ClientKeyError::TokenBudgetExhausted) => {
+                        warn!(path = %path, "Client key daily token budget exhausted");
+                        ctx.response_flags.push("CQ".to_string());
+
+                        let mut header = pingora::http::ResponseHeader::build(429, None).unwrap();
+                        header.insert_header("Content-Type", "application/json").unwrap();
+                        let body = serde_json::json!({
+                            "error": {
+                                "type": "quota_exceeded",
+                                "message": "Daily token budget exhausted",
+                                "code": "token_budget_exhausted",
+                            }
+                        });
+                        session.set_keepalive(None);
+                        session.write_response_header(Box::new(header), true).await.ok();
+                        session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                        return Ok(true);
+                    }
+                    Err(crate::client_keys::ClientKeyError::ConcurrencyExhausted { current, limit }) => {
+                        warn!(path = %path, current = %current, limit = %limit, "Client key concurrency limit exceeded");
+                        ctx.response_flags.push("CQ".to_string());
+
+                        let mut header = pingora::http::ResponseHeader::build(429, None).unwrap();
+                        header.insert_header("Content-Type", "application/json").unwrap();
+                        let body = serde_json::json!({
+                            "error": {
+                                "type": "quota_exceeded",
+                                "message": "Concurrent request limit exceeded",
+                                "code": "concurrency_exceeded",
+                                "current": current,
+                                "limit": limit,
+                            }
+                        });
+                        session.set_keepalive(None);
+                        session.write_response_header(Box::new(header), true).await.ok();
+                        session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                        return Ok(true);
+                    }
+                    Err(crate::client_keys::ClientKeyError::ModelNotAllowed { .. }) => {
+                        // Cannot happen — we passed None for model
+                        unreachable!();
+                    }
+                }
+            }
+        }
+
         // ── Global plugin chain: on_request_headers (pre-route) ──
         if let Some(global_chain) = self.codec_registry.global_chain() {
             let mut global_ctx = codec::ProxyContext::new();
@@ -725,6 +851,36 @@ impl ProxyHttp for PrismProxy {
                 ctx.original_body_bytes = Some(body_bytes);
             }
             ctx.request_body_received_at = Some(Instant::now());
+        }
+
+        // ── Client key: model access check (after body read) ──
+        if let (Some(ref ckm), Some(ref client_key), Some(ref model)) =
+            (&self.client_key_manager, &ctx.client_key, &ctx.requested_model)
+        {
+            if let Err(crate::client_keys::ClientKeyError::ModelNotAllowed { model: denied_model }) =
+                ckm.check_model_access(client_key, model)
+            {
+                warn!(
+                    client_key_name = ?ctx.client_key_name,
+                    model = %denied_model,
+                    "Client key model access denied"
+                );
+                ctx.response_flags.push("CM".to_string());
+
+                let mut header = pingora::http::ResponseHeader::build(403, None).unwrap();
+                header.insert_header("Content-Type", "application/json").unwrap();
+                let body = serde_json::json!({
+                    "error": {
+                        "type": "model_access_denied",
+                        "message": format!("Model '{}' is not allowed for this API key", denied_model),
+                        "code": "model_not_allowed",
+                    }
+                });
+                session.set_keepalive(None);
+                session.write_response_header(Box::new(header), true).await.ok();
+                session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                return Ok(true);
+            }
         }
 
         Ok(false) // continue to Pingora upstream pipeline
@@ -1942,6 +2098,22 @@ impl ProxyHttp for PrismProxy {
         if let Some(ref variant_id) = ctx.selected_variant {
             self.inflight.decrement(variant_id);
         }
+
+        // ── Client key: record token usage and drop concurrency guard ──
+        if let Some(ref ckm) = self.client_key_manager {
+            if let Some(ref client_key) = ctx.client_key {
+                let usage = ctx.global_codec_ctx.as_ref()
+                    .and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY));
+                let total_tokens = usage
+                    .map(|u| {
+                        u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0)
+                    })
+                    .unwrap_or(0);
+                ckm.record_usage(client_key, total_tokens);
+            }
+        }
+        // Drop the client key concurrency guard (decrements counter)
+        ctx.client_key_guard.take();
 
         // Record outcome to metrics collector → DataLayer feedback loop
         if let Some(ref variant_id) = ctx.selected_variant {

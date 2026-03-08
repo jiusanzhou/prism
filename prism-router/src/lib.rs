@@ -10,6 +10,7 @@ pub mod plugin_loader;
 pub mod plugin_manager;
 pub mod state;
 pub mod unified_plugin;
+pub mod client_keys;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;

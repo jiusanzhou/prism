@@ -51,6 +51,10 @@ pub struct PrismConfig {
     /// Account configurations for multi-account routing.
     #[serde(default)]
     pub accounts: Vec<AccountConfig>,
+
+    /// Per-client API key configurations with quota enforcement.
+    #[serde(default)]
+    pub client_keys: Vec<ClientKeyConfig>,
 }
 
 impl PrismConfig {
@@ -1642,6 +1646,56 @@ pub struct AccountRateLimitConfig {
 
 fn default_account_weight() -> f32 {
     1.0
+}
+
+// ════════════════════════════════════════════════
+// Client key (multi-tenant quota) configuration
+// ════════════════════════════════════════════════
+
+/// Per-client API key configuration with quota enforcement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientKeyConfig {
+    /// The API key string (e.g. "sk-team-alpha-xxx").
+    pub key: String,
+    /// Human-readable name for access logs.
+    #[serde(default)]
+    pub name: String,
+    /// Whether this key is active.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Models this key is allowed to use (empty = all models allowed).
+    #[serde(default)]
+    pub allowed_models: Vec<String>,
+    /// Quota limits for this key.
+    #[serde(default)]
+    pub quota: ClientKeyQuotaConfig,
+    /// Arbitrary metadata (team, tier, etc.).
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+}
+
+/// Quota limits for a client key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientKeyQuotaConfig {
+    /// Maximum requests per minute (0 = unlimited).
+    #[serde(default)]
+    pub max_requests_per_minute: u64,
+    /// Maximum tokens per day (0 = unlimited).
+    #[serde(default)]
+    pub max_tokens_per_day: u64,
+    /// Maximum concurrent requests (0 = unlimited).
+    #[serde(default)]
+    pub max_concurrent: u32,
+}
+
+impl Default for ClientKeyQuotaConfig {
+    fn default() -> Self {
+        Self {
+            max_requests_per_minute: 0,
+            max_tokens_per_day: 0,
+            max_concurrent: 0,
+        }
+    }
 }
 
 fn default_circuit_breaker_threshold() -> u32 {

@@ -261,6 +261,11 @@ fn merge_configs(base: PrismConfig, overlay: PrismConfig) -> PrismConfig {
         } else {
             overlay.accounts
         },
+        client_keys: if overlay.client_keys.is_empty() {
+            base.client_keys
+        } else {
+            overlay.client_keys
+        },
     }
 }
 
