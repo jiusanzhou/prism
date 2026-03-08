@@ -12,6 +12,7 @@ use prism_core::registry::ModelRegistryTrait;
 use prism_core::router::{RouteMetadata, RouteRequest, Router, RouterError};
 use prism_core::strategy::ModelSelectionStrategy;
 
+use crate::config::types::AdminConfig;
 use crate::metrics::{RequestLabels, RequestRecord};
 use crate::state::AppState;
 
@@ -430,6 +431,77 @@ pub async fn validate_config_handler(body: String) -> impl IntoResponse {
         }
     }
 }
+// ──────────────────────────────────────────────
+// Admin auth middleware
+// ──────────────────────────────────────────────
+
+/// Build the Axum router with optional admin auth middleware.
+pub fn build_app(state: AppState, admin_config: &AdminConfig) -> axum::Router {
+    use axum::routing::{get, post};
+
+    // Public routes (no auth)
+    let public = axum::Router::new()
+        .route("/v1/route", post(route_handler))
+        .route("/v1/outcomes", post(outcomes_handler))
+        .route("/health", get(health_handler))
+        .route("/readyz", get(readyz_handler))
+        .route("/version", get(version_handler))
+        .route("/metrics", get(metrics_handler));
+
+    // Admin routes
+    let admin = axum::Router::new()
+        .route("/admin/reload", post(reload_handler))
+        .route("/admin/config/validate", post(validate_config_handler));
+
+    // Apply auth middleware to admin routes if token is configured
+    let admin = if let Some(ref token) = admin_config.auth_token {
+        let token = token.clone();
+        admin.layer(axum::middleware::from_fn(move |req, next| {
+            admin_auth_middleware(req, next, token.clone())
+        }))
+    } else {
+        admin
+    };
+
+    public
+        .merge(admin)
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(tower_http::cors::CorsLayer::permissive())
+        .with_state(state)
+}
+
+/// Middleware that validates Bearer token on admin routes.
+async fn admin_auth_middleware(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+    expected_token: String,
+) -> axum::response::Response {
+    let auth_header = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+
+    match auth_header {
+        Some(header) if header.starts_with("Bearer ") => {
+            let token = &header[7..];
+            if token == expected_token {
+                next.run(req).await
+            } else {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"error": "invalid admin token", "code": "UNAUTHORIZED"})),
+                )
+                    .into_response()
+            }
+        }
+        _ => (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "missing or invalid Authorization header", "code": "UNAUTHORIZED"})),
+        )
+            .into_response(),
+    }
+}
+
 // ──────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────

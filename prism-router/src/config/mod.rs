@@ -271,6 +271,11 @@ fn merge_configs(base: PrismConfig, overlay: PrismConfig) -> PrismConfig {
             merged.extend(overlay.model_aliases);
             merged
         },
+        admin: if overlay.admin.auth_token.is_some() {
+            overlay.admin
+        } else {
+            base.admin
+        },
     }
 }
 

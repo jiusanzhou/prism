@@ -42,11 +42,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::routing::{get, post};
-use axum::Router;
 use clap::Parser;
-use tower_http::cors::CorsLayer;
-use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 
 use crate::config::{build_registry, load_config};
@@ -155,19 +151,8 @@ async fn main() {
         Duration::from_secs(5),
     );
 
-    // Build Axum HTTP router
-    let app = Router::new()
-        .route("/v1/route", post(api::route_handler))
-        .route("/v1/outcomes", post(api::outcomes_handler))
-        .route("/admin/reload", post(api::reload_handler))
-        .route("/admin/config/validate", post(api::validate_config_handler))
-        .route("/health", get(api::health_handler))
-        .route("/readyz", get(api::readyz_handler))
-        .route("/version", get(api::version_handler))
-        .route("/metrics", get(api::metrics_handler))
-        .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
-        .with_state(state.clone());
+    // Build Axum HTTP router (with optional admin auth)
+    let app = api::build_app(state.clone(), &config.admin);
 
     // Parse HTTP address
     let http_addr: SocketAddr = http_addr_str.parse().unwrap_or_else(|e| {
@@ -191,15 +176,50 @@ async fn main() {
         features.join(", ")
     );
 
-    // ── Start HTTP server ──
+    if config.admin.auth_token.is_some() {
+        info!("  Admin auth → enabled (bearer token)");
+    }
+    if config.server.tls.is_some() {
+        info!("  TLS → enabled");
+    }
+
+    // ── Start HTTP server (with optional TLS) ──
+    let tls_config = config.server.tls.clone();
     let http_listener = tokio::net::TcpListener::bind(http_addr)
         .await
         .unwrap_or_else(|e| {
             error!("Failed to bind HTTP to {}: {}", http_addr, e);
             std::process::exit(1);
         });
-    info!("  HTTP  → {}", http_addr);
-    let http_server = axum::serve(http_listener, app).with_graceful_shutdown(shutdown_signal());
+    if let Some(ref tls) = tls_config {
+        info!("  HTTP  → {} (TLS)", http_addr);
+        let rustls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&tls.cert_path, &tls.key_path)
+            .await
+            .unwrap_or_else(|e| {
+                error!("Failed to load TLS cert/key for HTTP: {}", e);
+                std::process::exit(1);
+            });
+        let http_server = axum_server::from_tcp_rustls(http_listener.into_std().unwrap(), rustls_config)
+            .serve(app.into_make_service());
+        // Spawn TLS HTTP server — we'll select on shutdown below
+        let http_handle = tokio::spawn(async move {
+            if let Err(e) = http_server.await {
+                error!("HTTP TLS server error: {}", e);
+            }
+        });
+        // We need to keep this handle alive; store in a variable
+        let _http_handle = http_handle;
+    } else {
+        info!("  HTTP  → {}", http_addr);
+        let http_server = axum::serve(http_listener, app).with_graceful_shutdown(shutdown_signal());
+        // Spawn plain HTTP — also select on shutdown
+        let http_handle = tokio::spawn(async move {
+            if let Err(e) = http_server.await {
+                error!("HTTP server error: {}", e);
+            }
+        });
+        let _http_handle = http_handle;
+    }
 
     // ── Start gRPC server (if feature enabled) ──
     #[cfg(feature = "grpc")]
@@ -239,7 +259,11 @@ async fn main() {
             let proxy_addr_str = cli
                 .proxy_listen
                 .unwrap_or_else(|| format!("0.0.0.0:{}", config.server.proxy_port));
-            info!("  Proxy → {}", proxy_addr_str);
+            if tls_config.is_some() {
+                info!("  Proxy → {} (TLS)", proxy_addr_str);
+            } else {
+                info!("  Proxy → {}", proxy_addr_str);
+            }
 
             // Build codec registry with built-in plugins
             let codec_registry = {
@@ -465,13 +489,26 @@ async fn main() {
 
             // Pingora runs in its own thread
             let shutdown_timeout = config.server.shutdown_timeout_secs;
+            let proxy_tls = tls_config.clone();
             let proxy_handle = std::thread::spawn(move || {
                 let mut server = pingora::prelude::Server::new(None).unwrap();
                 server.bootstrap();
 
                 let mut proxy_service =
                     pingora::proxy::http_proxy_service(&server.configuration, prism_proxy);
-                proxy_service.add_tcp(&proxy_addr_str);
+
+                if let Some(ref tls) = proxy_tls {
+                    proxy_service
+                        .add_tls(&proxy_addr_str, &tls.cert_path, &tls.key_path)
+                        .unwrap_or_else(|e| {
+                            eprintln!("Failed to configure TLS on proxy port: {}", e);
+                            std::process::exit(1);
+                        });
+                    // Note: TLS logging happens before thread spawn (in the info! banner)
+                } else {
+                    proxy_service.add_tcp(&proxy_addr_str);
+                }
+
                 server.add_service(proxy_service);
 
                 // Pingora's run_forever() blocks; graceful shutdown is handled
@@ -488,10 +525,8 @@ async fn main() {
         }
     };
 
-    // ── Run HTTP server (main task) ──
-    if let Err(e) = http_server.await {
-        error!("HTTP server error: {}", e);
-    }
+    // ── Wait for shutdown ──
+    shutdown_signal().await;
 
     // Wait for gRPC to finish
     #[cfg(feature = "grpc")]

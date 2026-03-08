@@ -61,6 +61,10 @@ pub struct PrismConfig {
     /// Use `"*"` as a catch-all wildcard fallback.
     #[serde(default)]
     pub model_aliases: HashMap<String, String>,
+
+    /// Admin UI configuration.
+    #[serde(default)]
+    pub admin: AdminConfig,
 }
 
 impl PrismConfig {
@@ -142,6 +146,9 @@ pub struct ServerConfig {
     /// Which 5xx status codes trigger retry (default: [502, 503, 504]).
     #[serde(default = "default_retry_5xx_codes")]
     pub retry_5xx_codes: Vec<u16>,
+    /// TLS termination configuration (optional).
+    #[serde(default)]
+    pub tls: Option<TlsConfig>,
 }
 
 impl Default for ServerConfig {
@@ -160,6 +167,7 @@ impl Default for ServerConfig {
             discovery_interval_secs: None,
             retry_on_5xx: default_retry_on_5xx(),
             retry_5xx_codes: default_retry_5xx_codes(),
+            tls: None,
         }
     }
 }
@@ -210,6 +218,37 @@ fn default_grpc_port() -> u16 {
 
 fn default_proxy_port() -> u16 {
     8000
+}
+
+/// TLS certificate configuration for terminating TLS on the proxy and HTTP ports.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TlsConfig {
+    pub cert_path: String,
+    pub key_path: String,
+}
+
+/// Admin UI / API configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminConfig {
+    /// Whether admin endpoints are enabled (default: true).
+    #[serde(default = "default_admin_enabled")]
+    pub enabled: bool,
+    /// Bearer token required for admin endpoints. None = no auth required.
+    #[serde(default)]
+    pub auth_token: Option<String>,
+}
+
+impl Default for AdminConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_admin_enabled(),
+            auth_token: None,
+        }
+    }
+}
+
+fn default_admin_enabled() -> bool {
+    true
 }
 
 /// How the provider authenticates API requests.
