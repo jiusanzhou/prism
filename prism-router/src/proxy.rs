@@ -140,6 +140,8 @@ pub struct ProxyContext {
     pub last_data_chunk_at: Option<Instant>,
     /// Whether upstream 5xx triggered retry.
     pub retry_on_5xx: bool,
+    /// Whether response_filter detected a retryable 5xx (used by error_while_proxy).
+    pub should_retry_5xx: bool,
 }
 
 
@@ -199,6 +201,7 @@ impl Default for ProxyContext {
             resolved_idle_timeout_secs: None,
             last_data_chunk_at: None,
             retry_on_5xx: false,
+            should_retry_5xx: false,
         }
     }
 }
@@ -231,6 +234,10 @@ pub struct PrismProxy {
     pub prefix_cache: Arc<dyn prism_core::prefix_cache::PrefixCacheIndex>,
     /// Active health checker for upstream endpoints.
     pub health_checker: Option<Arc<crate::health::HealthChecker>>,
+    /// Whether to retry on upstream 5xx responses (from config).
+    pub retry_on_5xx: bool,
+    /// Which 5xx status codes trigger retry (from config).
+    pub retry_5xx_codes: Vec<u16>,
 }
 
 impl PrismProxy {
@@ -253,6 +260,8 @@ impl PrismProxy {
             health_checker: None,
             inflight: Arc::new(prism_core::inflight::InFlightTracker::new()),
             prefix_cache: prism_core::prefix_cache::default_prefix_cache(),
+            retry_on_5xx: true,
+            retry_5xx_codes: vec![502, 503, 504],
         }
     }
 
@@ -279,6 +288,8 @@ impl PrismProxy {
             health_checker: None,
             inflight: Arc::new(prism_core::inflight::InFlightTracker::new()),
             prefix_cache: prism_core::prefix_cache::default_prefix_cache(),
+            retry_on_5xx: true,
+            retry_5xx_codes: vec![502, 503, 504],
         }
     }
 
@@ -328,6 +339,13 @@ impl PrismProxy {
     /// Set maximum request body size.
     pub fn with_max_request_body(mut self, max_bytes: u64) -> Self {
         self.max_request_body_bytes = max_bytes;
+        self
+    }
+
+    /// Set 5xx retry configuration.
+    pub fn with_retry_on_5xx(mut self, enabled: bool, codes: Vec<u16>) -> Self {
+        self.retry_on_5xx = enabled;
+        self.retry_5xx_codes = codes;
         self
     }
 
@@ -1652,10 +1670,34 @@ impl ProxyHttp for PrismProxy {
                 }
             }
 
-            // If we have retry candidates left AND response body hasn't started streaming,
-            // attempt failover on the next request to a different variant.
-            // Note: Pingora doesn't support mid-response retry, so we rely on
-            // circuit breaker + health checker to avoid the bad variant on subsequent requests.
+            // ── 5xx retry: if retryable status + fallback candidates available, trigger retry ──
+            // Pingora has not sent response headers downstream yet (response_filter runs
+            // before write_response_header), so we can safely abort this attempt and retry
+            // with the next fallback variant by returning an error.
+            if self.retry_on_5xx
+                && self.retry_5xx_codes.contains(&status_code)
+                && !ctx.retry_fallback_chain.is_empty()
+            {
+                let next = ctx.retry_fallback_chain.remove(0);
+                info!(
+                    failed_variant = ?ctx.selected_variant,
+                    next_variant = %next,
+                    status = status_code,
+                    remaining = ctx.retry_fallback_chain.len(),
+                    "Upstream 5xx, retrying with fallback variant"
+                );
+                ctx.selected_variant = Some(next);
+                ctx.upstream_request_attempt_count += 1;
+                ctx.response_flags.push("5RT".to_string());
+                ctx.should_retry_5xx = true;
+
+                // Return error to prevent Pingora from sending this response downstream.
+                // error_while_proxy() will mark it as retryable.
+                return Err(pingora::Error::explain(
+                    pingora::ErrorType::ReadError,
+                    format!("upstream {} — retrying with fallback", status_code),
+                ));
+            }
         } else if let Some(ref provider_id) = ctx.selected_provider {
             // Record success for circuit breaker recovery
             if let Some(ref cb) = self.circuit_breaker {
@@ -1886,6 +1928,30 @@ impl ProxyHttp for PrismProxy {
             // Mark as retryable — Pingora will call upstream_peer again
             e.set_retry(true);
         }
+        e
+    }
+
+    /// Mid-proxy error handler — enables retry when response_filter triggered 5xx failover.
+    ///
+    /// When response_filter detects a retryable 5xx, it returns Err(...) to prevent
+    /// response headers from being sent downstream. That error flows here, where we
+    /// mark it as retryable so Pingora's retry loop calls upstream_peer() again.
+    fn error_while_proxy(
+        &self,
+        peer: &HttpPeer,
+        _session: &mut Session,
+        mut e: Box<pingora::Error>,
+        ctx: &mut Self::CTX,
+        _client_reused: bool,
+    ) -> Box<pingora::Error> {
+        if ctx.should_retry_5xx {
+            ctx.should_retry_5xx = false;
+            e.set_retry(true);
+            info!(peer = %peer, "5xx retry: marked error as retryable for Pingora retry loop");
+            return e;
+        }
+        // Default behavior: add peer context
+        e = e.more_context(format!("Peer: {}", peer));
         e
     }
 
@@ -2572,6 +2638,187 @@ mod tests {
             ctx.upstream_model_name,
             Some("deepseek-reasoner".to_string())
         );
+    }
+
+    // ── 5xx retry tests ──
+
+    #[test]
+    fn test_proxy_context_5xx_retry_defaults() {
+        let ctx = ProxyContext::default();
+        assert!(!ctx.retry_on_5xx);
+        assert!(!ctx.should_retry_5xx);
+    }
+
+    #[test]
+    fn test_prism_proxy_retry_on_5xx_defaults() {
+        let registry = prism_core::registry::InMemoryRegistry::new();
+        let router = Arc::new(ArcSwap::new(Arc::new(PrismRouter::new(registry))));
+        let metrics = Arc::new(MetricsCollector::new(100));
+
+        let proxy = PrismProxy::new(router, metrics);
+        assert!(proxy.retry_on_5xx);
+        assert_eq!(proxy.retry_5xx_codes, vec![502, 503, 504]);
+    }
+
+    #[test]
+    fn test_prism_proxy_with_retry_on_5xx_custom() {
+        let registry = prism_core::registry::InMemoryRegistry::new();
+        let router = Arc::new(ArcSwap::new(Arc::new(PrismRouter::new(registry))));
+        let metrics = Arc::new(MetricsCollector::new(100));
+
+        let proxy = PrismProxy::new(router, metrics)
+            .with_retry_on_5xx(true, vec![500, 502, 503]);
+        assert!(proxy.retry_on_5xx);
+        assert_eq!(proxy.retry_5xx_codes, vec![500, 502, 503]);
+    }
+
+    #[test]
+    fn test_prism_proxy_with_retry_on_5xx_disabled() {
+        let registry = prism_core::registry::InMemoryRegistry::new();
+        let router = Arc::new(ArcSwap::new(Arc::new(PrismRouter::new(registry))));
+        let metrics = Arc::new(MetricsCollector::new(100));
+
+        let proxy = PrismProxy::new(router, metrics)
+            .with_retry_on_5xx(false, vec![]);
+        assert!(!proxy.retry_on_5xx);
+        assert!(proxy.retry_5xx_codes.is_empty());
+    }
+
+    /// Simulate the 5xx retry context manipulation that response_filter performs.
+    #[test]
+    fn test_5xx_retry_context_state_machine() {
+        let mut ctx = ProxyContext {
+            selected_variant: Some("variant-a".to_string()),
+            selected_provider: Some("provider-a".to_string()),
+            retry_fallback_chain: vec![
+                "variant-b".to_string(),
+                "variant-c".to_string(),
+            ],
+            upstream_request_attempt_count: 1,
+            ..Default::default()
+        };
+
+        // Simulate what response_filter does on 5xx with retryable conditions
+        let status_code: u16 = 502;
+        let retry_on_5xx = true;
+        let retry_5xx_codes = vec![502, 503, 504];
+
+        assert!(retry_on_5xx);
+        assert!(retry_5xx_codes.contains(&status_code));
+        assert!(!ctx.retry_fallback_chain.is_empty());
+
+        // Pop next variant from chain
+        let next = ctx.retry_fallback_chain.remove(0);
+        assert_eq!(next, "variant-b");
+        ctx.selected_variant = Some(next);
+        ctx.upstream_request_attempt_count += 1;
+        ctx.response_flags.push("5RT".to_string());
+        ctx.should_retry_5xx = true;
+
+        // Verify state after 5xx retry trigger
+        assert_eq!(ctx.selected_variant.as_deref(), Some("variant-b"));
+        assert_eq!(ctx.upstream_request_attempt_count, 2);
+        assert!(ctx.response_flags.contains(&"5RT".to_string()));
+        assert!(ctx.should_retry_5xx);
+        assert_eq!(ctx.retry_fallback_chain, vec!["variant-c".to_string()]);
+
+        // Simulate error_while_proxy clearing the flag
+        ctx.should_retry_5xx = false;
+        assert!(!ctx.should_retry_5xx);
+    }
+
+    /// Test that 5xx retry does NOT trigger when fallback chain is empty.
+    #[test]
+    fn test_5xx_no_retry_when_no_fallback() {
+        let ctx = ProxyContext {
+            selected_variant: Some("variant-a".to_string()),
+            retry_fallback_chain: vec![],  // empty!
+            ..Default::default()
+        };
+
+        let status_code: u16 = 502;
+        let retry_on_5xx = true;
+        let retry_5xx_codes = vec![502, 503, 504];
+
+        let should_retry = retry_on_5xx
+            && retry_5xx_codes.contains(&status_code)
+            && !ctx.retry_fallback_chain.is_empty();
+
+        assert!(!should_retry, "should not retry when fallback chain is empty");
+    }
+
+    /// Test that 5xx retry does NOT trigger for non-retryable status codes.
+    #[test]
+    fn test_5xx_no_retry_for_500() {
+        let ctx = ProxyContext {
+            selected_variant: Some("variant-a".to_string()),
+            retry_fallback_chain: vec!["variant-b".to_string()],
+            ..Default::default()
+        };
+
+        let status_code: u16 = 500;  // 500 is not in default retry codes
+        let retry_on_5xx = true;
+        let retry_5xx_codes = vec![502, 503, 504];
+
+        let should_retry = retry_on_5xx
+            && retry_5xx_codes.contains(&status_code)
+            && !ctx.retry_fallback_chain.is_empty();
+
+        assert!(!should_retry, "should not retry on 500 (not in default retry codes)");
+    }
+
+    /// Test that 5xx retry does NOT trigger when disabled.
+    #[test]
+    fn test_5xx_no_retry_when_disabled() {
+        let ctx = ProxyContext {
+            selected_variant: Some("variant-a".to_string()),
+            retry_fallback_chain: vec!["variant-b".to_string()],
+            ..Default::default()
+        };
+
+        let status_code: u16 = 502;
+        let retry_on_5xx = false;  // disabled!
+        let retry_5xx_codes = vec![502, 503, 504];
+
+        let should_retry = retry_on_5xx
+            && retry_5xx_codes.contains(&status_code)
+            && !ctx.retry_fallback_chain.is_empty();
+
+        assert!(!should_retry, "should not retry when retry_on_5xx is false");
+    }
+
+    /// Test multiple 5xx retries exhaust the fallback chain.
+    #[test]
+    fn test_5xx_retry_exhausts_fallback_chain() {
+        let mut ctx = ProxyContext {
+            selected_variant: Some("variant-a".to_string()),
+            retry_fallback_chain: vec![
+                "variant-b".to_string(),
+                "variant-c".to_string(),
+            ],
+            upstream_request_attempt_count: 1,
+            ..Default::default()
+        };
+
+        // First retry: variant-a → variant-b
+        let next = ctx.retry_fallback_chain.remove(0);
+        ctx.selected_variant = Some(next);
+        ctx.upstream_request_attempt_count += 1;
+        ctx.response_flags.push("5RT".to_string());
+        assert_eq!(ctx.selected_variant.as_deref(), Some("variant-b"));
+        assert_eq!(ctx.retry_fallback_chain.len(), 1);
+
+        // Second retry: variant-b → variant-c
+        let next = ctx.retry_fallback_chain.remove(0);
+        ctx.selected_variant = Some(next);
+        ctx.upstream_request_attempt_count += 1;
+        ctx.response_flags.push("5RT".to_string());
+        assert_eq!(ctx.selected_variant.as_deref(), Some("variant-c"));
+        assert!(ctx.retry_fallback_chain.is_empty());
+        assert_eq!(ctx.upstream_request_attempt_count, 3);
+
+        // No more retries possible
+        assert!(ctx.retry_fallback_chain.is_empty());
     }
 }
 
