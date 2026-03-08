@@ -136,6 +136,12 @@ pub struct ServerConfig {
     /// Discovery plugin poll interval in seconds (default: 15).
     #[serde(default)]
     pub discovery_interval_secs: Option<u64>,
+    /// Whether to retry on upstream 5xx responses using the fallback chain (default: true).
+    #[serde(default = "default_retry_on_5xx")]
+    pub retry_on_5xx: bool,
+    /// Which 5xx status codes trigger retry (default: [502, 503, 504]).
+    #[serde(default = "default_retry_5xx_codes")]
+    pub retry_5xx_codes: Vec<u16>,
 }
 
 impl Default for ServerConfig {
@@ -152,6 +158,8 @@ impl Default for ServerConfig {
             max_request_body_bytes: default_max_request_body_bytes(),
             cors_origins: default_cors_origins(),
             discovery_interval_secs: None,
+            retry_on_5xx: default_retry_on_5xx(),
+            retry_5xx_codes: default_retry_5xx_codes(),
         }
     }
 }
@@ -166,6 +174,14 @@ fn default_cors_origins() -> Vec<String> {
 
 fn default_request_timeout_secs() -> u64 {
     300
+}
+
+fn default_retry_on_5xx() -> bool {
+    true
+}
+
+fn default_retry_5xx_codes() -> Vec<u16> {
+    vec![502, 503, 504]
 }
 
 fn default_keepalive_secs() -> u64 {
@@ -1585,6 +1601,38 @@ model_aliases:
         let yaml = "{}";
         let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.model_aliases.is_empty());
+    }
+
+    #[test]
+    fn test_server_config_retry_on_5xx_defaults() {
+        let yaml = "{}";
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.server.retry_on_5xx);
+        assert_eq!(config.server.retry_5xx_codes, vec![502, 503, 504]);
+    }
+
+    #[test]
+    fn test_server_config_retry_on_5xx_custom() {
+        let yaml = r#"
+server:
+  retry_on_5xx: false
+  retry_5xx_codes: [500, 502]
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(!config.server.retry_on_5xx);
+        assert_eq!(config.server.retry_5xx_codes, vec![500, 502]);
+    }
+
+    #[test]
+    fn test_server_config_retry_on_5xx_empty_codes() {
+        let yaml = r#"
+server:
+  retry_on_5xx: true
+  retry_5xx_codes: []
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.server.retry_on_5xx);
+        assert!(config.server.retry_5xx_codes.is_empty());
     }
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -449,7 +449,8 @@ async fn main() {
                 .with_circuit_breaker(circuit_breaker)
                 .with_max_request_body(config.server.max_request_body_bytes)
                 .with_auth(config.auth.clone())
-                .with_health_checker(health_checker);
+                .with_health_checker(health_checker)
+                .with_retry_on_5xx(config.server.retry_on_5xx, config.server.retry_5xx_codes.clone());
 
             // Build client key manager from config
             if !config.client_keys.is_empty() {
@@ -458,6 +459,7 @@ async fn main() {
                     prism_proxy = prism_proxy.with_client_key_manager(Arc::new(ckm));
                 }
             }
+
 
             let prism_proxy = prism_proxy;
 
