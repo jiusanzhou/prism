@@ -2,7 +2,7 @@
 FROM rust:1.88-bookworm AS builder
 
 # Install protoc for gRPC codegen
-RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler cmake && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 
@@ -31,7 +31,7 @@ COPY prism-admin/ prism-admin/
 RUN touch prism-core/src/lib.rs prism-router/src/main.rs prism-admin/src/main.rs
 
 # Build the real binary (default features: grpc + proxy)
-RUN cargo build --release -p prism-router -p prism-admin
+RUN cargo build --release -p prism-router
 
 # ─── Stage 2: Runtime ────────────────────────────────────
 FROM debian:bookworm-slim
@@ -41,7 +41,6 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/prism-router /usr/local/bin/prism-router
-COPY --from=builder /build/target/release/prism-admin /usr/local/bin/prism-admin
 COPY examples/prism.example.yaml /etc/prism/prism.yaml
 
 RUN mkdir -p /var/log/prism
