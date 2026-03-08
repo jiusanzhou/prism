@@ -22,7 +22,8 @@ RUN mkdir -p prism-core/src prism-router/src prism-admin/src && \
     echo "fn main(){}" > prism-admin/src/main.rs && \
     cargo build --release -p prism-router 2>/dev/null || true
 
-# Copy actual source
+# Copy actual source + proto definitions
+COPY proto/ proto/
 COPY prism-core/ prism-core/
 COPY prism-router/ prism-router/
 COPY prism-admin/ prism-admin/
