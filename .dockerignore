@@ -2,3 +2,12 @@ target/
 bin/
 *.dylib
 .git/
+.github/
+docs/
+examples/mock-llm-server/target/
+prism-admin/frontend/node_modules/
+prism-admin/frontend/dist/
+tests/
+benches/
+*.md
+!README.md

@@ -7,7 +7,7 @@
 *Route every request to the optimal model — automatically.*
 
 [![Rust](https://img.shields.io/badge/Rust-Core_Engine-orange?logo=rust)](prism-core/)
-[![Tests](https://img.shields.io/badge/Tests-803_passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-1461_passing-brightgreen)]()
 [![License](https://img.shields.io/badge/License-MIT-blue)]()
 
 [English](./README.md) · [中文](./README.zh-CN.md)

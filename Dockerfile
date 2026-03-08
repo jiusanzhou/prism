@@ -6,8 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compil
 
 WORKDIR /build
 
-# Cargo registry mirror (China)
-COPY .cargo/config.toml .cargo/config.toml
+# Cargo registry mirror (optional, copy .cargo/config.toml if needed)
+# COPY .cargo/config.toml .cargo/config.toml
 
 # Cache dependencies — copy manifests first
 COPY Cargo.toml Cargo.lock ./

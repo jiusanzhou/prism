@@ -7,7 +7,7 @@
 *一束请求进来，根据策略折射到最优模型。*
 
 [![Rust](https://img.shields.io/badge/Rust-核心引擎-orange?logo=rust)](prism-core/)
-[![Tests](https://img.shields.io/badge/测试-803_通过-brightgreen)]()
+[![Tests](https://img.shields.io/badge/测试-1461_通过-brightgreen)]()
 [![License](https://img.shields.io/badge/License-MIT-blue)]()
 
 [English](./README.md) · [中文](./README.zh-CN.md)
@@ -560,7 +560,7 @@ prism/
 
 ```bash
 cargo build --release        # 构建
-cargo test                   # 运行测试（803 个通过）
+cargo test                   # 运行测试（1461 个通过）
 cargo bench                  # 性能基准测试（prism-core + prism-router）
 cargo fmt --all              # 格式化代码
 cargo clippy -- -D warnings  # 代码检查
@@ -623,7 +623,7 @@ cargo bench --bench proxy -- "e2e/"
 
 | 测试套件 | 数量 |
 |---------|-----:|
-| 默认 (`cargo test`) | 803 |
+| 默认 (`cargo test`) | 1461 |
 | 含 WASM (`--features wasm`) | 945 |
 | E2E 集成测试 | 24 |
 | **总计** | **~970** |
