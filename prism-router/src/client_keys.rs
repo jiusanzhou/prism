@@ -25,6 +25,7 @@ pub enum ClientKeyError {
     ModelNotAllowed { model: String },
     RateLimited { retry_after_secs: u64 },
     TokenBudgetExhausted,
+    TokensPerMinuteExhausted { retry_after_secs: u64 },
     ConcurrencyExhausted { current: u32, limit: u32 },
 }
 
@@ -32,6 +33,8 @@ pub enum ClientKeyError {
 struct QuotaState {
     config: ClientKeyQuotaConfig,
     request_timestamps: RwLock<Vec<Instant>>,
+    /// Sliding window of (timestamp, token_count) for TPM tracking.
+    token_timestamps: RwLock<Vec<(Instant, u64)>>,
     tokens_today: AtomicU64,
     token_day: AtomicU64,
     concurrent: AtomicU32,
@@ -42,6 +45,7 @@ impl QuotaState {
         Self {
             config,
             request_timestamps: RwLock::new(Vec::new()),
+            token_timestamps: RwLock::new(Vec::new()),
             tokens_today: AtomicU64::new(0),
             token_day: AtomicU64::new(current_day_utc()),
             concurrent: AtomicU32::new(0),
@@ -87,10 +91,44 @@ impl QuotaState {
         Ok(Some(ConcurrencyGuard { concurrent: &self.concurrent as *const AtomicU32 }))
     }
 
+    /// Check TPM before accepting new tokens. Returns Ok(()) if under limit.
+    fn check_tpm(&self, new_tokens: u64) -> Result<(), ClientKeyError> {
+        let limit = self.config.max_tokens_per_minute;
+        if limit == 0 { return Ok(()); }
+
+        let now = Instant::now();
+        let window = Duration::from_secs(60);
+        let ts = self.token_timestamps.read().unwrap();
+        let current: u64 = ts.iter()
+            .filter(|(t, _)| now.duration_since(*t) < window)
+            .map(|(_, tok)| *tok)
+            .sum();
+        if current + new_tokens >= limit {
+            let oldest = ts.iter()
+                .filter(|(t, _)| now.duration_since(*t) < window)
+                .map(|(t, _)| *t)
+                .next();
+            let retry = oldest.map(|o| window.checked_sub(now.duration_since(o))
+                .unwrap_or(Duration::from_secs(1)))
+                .unwrap_or(Duration::from_secs(1));
+            return Err(ClientKeyError::TokensPerMinuteExhausted { retry_after_secs: retry.as_secs().max(1) });
+        }
+        Ok(())
+    }
+
     fn record_tokens(&self, tokens: u64) {
         if tokens > 0 {
             maybe_reset_daily(&self.tokens_today, &self.token_day);
             self.tokens_today.fetch_add(tokens, Ordering::Relaxed);
+
+            // TPM sliding window record
+            if self.config.max_tokens_per_minute > 0 {
+                let now = Instant::now();
+                let window = Duration::from_secs(60);
+                let mut ts = self.token_timestamps.write().unwrap();
+                ts.retain(|(t, _)| now.duration_since(*t) < window);
+                ts.push((now, tokens));
+            }
         }
     }
 }
@@ -183,6 +221,7 @@ impl ClientKeyManager {
         // Resolve quota scope (per-model or global)
         let quota = state.quota_for(model);
         quota.check_qpm()?;
+        quota.check_tpm(0)?;  // Pre-request: reject if already over TPM limit
         quota.check_daily_tokens()?;
         let guard = quota.try_increment_concurrent()?;
 
@@ -238,6 +277,7 @@ mod tests {
             allowed_models: vec!["gpt-4o".into(), "claude-sonnet-4".into()],
             quota: ClientKeyQuotaConfig {
                 max_requests_per_minute: 10,
+                max_tokens_per_minute: 0,
                 max_tokens_per_day: 100_000,
                 max_concurrent: 2,
             },
@@ -300,11 +340,13 @@ mod tests {
         cfg.quota.max_concurrent = 0;
         cfg.model_quotas.insert("expensive-model".into(), ClientKeyQuotaConfig {
             max_requests_per_minute: 2,
+            max_tokens_per_minute: 0,
             max_tokens_per_day: 0,
             max_concurrent: 0,
         });
         cfg.model_quotas.insert("cheap-model".into(), ClientKeyQuotaConfig {
             max_requests_per_minute: 5,
+            max_tokens_per_minute: 0,
             max_tokens_per_day: 0,
             max_concurrent: 0,
         });
@@ -337,6 +379,7 @@ mod tests {
         cfg.quota.max_concurrent = 0;
         cfg.model_quotas.insert("gpt-4o".into(), ClientKeyQuotaConfig {
             max_requests_per_minute: 0,
+            max_tokens_per_minute: 0,
             max_tokens_per_day: 1000,
             max_concurrent: 0,
         });
@@ -359,6 +402,7 @@ mod tests {
         cfg.quota.max_concurrent = 100;
         cfg.model_quotas.insert("limited".into(), ClientKeyQuotaConfig {
             max_requests_per_minute: 0,
+            max_tokens_per_minute: 0,
             max_tokens_per_day: 0,
             max_concurrent: 1,
         });
@@ -426,4 +470,50 @@ client_keys:
         assert_eq!(alpha.model_quotas["deepseek-r1"].max_requests_per_minute, 50);
         assert_eq!(alpha.model_quotas["deepseek-r1"].max_tokens_per_day, 0); // default
     }
+
+    #[test]
+    fn per_model_tpm() {
+        let mut cfg = make_config("sk-t", "T");
+        cfg.allowed_models = vec![];
+        cfg.quota.max_concurrent = 0;
+        cfg.quota.max_requests_per_minute = 0;
+        cfg.model_quotas.insert("expensive".into(), ClientKeyQuotaConfig {
+            max_requests_per_minute: 0,
+            max_tokens_per_minute: 100,
+            max_tokens_per_day: 0,
+            max_concurrent: 0,
+        });
+        let mgr = ClientKeyManager::new(&[cfg]).unwrap();
+
+        // Record 80 tokens → still under 100 TPM
+        mgr.record_usage("sk-t", Some("expensive"), 80);
+        assert!(mgr.validate_key("sk-t", Some("expensive")).is_ok());
+
+        // Record 30 more → 110 total → over limit
+        mgr.record_usage("sk-t", Some("expensive"), 30);
+        assert!(matches!(
+            mgr.validate_key("sk-t", Some("expensive")),
+            Err(ClientKeyError::TokensPerMinuteExhausted { .. })
+        ));
+
+        // Other model unaffected (uses global, no TPM limit)
+        assert!(mgr.validate_key("sk-t", Some("cheap")).is_ok());
+    }
+
+    #[test]
+    fn global_tpm() {
+        let mut cfg = make_config("sk-t", "T");
+        cfg.allowed_models = vec![];
+        cfg.quota.max_requests_per_minute = 0;
+        cfg.quota.max_tokens_per_minute = 50;
+        cfg.quota.max_concurrent = 0;
+        let mgr = ClientKeyManager::new(&[cfg]).unwrap();
+
+        mgr.record_usage("sk-t", None, 50);
+        assert!(matches!(
+            mgr.validate_key("sk-t", None),
+            Err(ClientKeyError::TokensPerMinuteExhausted { .. })
+        ));
+    }
+
 }

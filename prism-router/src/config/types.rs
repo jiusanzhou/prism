@@ -1798,6 +1798,9 @@ pub struct ClientKeyQuotaConfig {
     /// Maximum requests per minute (0 = unlimited).
     #[serde(default)]
     pub max_requests_per_minute: u64,
+    /// Maximum tokens per minute (0 = unlimited).
+    #[serde(default)]
+    pub max_tokens_per_minute: u64,
     /// Maximum tokens per day (0 = unlimited).
     #[serde(default)]
     pub max_tokens_per_day: u64,
@@ -1810,6 +1813,7 @@ impl Default for ClientKeyQuotaConfig {
     fn default() -> Self {
         Self {
             max_requests_per_minute: 0,
+            max_tokens_per_minute: 0,
             max_tokens_per_day: 0,
             max_concurrent: 0,
         }

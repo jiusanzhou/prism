@@ -610,16 +610,14 @@ impl ProxyHttp for PrismProxy {
                 };
 
                 // Phase 1: only check key exists + enabled (quota deferred to after body read)
+                // Phase 1: only check key exists + enabled (quota deferred to after body read)
                 match ckm.validate_key_exists(api_key) {
                     Ok(key_ref) => {
                         ctx.client_key_name = Some(key_ref.name);
                         ctx.client_key = Some(key_ref.key);
                         debug!(client_key = %api_key, "Client key exists check passed");
                     }
-                    Err(crate::client_keys::ClientKeyError::InvalidKey) => {
-                        // When client_keys are configured, unknown/disabled keys are rejected.
-                        // (Legacy auth.api_keys is checked separately above — if it passed,
-                        //  we already returned Ok. If client_keys is the only auth, reject.)
+                    Err(_) => {
                         warn!(path = %path, "Invalid or disabled client key");
                         ctx.response_flags.push("CA".to_string());
                         let mut header = pingora::http::ResponseHeader::build(401, None).unwrap();
@@ -635,68 +633,6 @@ impl ProxyHttp for PrismProxy {
                         session.write_response_header(Box::new(header), true).await.ok();
                         session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
                         return Ok(true);
-                    }
-                    Err(crate::client_keys::ClientKeyError::RateLimited { retry_after_secs }) => {
-                        warn!(path = %path, "Client key QPM quota exceeded");
-                        ctx.response_flags.push("CQ".to_string());
-
-                        let mut header = pingora::http::ResponseHeader::build(429, None).unwrap();
-                        header.insert_header("Retry-After", retry_after_secs.to_string()).unwrap();
-                        header.insert_header("Content-Type", "application/json").unwrap();
-                        let body = serde_json::json!({
-                            "error": {
-                                "type": "quota_exceeded",
-                                "message": "Requests per minute quota exceeded",
-                                "code": "qpm_exceeded",
-                                "retry_after": retry_after_secs,
-                            }
-                        });
-                        session.set_keepalive(None);
-                        session.write_response_header(Box::new(header), true).await.ok();
-                        session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
-                        return Ok(true);
-                    }
-                    Err(crate::client_keys::ClientKeyError::TokenBudgetExhausted) => {
-                        warn!(path = %path, "Client key daily token budget exhausted");
-                        ctx.response_flags.push("CQ".to_string());
-
-                        let mut header = pingora::http::ResponseHeader::build(429, None).unwrap();
-                        header.insert_header("Content-Type", "application/json").unwrap();
-                        let body = serde_json::json!({
-                            "error": {
-                                "type": "quota_exceeded",
-                                "message": "Daily token budget exhausted",
-                                "code": "token_budget_exhausted",
-                            }
-                        });
-                        session.set_keepalive(None);
-                        session.write_response_header(Box::new(header), true).await.ok();
-                        session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
-                        return Ok(true);
-                    }
-                    Err(crate::client_keys::ClientKeyError::ConcurrencyExhausted { current, limit }) => {
-                        warn!(path = %path, current = %current, limit = %limit, "Client key concurrency limit exceeded");
-                        ctx.response_flags.push("CQ".to_string());
-
-                        let mut header = pingora::http::ResponseHeader::build(429, None).unwrap();
-                        header.insert_header("Content-Type", "application/json").unwrap();
-                        let body = serde_json::json!({
-                            "error": {
-                                "type": "quota_exceeded",
-                                "message": "Concurrent request limit exceeded",
-                                "code": "concurrency_exceeded",
-                                "current": current,
-                                "limit": limit,
-                            }
-                        });
-                        session.set_keepalive(None);
-                        session.write_response_header(Box::new(header), true).await.ok();
-                        session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
-                        return Ok(true);
-                    }
-                    Err(crate::client_keys::ClientKeyError::ModelNotAllowed { .. }) => {
-                        // Cannot happen — we passed None for model
-                        unreachable!();
                     }
                 }
             }
@@ -965,6 +901,18 @@ impl ProxyHttp for PrismProxy {
                     let mut header = pingora::http::ResponseHeader::build(429, None).unwrap();
                     header.insert_header("Content-Type", "application/json").unwrap();
                     let body = serde_json::json!({"error":{"type":"token_budget_exhausted","message":"Daily token budget exhausted","code":"token_budget_exhausted"}});
+                    session.set_keepalive(None);
+                    session.write_response_header(Box::new(header), true).await.ok();
+                    session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                    return Ok(true);
+                }
+                Err(crate::client_keys::ClientKeyError::TokensPerMinuteExhausted { retry_after_secs }) => {
+                    warn!(client_key_name = ?ctx.client_key_name, model = %model, "TPM quota exhausted");
+                    ctx.response_flags.push("CT".to_string());
+                    let mut header = pingora::http::ResponseHeader::build(429, None).unwrap();
+                    header.insert_header("Retry-After", retry_after_secs.to_string()).unwrap();
+                    header.insert_header("Content-Type", "application/json").unwrap();
+                    let body = serde_json::json!({"error":{"type":"tpm_exceeded","message":"Tokens per minute quota exceeded","code":"tpm_exceeded","retry_after":retry_after_secs}});
                     session.set_keepalive(None);
                     session.write_response_header(Box::new(header), true).await.ok();
                     session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
