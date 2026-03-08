@@ -108,7 +108,8 @@ async fn main() {
     // Build registry and router
     let registry = build_registry(&config);
     let router = crate::config::build_router_from_config(registry, &config.routing);
-    let state = AppState::new(router, cli.config.clone());
+    let state = AppState::new(router, cli.config.clone())
+        .with_model_aliases(config.model_aliases.clone());
 
     // Start config watcher
     let _config_watcher = config_watcher::spawn_config_watcher(
@@ -378,6 +379,7 @@ async fn main() {
                 codec_registry,
             );
             prism_proxy = prism_proxy.with_inflight(Arc::clone(&state.inflight));
+            prism_proxy = prism_proxy.with_model_aliases(Arc::clone(&state.model_aliases));
             prism_proxy.prefix_cache = state.prefix_cache.clone();
             if let Some(limiter) = rate_limiter {
                 prism_proxy = prism_proxy.with_rate_limiter(limiter);

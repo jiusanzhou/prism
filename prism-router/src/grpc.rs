@@ -47,7 +47,16 @@ impl RouterService for GrpcRouterService {
             .collect();
 
         // Determine strategy: model field takes priority over strategy field
-        let strategy = if let Some(ref model) = req.model {
+        // Resolve model aliases before routing
+        let resolved_model = req.model.as_ref().map(|m| {
+            if m == "auto" || m.is_empty() {
+                m.clone()
+            } else {
+                self.state.resolve_model_alias(m)
+            }
+        });
+
+        let strategy = if let Some(ref model) = resolved_model {
             if model == "auto" || model.is_empty() {
                 parse_strategy(req.strategy.as_deref())
             } else {
@@ -72,7 +81,7 @@ impl RouterService for GrpcRouterService {
             strategy,
             metadata,
             analyze_context: None,
-            requested_model: None,
+            requested_model: resolved_model.filter(|m| m != "auto" && !m.is_empty()),
             inflight_snapshot: Some(self.state.inflight.snapshot()),
             prefix_cache_index: Some(self.state.prefix_cache.clone()),
             required_protocol: None,

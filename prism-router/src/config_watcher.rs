@@ -166,6 +166,9 @@ pub fn reload_config(
     // 5. Atomic swap
     state.swap_router(new_router);
 
+    // 6. Update model aliases
+    state.swap_model_aliases(new_config.model_aliases);
+
     let duration = start.elapsed();
     let generation = state.generation();
 

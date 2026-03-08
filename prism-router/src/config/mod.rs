@@ -266,6 +266,11 @@ fn merge_configs(base: PrismConfig, overlay: PrismConfig) -> PrismConfig {
         } else {
             overlay.client_keys
         },
+        model_aliases: {
+            let mut merged = base.model_aliases;
+            merged.extend(overlay.model_aliases);
+            merged
+        },
     }
 }
 

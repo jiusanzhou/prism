@@ -30,6 +30,9 @@ pub struct AppState {
     /// Per-provider discovery state: provider_id → models→instances.
     /// Written by individual sidecar consumers, read during registry rebuild.
     pub discovery_states: Arc<RwLock<HashMap<String, HashMap<String, Vec<serde_json::Value>>>>>,
+    /// Model alias / fallback mapping: client name → internal model id.
+    /// Atomically swappable for hot-reload.
+    pub model_aliases: Arc<ArcSwap<HashMap<String, String>>>,
 }
 
 impl AppState {
@@ -43,7 +46,32 @@ impl AppState {
             inflight: Arc::new(InFlightTracker::new()),
             prefix_cache: prism_core::prefix_cache::default_prefix_cache(),
             discovery_states: Arc::new(RwLock::new(HashMap::new())),
+            model_aliases: Arc::new(ArcSwap::new(Arc::new(HashMap::new()))),
         }
+    }
+
+    /// Create with model aliases pre-populated.
+    pub fn with_model_aliases(self, aliases: HashMap<String, String>) -> Self {
+        self.model_aliases.store(Arc::new(aliases));
+        self
+    }
+
+    /// Resolve a model name through alias mapping.
+    /// Returns the resolved model name (or the original if no alias matches).
+    pub fn resolve_model_alias(&self, model: &str) -> String {
+        let aliases = self.model_aliases.load();
+        if let Some(resolved) = aliases.get(model) {
+            resolved.clone()
+        } else if let Some(wildcard) = aliases.get("*") {
+            wildcard.clone()
+        } else {
+            model.to_string()
+        }
+    }
+
+    /// Atomically swap model aliases (used during hot-reload).
+    pub fn swap_model_aliases(&self, aliases: HashMap<String, String>) {
+        self.model_aliases.store(Arc::new(aliases));
     }
 
     /// Get the current router (cheap load from ArcSwap).
@@ -109,5 +137,64 @@ mod tests {
         let router = PrismRouter::new(InMemoryRegistry::new());
         let state = AppState::new(router, PathBuf::from("/some/path.yaml"));
         assert_eq!(*state.config_path, PathBuf::from("/some/path.yaml"));
+    }
+
+    #[test]
+    fn test_resolve_model_alias_exact_match() {
+        let router = PrismRouter::new(InMemoryRegistry::new());
+        let mut aliases = HashMap::new();
+        aliases.insert("gpt-4".to_string(), "qwen3-72b".to_string());
+        aliases.insert("claude-sonnet".to_string(), "deepseek-r1".to_string());
+        aliases.insert("*".to_string(), "qwen3-0.6b".to_string());
+        let state = AppState::new(router, PathBuf::from("test.yaml"))
+            .with_model_aliases(aliases);
+
+        assert_eq!(state.resolve_model_alias("gpt-4"), "qwen3-72b");
+        assert_eq!(state.resolve_model_alias("claude-sonnet"), "deepseek-r1");
+    }
+
+    #[test]
+    fn test_resolve_model_alias_wildcard_fallback() {
+        let router = PrismRouter::new(InMemoryRegistry::new());
+        let mut aliases = HashMap::new();
+        aliases.insert("gpt-4".to_string(), "qwen3-72b".to_string());
+        aliases.insert("*".to_string(), "qwen3-0.6b".to_string());
+        let state = AppState::new(router, PathBuf::from("test.yaml"))
+            .with_model_aliases(aliases);
+
+        assert_eq!(state.resolve_model_alias("unknown-model"), "qwen3-0.6b");
+    }
+
+    #[test]
+    fn test_resolve_model_alias_no_match_passthrough() {
+        let router = PrismRouter::new(InMemoryRegistry::new());
+        let mut aliases = HashMap::new();
+        aliases.insert("gpt-4".to_string(), "qwen3-72b".to_string());
+        let state = AppState::new(router, PathBuf::from("test.yaml"))
+            .with_model_aliases(aliases);
+
+        assert_eq!(state.resolve_model_alias("unknown-model"), "unknown-model");
+    }
+
+    #[test]
+    fn test_resolve_model_alias_empty_aliases() {
+        let router = PrismRouter::new(InMemoryRegistry::new());
+        let state = AppState::new(router, PathBuf::from("test.yaml"));
+
+        assert_eq!(state.resolve_model_alias("gpt-4"), "gpt-4");
+    }
+
+    #[test]
+    fn test_swap_model_aliases() {
+        let router = PrismRouter::new(InMemoryRegistry::new());
+        let state = AppState::new(router, PathBuf::from("test.yaml"));
+
+        assert_eq!(state.resolve_model_alias("gpt-4"), "gpt-4");
+
+        let mut aliases = HashMap::new();
+        aliases.insert("gpt-4".to_string(), "qwen3-72b".to_string());
+        state.swap_model_aliases(aliases);
+
+        assert_eq!(state.resolve_model_alias("gpt-4"), "qwen3-72b");
     }
 }

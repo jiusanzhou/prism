@@ -55,6 +55,12 @@ pub struct PrismConfig {
     /// Per-client API key configurations with quota enforcement.
     #[serde(default)]
     pub client_keys: Vec<ClientKeyConfig>,
+
+    /// Model alias / fallback mapping.
+    /// Maps client-facing model names to internal model IDs.
+    /// Use `"*"` as a catch-all wildcard fallback.
+    #[serde(default)]
+    pub model_aliases: HashMap<String, String>,
 }
 
 impl PrismConfig {
@@ -1556,10 +1562,31 @@ plugins:
         let all = config.all_discovery_configs();
         assert!(all.is_empty());
     }
+
+    #[test]
+    fn test_model_aliases_config_serde() {
+        let yaml = r#"
+model_aliases:
+  gpt-4: qwen3-72b
+  gpt-4o: qwen3-72b
+  claude-sonnet: deepseek-r1
+  "*": qwen3-0.6b
+"#;
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.model_aliases.len(), 4);
+        assert_eq!(config.model_aliases["gpt-4"], "qwen3-72b");
+        assert_eq!(config.model_aliases["gpt-4o"], "qwen3-72b");
+        assert_eq!(config.model_aliases["claude-sonnet"], "deepseek-r1");
+        assert_eq!(config.model_aliases["*"], "qwen3-0.6b");
+    }
+
+    #[test]
+    fn test_model_aliases_default_empty() {
+        let yaml = "{}";
+        let config: PrismConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.model_aliases.is_empty());
+    }
 }
-
-
-/// API key authentication configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuthConfig {
     /// Whether authentication is enabled.
