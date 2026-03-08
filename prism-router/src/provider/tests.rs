@@ -1,10 +1,10 @@
 //! Integration tests for the provider plugin framework.
 
-use super::*;
 use super::bedrock::BedrockPlugin;
 use super::openai::OpenAICompatPlugin;
 use super::registry::ProviderPluginRegistry;
 use super::vertex::VertexPlugin;
+use super::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -35,11 +35,15 @@ fn test_provider_plugin_is_object_safe() {
 
 struct MinimalPlugin;
 impl ProviderPlugin for MinimalPlugin {
-    fn id(&self) -> &str { "minimal" }
+    fn id(&self) -> &str {
+        "minimal"
+    }
 }
 
 #[test]
-fn test_default_display_name() { assert_eq!(MinimalPlugin.display_name(), "minimal"); }
+fn test_default_display_name() {
+    assert_eq!(MinimalPlugin.display_name(), "minimal");
+}
 
 #[test]
 fn test_default_config_schema() {
@@ -50,13 +54,18 @@ fn test_default_config_schema() {
 
 #[test]
 fn test_default_validate() {
-    assert!(MinimalPlugin.validate_config(&HashMap::new(), &None, &HashMap::new()).is_ok());
+    assert!(MinimalPlugin
+        .validate_config(&HashMap::new(), &None, &HashMap::new())
+        .is_ok());
 }
 
 #[test]
 fn test_default_build_auth_bearer() {
     let auth = MinimalPlugin.build_auth(&base_ctx()).unwrap();
-    assert_eq!(auth.headers, vec![("Authorization".into(), "Bearer sk-test-key".into())]);
+    assert_eq!(
+        auth.headers,
+        vec![("Authorization".into(), "Bearer sk-test-key".into())]
+    );
 }
 
 #[test]
@@ -70,13 +79,25 @@ fn test_default_rewrite_url() {
 fn test_default_transform_body() {
     let b = b"test".to_vec();
     let ctx = base_ctx();
-    assert_eq!(MinimalPlugin.transform_request_body(b.clone(), &ctx).unwrap(), b);
-    assert_eq!(MinimalPlugin.transform_response_body(b.clone(), &ctx).unwrap(), b);
+    assert_eq!(
+        MinimalPlugin
+            .transform_request_body(b.clone(), &ctx)
+            .unwrap(),
+        b
+    );
+    assert_eq!(
+        MinimalPlugin
+            .transform_response_body(b.clone(), &ctx)
+            .unwrap(),
+        b
+    );
 }
 
 #[test]
 fn test_default_transform_stream() {
-    let r = MinimalPlugin.transform_stream_chunk("data: x", &base_ctx()).unwrap();
+    let r = MinimalPlugin
+        .transform_stream_chunk("data: x", &base_ctx())
+        .unwrap();
     assert_eq!(r, Some("data: x".into()));
 }
 
@@ -85,7 +106,10 @@ fn test_openai_full_pipeline() {
     let reg = ProviderPluginRegistry::new();
     let p = reg.get("openai");
     let ctx = base_ctx();
-    assert_eq!(p.build_auth(&ctx).unwrap().headers[0].1, "Bearer sk-test-key");
+    assert_eq!(
+        p.build_auth(&ctx).unwrap().headers[0].1,
+        "Bearer sk-test-key"
+    );
     assert_eq!(p.rewrite_url(&ctx).unwrap().path, "/v1/chat/completions");
     let body = br#"{"model":"gpt-4o"}"#.to_vec();
     assert_eq!(p.transform_request_body(body.clone(), &ctx).unwrap(), body);
@@ -95,7 +119,9 @@ fn test_openai_full_pipeline() {
 fn test_dispatch_by_provider_type() {
     struct XApiKeyPlugin;
     impl ProviderPlugin for XApiKeyPlugin {
-        fn id(&self) -> &str { "x-api" }
+        fn id(&self) -> &str {
+            "x-api"
+        }
         fn build_auth(&self, ctx: &ProviderRequestContext) -> Result<AuthResult, String> {
             let mut r = AuthResult::default();
             if let Some(ref k) = ctx.account_api_key {
@@ -106,24 +132,40 @@ fn test_dispatch_by_provider_type() {
     }
     let mut reg = ProviderPluginRegistry::new();
     reg.register(Arc::new(XApiKeyPlugin));
-    assert_eq!(reg.get("x-api").build_auth(&base_ctx()).unwrap().headers[0].0, "x-api-key");
-    assert_eq!(reg.get("openai").build_auth(&base_ctx()).unwrap().headers[0].0, "Authorization");
+    assert_eq!(
+        reg.get("x-api").build_auth(&base_ctx()).unwrap().headers[0].0,
+        "x-api-key"
+    );
+    assert_eq!(
+        reg.get("openai").build_auth(&base_ctx()).unwrap().headers[0].0,
+        "Authorization"
+    );
 }
 
 #[test]
-fn test_auth_result_default() { assert!(AuthResult::default().headers.is_empty()); }
+fn test_auth_result_default() {
+    assert!(AuthResult::default().headers.is_empty());
+}
 
 #[test]
 fn test_url_rewrite_clone() {
-    let r = UrlRewriteResult { path: "/x".into(), host_override: Some("h".into()) };
+    let r = UrlRewriteResult {
+        path: "/x".into(),
+        host_override: Some("h".into()),
+    };
     assert_eq!(r.clone().path, "/x");
 }
 
 #[test]
 fn test_config_field_serde() {
     let f = ConfigField {
-        name: "r".into(), label: "R".into(), field_type: ConfigFieldType::Select,
-        required: true, default: None, options: vec!["a".into()], description: "d".into(),
+        name: "r".into(),
+        label: "R".into(),
+        field_type: ConfigFieldType::Select,
+        required: true,
+        default: None,
+        options: vec!["a".into()],
+        description: "d".into(),
     };
     let j = serde_json::to_string(&f).unwrap();
     assert!(j.contains("\"select\""));
@@ -210,7 +252,10 @@ fn test_dispatch_bedrock_auth() {
     };
 
     let auth = plugin.build_auth(&ctx).unwrap();
-    assert!(auth.headers.iter().any(|(k, v)| k == "Authorization" && v.starts_with("AWS4-HMAC-SHA256")));
+    assert!(auth
+        .headers
+        .iter()
+        .any(|(k, v)| k == "Authorization" && v.starts_with("AWS4-HMAC-SHA256")));
 }
 
 #[test]
@@ -244,7 +289,10 @@ fn test_dispatch_vertex_url_rewrite() {
         url.path,
         "/v1beta1/projects/my-project/locations/us-central1/endpoints/openapi/v1/chat/completions"
     );
-    assert_eq!(url.host_override, Some("us-central1-aiplatform.googleapis.com".into()));
+    assert_eq!(
+        url.host_override,
+        Some("us-central1-aiplatform.googleapis.com".into())
+    );
 }
 
 #[test]
@@ -276,7 +324,10 @@ mod wasm_tests {
 
     fn azure_ctx() -> ProviderRequestContext {
         let mut extra = HashMap::new();
-        extra.insert("api_version".into(), serde_json::json!("2025-04-01-preview"));
+        extra.insert(
+            "api_version".into(),
+            serde_json::json!("2025-04-01-preview"),
+        );
         ProviderRequestContext {
             provider_id: "azure-eastus2".into(),
             provider_type: "azure".into(),
@@ -324,7 +375,10 @@ mod wasm_tests {
     fn test_wasm_azure_url_chat() {
         let p = WasmProviderPlugin::new("Azure", &azure_wasm()).unwrap();
         let url = p.rewrite_url(&azure_ctx()).unwrap();
-        assert_eq!(url.path, "/openai/deployments/my-gpt-5-deploy/chat/completions?api-version=2025-04-01-preview");
+        assert_eq!(
+            url.path,
+            "/openai/deployments/my-gpt-5-deploy/chat/completions?api-version=2025-04-01-preview"
+        );
     }
 
     #[test]
@@ -334,7 +388,10 @@ mod wasm_tests {
         ctx.original_path = "/v1/embeddings".into();
         ctx.deployment_name = Some("ada-002".into());
         let url = p.rewrite_url(&ctx).unwrap();
-        assert_eq!(url.path, "/openai/deployments/ada-002/embeddings?api-version=2025-04-01-preview");
+        assert_eq!(
+            url.path,
+            "/openai/deployments/ada-002/embeddings?api-version=2025-04-01-preview"
+        );
     }
 
     #[test]
@@ -351,7 +408,9 @@ mod wasm_tests {
     fn test_wasm_azure_body_passthrough() {
         let p = WasmProviderPlugin::new("Azure", &azure_wasm()).unwrap();
         let body = br#"{"model":"gpt-5"}"#.to_vec();
-        let result = p.transform_request_body(body.clone(), &azure_ctx()).unwrap();
+        let result = p
+            .transform_request_body(body.clone(), &azure_ctx())
+            .unwrap();
         assert_eq!(result, body);
     }
 

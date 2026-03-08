@@ -27,7 +27,12 @@ pub async fn proxy_fetch(
         .timeout(std::time::Duration::from_secs(30))
         .danger_accept_invalid_certs(true)
         .build()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("client error: {}", e)))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("client error: {}", e),
+            )
+        })?;
 
     let method = req.method.as_deref().unwrap_or("GET");
     let mut builder = match method.to_uppercase().as_str() {
@@ -52,8 +57,8 @@ pub async fn proxy_fetch(
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("read body error: {}", e)))?;
 
-    let body: serde_json::Value = serde_json::from_str(&body_text)
-        .unwrap_or_else(|_| serde_json::Value::String(body_text));
+    let body: serde_json::Value =
+        serde_json::from_str(&body_text).unwrap_or_else(|_| serde_json::Value::String(body_text));
 
     Ok(Json(ProxyFetchResponse { status, body }))
 }

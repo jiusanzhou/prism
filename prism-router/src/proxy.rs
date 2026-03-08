@@ -14,16 +14,16 @@ use prism_core::analyzer::ChatMessage;
 use prism_core::router::{PrismRouter, RouteMetadata, RouteRequest, Router};
 
 use crate::access_log::{AccessLogData, AccessLogger};
+use crate::client_keys::{ClientKeyManager, ConcurrencyGuard as ClientKeyConcurrencyGuard};
 use crate::codec;
-use crate::provider;
-use crate::provider::registry::ProviderPluginRegistry;
+use crate::codec::quota_recorder::{HEADERS_KEY, LIMITER_KEY};
 use crate::codec::registry::CodecRegistry;
+use crate::codec::usage_extractor::{ExtractedUsage, USAGE_KEY};
 use crate::metrics::{MetricsCollector, RequestRecord};
 use crate::protocol::LlmProtocol;
+use crate::provider;
+use crate::provider::registry::ProviderPluginRegistry;
 use crate::ratelimit::RateLimiter;
-use crate::codec::usage_extractor::{ExtractedUsage, USAGE_KEY};
-use crate::codec::quota_recorder::{HEADERS_KEY, LIMITER_KEY};
-use crate::client_keys::{ClientKeyManager, ConcurrencyGuard as ClientKeyConcurrencyGuard};
 
 /// Per-request context stored across Pingora proxy phases.
 pub struct ProxyContext {
@@ -154,7 +154,6 @@ pub struct ProxyContext {
     /// Whether response_filter detected a retryable 5xx (used by error_while_proxy).
     pub should_retry_5xx: bool,
 }
-
 
 impl Default for ProxyContext {
     fn default() -> Self {
@@ -318,7 +317,10 @@ impl PrismProxy {
 
     /// Set model alias mapping (shared with AppState for hot-reload).
     #[allow(dead_code)]
-    pub fn with_model_aliases(mut self, aliases: Arc<ArcSwap<std::collections::HashMap<String, String>>>) -> Self {
+    pub fn with_model_aliases(
+        mut self,
+        aliases: Arc<ArcSwap<std::collections::HashMap<String, String>>>,
+    ) -> Self {
         self.model_aliases = aliases;
         self
     }
@@ -337,7 +339,11 @@ impl PrismProxy {
     #[allow(dead_code)]
     pub fn with_auth(mut self, auth: crate::config::types::AuthConfig) -> Self {
         if auth.enabled {
-            info!("  Client auth → enabled ({} keys, header: {})", auth.keys.len(), auth.header);
+            info!(
+                "  Client auth → enabled ({} keys, header: {})",
+                auth.keys.len(),
+                auth.header
+            );
             self.auth = Some(auth);
         }
         self
@@ -370,13 +376,21 @@ impl PrismProxy {
     }
 
     /// Set concurrency limiter.
-    pub fn with_concurrency_limiter(mut self, limiter: Arc<crate::ratelimit::concurrency::ConcurrencyLimiter>) -> Self {
+    pub fn with_concurrency_limiter(
+        mut self,
+        limiter: Arc<crate::ratelimit::concurrency::ConcurrencyLimiter>,
+    ) -> Self {
         self.concurrency_limiter = Some(limiter);
         self
     }
 
     /// Set timeout configuration.
-    pub fn with_timeouts(mut self, request_timeout_secs: u64, keepalive_secs: u64, idle_timeout_secs: u64) -> Self {
+    pub fn with_timeouts(
+        mut self,
+        request_timeout_secs: u64,
+        keepalive_secs: u64,
+        idle_timeout_secs: u64,
+    ) -> Self {
         self.request_timeout_secs = request_timeout_secs;
         self.idle_timeout_secs = idle_timeout_secs;
         self.keepalive_secs = keepalive_secs;
@@ -527,7 +541,8 @@ impl ProxyHttp for PrismProxy {
             });
 
         // Check if client wants debug trace headers
-        ctx.debug_mode = ctx.request_headers_snapshot
+        ctx.debug_mode = ctx
+            .request_headers_snapshot
             .iter()
             .any(|(k, v)| k == "x-prism-debug" && (v == "true" || v == "1"));
 
@@ -543,14 +558,17 @@ impl ProxyHttp for PrismProxy {
             // Skip auth for health/readyz/version paths
             let skip = auth.skip_paths.iter().any(|p| path.starts_with(p));
             if !skip {
-                let header_val = ctx.request_headers_snapshot
+                let header_val = ctx
+                    .request_headers_snapshot
                     .iter()
                     .find(|(k, _)| k == &auth.header)
                     .map(|(_, v)| v.as_str())
                     .unwrap_or("");
 
                 let key = if let Some(ref prefix) = auth.strip_prefix {
-                    header_val.strip_prefix(prefix.as_str()).unwrap_or(header_val)
+                    header_val
+                        .strip_prefix(prefix.as_str())
+                        .unwrap_or(header_val)
                 } else {
                     header_val
                 };
@@ -585,19 +603,25 @@ impl ProxyHttp for PrismProxy {
 
         // ── Client key quota validation (QPM, concurrency — model checked after body read) ──
         if let Some(ref ckm) = self.client_key_manager {
-            let skip = self.auth.as_ref()
+            let skip = self
+                .auth
+                .as_ref()
                 .map(|a| a.skip_paths.iter().any(|p| path.starts_with(p)))
                 .unwrap_or(false)
-                || ["/health", "/readyz", "/version"].iter().any(|p| path.starts_with(p));
+                || ["/health", "/readyz", "/version"]
+                    .iter()
+                    .any(|p| path.starts_with(p));
 
             if !skip {
                 // Extract the API key using same logic as auth
                 let api_key = {
                     let auth = self.auth.as_ref();
                     let header_name = auth.map(|a| a.header.as_str()).unwrap_or("authorization");
-                    let strip_prefix = auth.and_then(|a| a.strip_prefix.as_deref())
-                        .or(Some("Bearer "));  // Default: strip "Bearer " prefix
-                    let header_val = ctx.request_headers_snapshot
+                    let strip_prefix = auth
+                        .and_then(|a| a.strip_prefix.as_deref())
+                        .or(Some("Bearer ")); // Default: strip "Bearer " prefix
+                    let header_val = ctx
+                        .request_headers_snapshot
                         .iter()
                         .find(|(k, _)| k == header_name)
                         .map(|(_, v)| v.as_str())
@@ -621,7 +645,9 @@ impl ProxyHttp for PrismProxy {
                         warn!(path = %path, "Invalid or disabled client key");
                         ctx.response_flags.push("CA".to_string());
                         let mut header = pingora::http::ResponseHeader::build(401, None).unwrap();
-                        header.insert_header("Content-Type", "application/json").unwrap();
+                        header
+                            .insert_header("Content-Type", "application/json")
+                            .unwrap();
                         let body = serde_json::json!({
                             "error": {
                                 "type": "authentication_error",
@@ -630,8 +656,14 @@ impl ProxyHttp for PrismProxy {
                             }
                         });
                         session.set_keepalive(None);
-                        session.write_response_header(Box::new(header), true).await.ok();
-                        session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                        session
+                            .write_response_header(Box::new(header), true)
+                            .await
+                            .ok();
+                        session
+                            .write_response_body(Some(Bytes::from(body.to_string())), true)
+                            .await
+                            .ok();
                         return Ok(true);
                     }
                 }
@@ -745,8 +777,7 @@ impl ProxyHttp for PrismProxy {
                         "Request body too large"
                     );
                     ctx.response_flags.push("BL".to_string());
-                    let header =
-                        pingora::http::ResponseHeader::build(413, None).unwrap();
+                    let header = pingora::http::ResponseHeader::build(413, None).unwrap();
                     let body = serde_json::json!({
                         "error": {
                             "type": "request_body_too_large",
@@ -816,7 +847,6 @@ impl ProxyHttp for PrismProxy {
             }
         }
 
-
         // Read body to extract model name for routing.
         // We use enable_retry_buffering() so Pingora saves the body internally.
         // After reading, proxy_handle_downstream will replay the retry buffer
@@ -853,69 +883,122 @@ impl ProxyHttp for PrismProxy {
         }
 
         // ── Client key: full quota validation (after body read → model is known) ──
-        if let (Some(ref ckm), Some(ref client_key), Some(ref model)) =
-            (&self.client_key_manager, &ctx.client_key, &ctx.requested_model)
-        {
+        if let (Some(ref ckm), Some(ref client_key), Some(ref model)) = (
+            &self.client_key_manager,
+            &ctx.client_key,
+            &ctx.requested_model,
+        ) {
             match ckm.validate_key(client_key, Some(model.as_str())) {
                 Ok((_key_ref, guard)) => {
                     ctx.client_key_guard = guard;
                     debug!(client_key = %client_key, model = %model, "Client key full quota check passed");
                 }
-                Err(crate::client_keys::ClientKeyError::ModelNotAllowed { model: denied_model }) => {
+                Err(crate::client_keys::ClientKeyError::ModelNotAllowed {
+                    model: denied_model,
+                }) => {
                     warn!(client_key_name = ?ctx.client_key_name, model = %denied_model, "Client key model access denied");
                     ctx.response_flags.push("CM".to_string());
                     let mut header = pingora::http::ResponseHeader::build(403, None).unwrap();
-                    header.insert_header("Content-Type", "application/json").unwrap();
+                    header
+                        .insert_header("Content-Type", "application/json")
+                        .unwrap();
                     let body = serde_json::json!({"error":{"type":"model_access_denied","message":format!("Model '{}' not allowed for this key", denied_model),"code":"model_not_allowed"}});
                     session.set_keepalive(None);
-                    session.write_response_header(Box::new(header), true).await.ok();
-                    session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                    session
+                        .write_response_header(Box::new(header), true)
+                        .await
+                        .ok();
+                    session
+                        .write_response_body(Some(Bytes::from(body.to_string())), true)
+                        .await
+                        .ok();
                     return Ok(true);
                 }
                 Err(crate::client_keys::ClientKeyError::RateLimited { retry_after_secs }) => {
                     warn!(client_key_name = ?ctx.client_key_name, model = %model, "Client key QPM exceeded");
                     ctx.response_flags.push("CQ".to_string());
                     let mut header = pingora::http::ResponseHeader::build(429, None).unwrap();
-                    header.insert_header("Retry-After", retry_after_secs.to_string()).unwrap();
-                    header.insert_header("Content-Type", "application/json").unwrap();
+                    header
+                        .insert_header("Retry-After", retry_after_secs.to_string())
+                        .unwrap();
+                    header
+                        .insert_header("Content-Type", "application/json")
+                        .unwrap();
                     let body = serde_json::json!({"error":{"type":"quota_exceeded","message":"QPM quota exceeded","code":"qpm_exceeded","retry_after":retry_after_secs}});
                     session.set_keepalive(None);
-                    session.write_response_header(Box::new(header), true).await.ok();
-                    session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                    session
+                        .write_response_header(Box::new(header), true)
+                        .await
+                        .ok();
+                    session
+                        .write_response_body(Some(Bytes::from(body.to_string())), true)
+                        .await
+                        .ok();
                     return Ok(true);
                 }
-                Err(crate::client_keys::ClientKeyError::ConcurrencyExhausted { current, limit }) => {
+                Err(crate::client_keys::ClientKeyError::ConcurrencyExhausted {
+                    current,
+                    limit,
+                }) => {
                     warn!(client_key_name = ?ctx.client_key_name, model = %model, current, limit, "Concurrent limit exceeded");
                     ctx.response_flags.push("CC".to_string());
                     let mut header = pingora::http::ResponseHeader::build(429, None).unwrap();
-                    header.insert_header("Content-Type", "application/json").unwrap();
+                    header
+                        .insert_header("Content-Type", "application/json")
+                        .unwrap();
                     let body = serde_json::json!({"error":{"type":"concurrency_exceeded","message":format!("Concurrent limit ({}/{}) exceeded", current, limit),"code":"concurrency_exceeded"}});
                     session.set_keepalive(None);
-                    session.write_response_header(Box::new(header), true).await.ok();
-                    session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                    session
+                        .write_response_header(Box::new(header), true)
+                        .await
+                        .ok();
+                    session
+                        .write_response_body(Some(Bytes::from(body.to_string())), true)
+                        .await
+                        .ok();
                     return Ok(true);
                 }
                 Err(crate::client_keys::ClientKeyError::TokenBudgetExhausted) => {
                     warn!(client_key_name = ?ctx.client_key_name, model = %model, "Daily token budget exhausted");
                     ctx.response_flags.push("CT".to_string());
                     let mut header = pingora::http::ResponseHeader::build(429, None).unwrap();
-                    header.insert_header("Content-Type", "application/json").unwrap();
+                    header
+                        .insert_header("Content-Type", "application/json")
+                        .unwrap();
                     let body = serde_json::json!({"error":{"type":"token_budget_exhausted","message":"Daily token budget exhausted","code":"token_budget_exhausted"}});
                     session.set_keepalive(None);
-                    session.write_response_header(Box::new(header), true).await.ok();
-                    session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                    session
+                        .write_response_header(Box::new(header), true)
+                        .await
+                        .ok();
+                    session
+                        .write_response_body(Some(Bytes::from(body.to_string())), true)
+                        .await
+                        .ok();
                     return Ok(true);
                 }
-                Err(crate::client_keys::ClientKeyError::TokensPerMinuteExhausted { retry_after_secs }) => {
+                Err(crate::client_keys::ClientKeyError::TokensPerMinuteExhausted {
+                    retry_after_secs,
+                }) => {
                     warn!(client_key_name = ?ctx.client_key_name, model = %model, "TPM quota exhausted");
                     ctx.response_flags.push("CT".to_string());
                     let mut header = pingora::http::ResponseHeader::build(429, None).unwrap();
-                    header.insert_header("Retry-After", retry_after_secs.to_string()).unwrap();
-                    header.insert_header("Content-Type", "application/json").unwrap();
+                    header
+                        .insert_header("Retry-After", retry_after_secs.to_string())
+                        .unwrap();
+                    header
+                        .insert_header("Content-Type", "application/json")
+                        .unwrap();
                     let body = serde_json::json!({"error":{"type":"tpm_exceeded","message":"Tokens per minute quota exceeded","code":"tpm_exceeded","retry_after":retry_after_secs}});
                     session.set_keepalive(None);
-                    session.write_response_header(Box::new(header), true).await.ok();
-                    session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                    session
+                        .write_response_header(Box::new(header), true)
+                        .await
+                        .ok();
+                    session
+                        .write_response_body(Some(Bytes::from(body.to_string())), true)
+                        .await
+                        .ok();
                     return Ok(true);
                 }
                 Err(crate::client_keys::ClientKeyError::InvalidKey) => {
@@ -933,7 +1016,6 @@ impl ProxyHttp for PrismProxy {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> Result<Box<HttpPeer>, Box<pingora::Error>> {
-
         // ── Retry fast-path: if fail_to_connect set a new variant, use it directly ──
         if ctx.upstream_request_attempt_count > 1 {
             if let Some(ref variant_id) = ctx.selected_variant {
@@ -941,13 +1023,17 @@ impl ProxyHttp for PrismProxy {
                 if let Some(variant) = router.registry.variants.get(variant_id) {
                     // Resolve provider from variant's endpoint
                     let endpoint = router.registry.endpoints.get(&variant.endpoint_id);
-                    let provider_id = endpoint.map(|ep| ep.provider_id.clone()).unwrap_or_default();
+                    let provider_id = endpoint
+                        .map(|ep| ep.provider_id.clone())
+                        .unwrap_or_default();
                     let provider = router.registry.providers.get(&provider_id);
 
                     ctx.selected_provider = Some(provider_id.clone());
                     ctx.upstream_model_name = variant.upstream_model_name.clone();
 
-                    let base_url = variant.base_url.as_deref()
+                    let base_url = variant
+                        .base_url
+                        .as_deref()
                         .or_else(|| endpoint.and_then(|ep| ep.base_url.as_deref()))
                         .or_else(|| provider.map(|p| p.base_url.as_str()))
                         .unwrap_or("https://api.openai.com/v1");
@@ -959,12 +1045,19 @@ impl ProxyHttp for PrismProxy {
                     let account_id = variant.account_id.as_ref();
                     if let Some(acct) = account_id.and_then(|id| router.registry.accounts.get(id)) {
                         match &acct.auth {
-                            prism_core::types::AuthConfig::ApiKey { key, header } if !key.is_empty() => {
+                            prism_core::types::AuthConfig::ApiKey { key, header }
+                                if !key.is_empty() =>
+                            {
                                 ctx.upstream_auth = Some(key.clone());
                                 ctx.upstream_auth_header = header.clone();
                             }
-                            prism_core::types::AuthConfig::Custom { headers } if !headers.is_empty() => {
-                                ctx.upstream_custom_headers = headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                            prism_core::types::AuthConfig::Custom { headers }
+                                if !headers.is_empty() =>
+                            {
+                                ctx.upstream_custom_headers = headers
+                                    .iter()
+                                    .map(|(k, v)| (k.clone(), v.clone()))
+                                    .collect();
                             }
                             _ => {}
                         }
@@ -993,7 +1086,8 @@ impl ProxyHttp for PrismProxy {
 
                     let mut peer = HttpPeer::new((host, port), use_tls, host.to_string());
                     peer.options.connection_timeout = Some(std::time::Duration::from_secs(5));
-                    peer.options.read_timeout = Some(std::time::Duration::from_secs(self.request_timeout_secs));
+                    peer.options.read_timeout =
+                        Some(std::time::Duration::from_secs(self.request_timeout_secs));
                     peer.options.write_timeout = Some(std::time::Duration::from_secs(10));
                     peer.options.set_http_version(1, 1);
                     return Ok(Box::new(peer));
@@ -1052,7 +1146,10 @@ impl ProxyHttp for PrismProxy {
                     let variant = router.registry.variants.get(candidate);
                     let provider_id = variant
                         .and_then(|v| {
-                            router.registry.endpoints.get(&v.endpoint_id)
+                            router
+                                .registry
+                                .endpoints
+                                .get(&v.endpoint_id)
                                 .map(|ep| ep.provider_id.clone())
                         })
                         .unwrap_or_default();
@@ -1107,7 +1204,10 @@ impl ProxyHttp for PrismProxy {
                 };
 
                 // Resolve chosen variant's provider
-                let chosen_provider = router.registry.variants.get(&chosen_variant)
+                let chosen_provider = router
+                    .registry
+                    .variants
+                    .get(&chosen_variant)
                     .and_then(|v| router.registry.endpoints.get(&v.endpoint_id))
                     .map(|ep| ep.provider_id.clone())
                     .unwrap_or_else(|| decision.selected_provider.clone());
@@ -1120,11 +1220,17 @@ impl ProxyHttp for PrismProxy {
                 self.inflight.increment(&chosen_variant);
 
                 // Store remaining fallback chain (after chosen)
-                let chosen_idx = candidates.iter().position(|c| c == &chosen_variant).unwrap_or(0);
+                let chosen_idx = candidates
+                    .iter()
+                    .position(|c| c == &chosen_variant)
+                    .unwrap_or(0);
                 ctx.retry_fallback_chain = candidates[chosen_idx + 1..].to_vec();
 
                 // Look up pool name for the chosen variant
-                ctx.pool_name = router.registry.pools.values()
+                ctx.pool_name = router
+                    .registry
+                    .pools
+                    .values()
                     .find(|p| p.variants.contains(&chosen_variant))
                     .map(|p| p.name.clone());
 
@@ -1150,17 +1256,24 @@ impl ProxyHttp for PrismProxy {
                 // Extract auth header from provider
                 // First try account auth (preferred — accounts carry the real API keys)
                 // Resolve account from chosen variant
-                let chosen_account_id = router.registry.variants.get(&chosen_variant)
+                let chosen_account_id = router
+                    .registry
+                    .variants
+                    .get(&chosen_variant)
                     .and_then(|v| v.account_id.clone())
                     .unwrap_or_else(|| decision.selected_account.clone());
                 let account = router.registry.accounts.get(&chosen_account_id);
                 if let Some(acct) = account {
                     match &acct.auth {
-                        prism_core::types::AuthConfig::ApiKey { key, header } if !key.is_empty() => {
+                        prism_core::types::AuthConfig::ApiKey { key, header }
+                            if !key.is_empty() =>
+                        {
                             ctx.upstream_auth = Some(key.clone());
                             ctx.upstream_auth_header = header.clone();
                         }
-                        prism_core::types::AuthConfig::Custom { headers } if !headers.is_empty() => {
+                        prism_core::types::AuthConfig::Custom { headers }
+                            if !headers.is_empty() =>
+                        {
                             ctx.upstream_custom_headers = headers
                                 .iter()
                                 .map(|(k, v)| (k.clone(), v.clone()))
@@ -1172,31 +1285,35 @@ impl ProxyHttp for PrismProxy {
 
                 // Fall back to provider auth if account didn't provide any
                 if ctx.upstream_auth.is_none() && ctx.upstream_custom_headers.is_empty() {
-                if let Some(p) = provider {
-                    match &p.auth {
-                        prism_core::types::AuthConfig::ApiKey { key, header } => {
-                            ctx.upstream_auth = Some(key.clone());
-                            ctx.upstream_auth_header = header.clone();
+                    if let Some(p) = provider {
+                        match &p.auth {
+                            prism_core::types::AuthConfig::ApiKey { key, header } => {
+                                ctx.upstream_auth = Some(key.clone());
+                                ctx.upstream_auth_header = header.clone();
+                            }
+                            prism_core::types::AuthConfig::Custom { headers } => {
+                                ctx.upstream_custom_headers = headers
+                                    .iter()
+                                    .map(|(k, v)| (k.clone(), v.clone()))
+                                    .collect();
+                            }
+                            _ => {}
                         }
-                        prism_core::types::AuthConfig::Custom { headers } => {
-                            ctx.upstream_custom_headers = headers
-                                .iter()
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect();
-                        }
-                        _ => {}
                     }
-                }
                 }
 
                 ctx.upstream_base_url = Some(base_url.to_string());
 
                 // Resolve per-provider timeouts (provider metadata override > global)
                 if let Some(p) = provider {
-                    ctx.resolved_timeout_secs = p.metadata.get("request_timeout_secs")
+                    ctx.resolved_timeout_secs = p
+                        .metadata
+                        .get("request_timeout_secs")
                         .and_then(|v| v.parse::<u64>().ok())
                         .or(Some(self.request_timeout_secs));
-                    ctx.resolved_idle_timeout_secs = p.metadata.get("idle_timeout_secs")
+                    ctx.resolved_idle_timeout_secs = p
+                        .metadata
+                        .get("idle_timeout_secs")
                         .and_then(|v| v.parse::<u64>().ok());
                 }
 
@@ -1206,16 +1323,22 @@ impl ProxyHttp for PrismProxy {
                         .and_then(|p| p.protocols.first().cloned())
                         .unwrap_or_default();
                     let provider_extra = provider
-                        .map(|p| p.metadata.clone().into_iter().map(|(k, v)| {
-                            (k, serde_json::Value::String(v))
-                        }).collect())
-               .unwrap_or_default();
+                        .map(|p| {
+                            p.metadata
+                                .clone()
+                                .into_iter()
+                                .map(|(k, v)| (k, serde_json::Value::String(v)))
+                                .collect()
+                        })
+                        .unwrap_or_default();
 
                     // Extract api_key from account's AuthConfig.
                     // Note: registry bakes "Bearer " prefix into ApiKey.key for Bearer auth.
                     // We strip it here to give the provider plugin the raw key.
                     let (acct_key, acct_headers) = match account.map(|a| &a.auth) {
-                        Some(prism_core::types::AuthConfig::ApiKey { key, .. }) if !key.is_empty() => {
+                        Some(prism_core::types::AuthConfig::ApiKey { key, .. })
+                            if !key.is_empty() =>
+                        {
                             let raw_key = key.strip_prefix("Bearer ").unwrap_or(key).to_string();
                             (Some(raw_key), std::collections::HashMap::new())
                         }
@@ -1282,19 +1405,27 @@ impl ProxyHttp for PrismProxy {
                 }) = decision.pd_decision
                 {
                     // Fire-and-forget prefill: pick least-loaded P variant
-                    let prefill_variant_id = select_least_loaded(
-                        prefill_variant_ids, &self.inflight,
-                    );
+                    let prefill_variant_id =
+                        select_least_loaded(prefill_variant_ids, &self.inflight);
                     let prefill_variant = router.registry.variants.get(prefill_variant_id);
                     if let Some(pv) = prefill_variant {
                         if let Some(ref purl) = pv.base_url {
-                            let prefill_url = format!("{}{}", purl,
-                                ctx.provider_ctx.as_ref().map(|p| p.original_path.as_str()).unwrap_or("/v1/chat/completions"));
+                            let prefill_url = format!(
+                                "{}{}",
+                                purl,
+                                ctx.provider_ctx
+                                    .as_ref()
+                                    .map(|p| p.original_path.as_str())
+                                    .unwrap_or("/v1/chat/completions")
+                            );
                             let body = ctx.original_body_bytes.clone();
                             let headers = ctx.provider_ctx.as_ref().and_then(|p| {
                                 let mut h = reqwest::header::HeaderMap::new();
                                 if let Some(ref key) = p.account_api_key {
-                                    if let Ok(v) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", key)) {
+                                    if let Ok(v) = reqwest::header::HeaderValue::from_str(&format!(
+                                        "Bearer {}",
+                                        key
+                                    )) {
                                         h.insert(reqwest::header::AUTHORIZATION, v);
                                     }
                                 }
@@ -1363,7 +1494,8 @@ impl ProxyHttp for PrismProxy {
                     if !decode_variant_ids.is_empty() {
                         // Pick decode variant: for now round-robin via attempt count
                         // TODO: load-based selection
-                        let d_idx = (ctx.upstream_request_attempt_count as usize) % decode_variant_ids.len();
+                        let d_idx = (ctx.upstream_request_attempt_count as usize)
+                            % decode_variant_ids.len();
                         let d_variant_id = &decode_variant_ids[d_idx];
 
                         if let Some(d_variant) = router.registry.variants.get(d_variant_id) {
@@ -1405,7 +1537,9 @@ impl ProxyHttp for PrismProxy {
 
                 let mut peer = HttpPeer::new((host, port), use_tls, host.to_string());
                 peer.options.connection_timeout = Some(std::time::Duration::from_secs(5));
-                let timeout = ctx.resolved_timeout_secs.unwrap_or(self.request_timeout_secs);
+                let timeout = ctx
+                    .resolved_timeout_secs
+                    .unwrap_or(self.request_timeout_secs);
                 peer.options.read_timeout = Some(std::time::Duration::from_secs(timeout));
                 peer.options.write_timeout = Some(std::time::Duration::from_secs(10));
                 // Support HTTP/2 and HTTP/1.1 via ALPN negotiation
@@ -1496,7 +1630,9 @@ impl ProxyHttp for PrismProxy {
         // ── Default Content-Type to application/json ──
         // LLM APIs are JSON-only. Default to application/json if missing or wrong.
         {
-            let needs_fix = upstream_request.headers.get("content-type")
+            let needs_fix = upstream_request
+                .headers
+                .get("content-type")
                 .and_then(|v| v.to_str().ok())
                 .map(|ct| !ct.contains("application/json"))
                 .unwrap_or(true);
@@ -1519,14 +1655,12 @@ impl ProxyHttp for PrismProxy {
                 Ok(auth_result) => {
                     let n = auth_result.headers.len();
                     for (key, value) in auth_result.headers {
-                        upstream_request
-                            .insert_header(key, &value)
-                            .map_err(|e| {
-                                pingora::Error::explain(
-                                    pingora::ErrorType::InternalError,
-                                    format!("provider auth header error: {:?}", e),
-                                )
-                            })?;
+                        upstream_request.insert_header(key, &value).map_err(|e| {
+                            pingora::Error::explain(
+                                pingora::ErrorType::InternalError,
+                                format!("provider auth header error: {:?}", e),
+                            )
+                        })?;
                     }
                     debug!(
                         provider_type = %provider_type,
@@ -1845,7 +1979,7 @@ impl ProxyHttp for PrismProxy {
 
                 // Mark variant unhealthy for health checker (passive feedback)
                 if let Some(ref hc) = self.health_checker {
-                    hc.record_failure(variant_id, &format!("upstream {}",  status_code));
+                    hc.record_failure(variant_id, &format!("upstream {}", status_code));
                 }
             }
 
@@ -1887,36 +2021,72 @@ impl ProxyHttp for PrismProxy {
         // ── X-Prism-Debug response headers ──
         if ctx.debug_mode {
             let _ = upstream_response.insert_header("X-Prism-Request-Id", &ctx.request_id);
-            let _ = upstream_response.insert_header("X-Prism-Model", ctx.requested_model.as_deref().unwrap_or("-"));
+            let _ = upstream_response.insert_header(
+                "X-Prism-Model",
+                ctx.requested_model.as_deref().unwrap_or("-"),
+            );
             if let Some(ref original) = ctx.original_model {
                 let _ = upstream_response.insert_header("X-Prism-Original-Model", original);
             }
-            let _ = upstream_response.insert_header("X-Prism-Variant", ctx.selected_variant.as_deref().unwrap_or("-"));
-            let _ = upstream_response.insert_header("X-Prism-Provider", ctx.selected_provider.as_deref().unwrap_or("-"));
-            let _ = upstream_response.insert_header("X-Prism-Upstream-Model", ctx.upstream_model_name.as_deref().unwrap_or("-"));
-            let _ = upstream_response.insert_header("X-Prism-Upstream-Base-Url", ctx.upstream_base_url.as_deref().unwrap_or("-"));
+            let _ = upstream_response.insert_header(
+                "X-Prism-Variant",
+                ctx.selected_variant.as_deref().unwrap_or("-"),
+            );
+            let _ = upstream_response.insert_header(
+                "X-Prism-Provider",
+                ctx.selected_provider.as_deref().unwrap_or("-"),
+            );
+            let _ = upstream_response.insert_header(
+                "X-Prism-Upstream-Model",
+                ctx.upstream_model_name.as_deref().unwrap_or("-"),
+            );
+            let _ = upstream_response.insert_header(
+                "X-Prism-Upstream-Base-Url",
+                ctx.upstream_base_url.as_deref().unwrap_or("-"),
+            );
             let _ = upstream_response.insert_header("X-Prism-Protocol", ctx.protocol.as_str());
-            let _ = upstream_response.insert_header("X-Prism-Outbound-Protocol", ctx.outbound_protocol.as_deref().unwrap_or("-"));
+            let _ = upstream_response.insert_header(
+                "X-Prism-Outbound-Protocol",
+                ctx.outbound_protocol.as_deref().unwrap_or("-"),
+            );
             if let Some(dt) = ctx.decision_time_us {
-                let _ = upstream_response.insert_header("X-Prism-Decision-Time-Us", &dt.to_string());
+                let _ =
+                    upstream_response.insert_header("X-Prism-Decision-Time-Us", &dt.to_string());
             }
             if let Some(ref ttfb) = ctx.upstream_first_byte_at {
                 let ms = ttfb.duration_since(ctx.request_start).as_millis();
-                let _ = upstream_response.insert_header("X-Prism-Upstream-Ttfb-Ms", &ms.to_string());
+                let _ =
+                    upstream_response.insert_header("X-Prism-Upstream-Ttfb-Ms", &ms.to_string());
             }
             let total_ms = ctx.request_start.elapsed().as_millis();
-            let _ = upstream_response.insert_header("X-Prism-Total-Latency-Ms", &total_ms.to_string());
+            let _ =
+                upstream_response.insert_header("X-Prism-Total-Latency-Ms", &total_ms.to_string());
             if !ctx.response_flags.is_empty() {
-                let _ = upstream_response.insert_header("X-Prism-Flags", &ctx.response_flags.join(","));
+                let _ =
+                    upstream_response.insert_header("X-Prism-Flags", &ctx.response_flags.join(","));
             }
             if !ctx.retry_fallback_chain.is_empty() {
-                let _ = upstream_response.insert_header("X-Prism-Fallback-Chain", &ctx.retry_fallback_chain.join(","));
+                let _ = upstream_response.insert_header(
+                    "X-Prism-Fallback-Chain",
+                    &ctx.retry_fallback_chain.join(","),
+                );
             }
-            let _ = upstream_response.insert_header("X-Prism-Conversion", if ctx.needs_conversion { "true" } else { "false" });
+            let _ = upstream_response.insert_header(
+                "X-Prism-Conversion",
+                if ctx.needs_conversion {
+                    "true"
+                } else {
+                    "false"
+                },
+            );
             if let Some(bytes) = ctx.bytes_received {
-                let _ = upstream_response.insert_header("X-Prism-Bytes-Received", &bytes.to_string());
+                let _ =
+                    upstream_response.insert_header("X-Prism-Bytes-Received", &bytes.to_string());
             }
-            let _ = upstream_response.insert_header("X-Prism-Attempt-Count", &ctx.upstream_request_attempt_count.to_string());
+            let _ = upstream_response.insert_header(
+                "X-Prism-Attempt-Count",
+                &ctx.upstream_request_attempt_count.to_string(),
+            );
         }
 
         if !ctx.needs_conversion {
@@ -1985,7 +2155,8 @@ impl ProxyHttp for PrismProxy {
         // Determine idle timeout for streaming responses.
         // Return value tells Pingora: "wait at most this long for the next chunk".
         let idle_timeout = if !end_of_stream {
-            let idle_secs = ctx.resolved_idle_timeout_secs
+            let idle_secs = ctx
+                .resolved_idle_timeout_secs
                 .unwrap_or(self.idle_timeout_secs);
             if idle_secs > 0 {
                 Some(std::time::Duration::from_secs(idle_secs))
@@ -2107,7 +2278,7 @@ impl ProxyHttp for PrismProxy {
             ctx.selected_variant = Some(next);
             ctx.upstream_request_attempt_count += 1;
             ctx.response_flags.push("RT".to_string()); // retry flag
-            // Mark as retryable — Pingora will call upstream_peer again
+                                                       // Mark as retryable — Pingora will call upstream_peer again
             e.set_retry(true);
         }
         e
@@ -2194,12 +2365,12 @@ impl ProxyHttp for PrismProxy {
         // ── Client key: record token usage and drop concurrency guard ──
         if let Some(ref ckm) = self.client_key_manager {
             if let Some(ref client_key) = ctx.client_key {
-                let usage = ctx.global_codec_ctx.as_ref()
+                let usage = ctx
+                    .global_codec_ctx
+                    .as_ref()
                     .and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY));
                 let total_tokens = usage
-                    .map(|u| {
-                        u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0)
-                    })
+                    .map(|u| u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0))
                     .unwrap_or(0);
                 ckm.record_usage(client_key, ctx.selected_model.as_deref(), total_tokens);
             }
@@ -2212,10 +2383,20 @@ impl ProxyHttp for PrismProxy {
             self.metrics.record(RequestRecord {
                 variant_id: variant_id.clone(),
                 latency_ms: elapsed.as_millis() as u64,
-                ttft_ms: ctx.upstream_first_byte_at.map(|t| t.duration_since(ctx.request_start).as_millis() as u64),
+                ttft_ms: ctx
+                    .upstream_first_byte_at
+                    .map(|t| t.duration_since(ctx.request_start).as_millis() as u64),
                 success: (200..400).contains(&status),
-                input_tokens: ctx.global_codec_ctx.as_ref().and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY)).and_then(|u| u.input_tokens.map(|v| v as u32)),
-                output_tokens: ctx.global_codec_ctx.as_ref().and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY)).and_then(|u| u.output_tokens.map(|v| v as u32)),
+                input_tokens: ctx
+                    .global_codec_ctx
+                    .as_ref()
+                    .and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY))
+                    .and_then(|u| u.input_tokens.map(|v| v as u32)),
+                output_tokens: ctx
+                    .global_codec_ctx
+                    .as_ref()
+                    .and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY))
+                    .and_then(|u| u.output_tokens.map(|v| v as u32)),
                 timestamp: Instant::now(),
             });
         }
@@ -2241,7 +2422,10 @@ impl ProxyHttp for PrismProxy {
                 if success {
                     hc.record_success(variant_id);
                 } else {
-                    let reason = ctx.error_message.clone().unwrap_or_else(|| format!("HTTP {}", status));
+                    let reason = ctx
+                        .error_message
+                        .clone()
+                        .unwrap_or_else(|| format!("HTTP {}", status));
                     hc.record_failure(variant_id, &reason);
                 }
             }
@@ -2293,15 +2477,25 @@ impl ProxyHttp for PrismProxy {
                 decision_time_us: ctx.decision_time_us,
                 request_headers: ctx.request_headers_snapshot.clone(),
                 response_headers,
-                input_tokens: ctx.global_codec_ctx.as_ref().and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY)).and_then(|u| u.input_tokens),
-                output_tokens: ctx.global_codec_ctx.as_ref().and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY)).and_then(|u| u.output_tokens),
+                input_tokens: ctx
+                    .global_codec_ctx
+                    .as_ref()
+                    .and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY))
+                    .and_then(|u| u.input_tokens),
+                output_tokens: ctx
+                    .global_codec_ctx
+                    .as_ref()
+                    .and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY))
+                    .and_then(|u| u.output_tokens),
                 ratelimit_matched: ctx.ratelimit_matched,
                 ratelimit_rule: ctx.ratelimit_rule.clone(),
                 error: ctx.error_message.clone(),
                 route_strategy: ctx.route_strategy.clone(),
                 route_score: ctx.route_score,
                 route_candidates: ctx.route_candidates,
-                upstream_response_time_ms: ctx.upstream_first_byte_at.map(|t| t.duration_since(ctx.request_start).as_millis() as u64),
+                upstream_response_time_ms: ctx
+                    .upstream_first_byte_at
+                    .map(|t| t.duration_since(ctx.request_start).as_millis() as u64),
                 response_flags: if ctx.response_flags.is_empty() {
                     None
                 } else {
@@ -2865,8 +3059,7 @@ mod tests {
         let router = Arc::new(ArcSwap::new(Arc::new(PrismRouter::new(registry))));
         let metrics = Arc::new(MetricsCollector::new(100));
 
-        let proxy = PrismProxy::new(router, metrics)
-            .with_retry_on_5xx(true, vec![500, 502, 503]);
+        let proxy = PrismProxy::new(router, metrics).with_retry_on_5xx(true, vec![500, 502, 503]);
         assert!(proxy.retry_on_5xx);
         assert_eq!(proxy.retry_5xx_codes, vec![500, 502, 503]);
     }
@@ -2877,8 +3070,7 @@ mod tests {
         let router = Arc::new(ArcSwap::new(Arc::new(PrismRouter::new(registry))));
         let metrics = Arc::new(MetricsCollector::new(100));
 
-        let proxy = PrismProxy::new(router, metrics)
-            .with_retry_on_5xx(false, vec![]);
+        let proxy = PrismProxy::new(router, metrics).with_retry_on_5xx(false, vec![]);
         assert!(!proxy.retry_on_5xx);
         assert!(proxy.retry_5xx_codes.is_empty());
     }
@@ -2889,10 +3081,7 @@ mod tests {
         let mut ctx = ProxyContext {
             selected_variant: Some("variant-a".to_string()),
             selected_provider: Some("provider-a".to_string()),
-            retry_fallback_chain: vec![
-                "variant-b".to_string(),
-                "variant-c".to_string(),
-            ],
+            retry_fallback_chain: vec!["variant-b".to_string(), "variant-c".to_string()],
             upstream_request_attempt_count: 1,
             ..Default::default()
         };
@@ -2931,7 +3120,7 @@ mod tests {
     fn test_5xx_no_retry_when_no_fallback() {
         let ctx = ProxyContext {
             selected_variant: Some("variant-a".to_string()),
-            retry_fallback_chain: vec![],  // empty!
+            retry_fallback_chain: vec![], // empty!
             ..Default::default()
         };
 
@@ -2943,7 +3132,10 @@ mod tests {
             && retry_5xx_codes.contains(&status_code)
             && !ctx.retry_fallback_chain.is_empty();
 
-        assert!(!should_retry, "should not retry when fallback chain is empty");
+        assert!(
+            !should_retry,
+            "should not retry when fallback chain is empty"
+        );
     }
 
     /// Test that 5xx retry does NOT trigger for non-retryable status codes.
@@ -2955,7 +3147,7 @@ mod tests {
             ..Default::default()
         };
 
-        let status_code: u16 = 500;  // 500 is not in default retry codes
+        let status_code: u16 = 500; // 500 is not in default retry codes
         let retry_on_5xx = true;
         let retry_5xx_codes = vec![502, 503, 504];
 
@@ -2963,7 +3155,10 @@ mod tests {
             && retry_5xx_codes.contains(&status_code)
             && !ctx.retry_fallback_chain.is_empty();
 
-        assert!(!should_retry, "should not retry on 500 (not in default retry codes)");
+        assert!(
+            !should_retry,
+            "should not retry on 500 (not in default retry codes)"
+        );
     }
 
     /// Test that 5xx retry does NOT trigger when disabled.
@@ -2976,7 +3171,7 @@ mod tests {
         };
 
         let status_code: u16 = 502;
-        let retry_on_5xx = false;  // disabled!
+        let retry_on_5xx = false; // disabled!
         let retry_5xx_codes = vec![502, 503, 504];
 
         let should_retry = retry_on_5xx
@@ -2991,10 +3186,7 @@ mod tests {
     fn test_5xx_retry_exhausts_fallback_chain() {
         let mut ctx = ProxyContext {
             selected_variant: Some("variant-a".to_string()),
-            retry_fallback_chain: vec![
-                "variant-b".to_string(),
-                "variant-c".to_string(),
-            ],
+            retry_fallback_chain: vec!["variant-b".to_string(), "variant-c".to_string()],
             upstream_request_attempt_count: 1,
             ..Default::default()
         };

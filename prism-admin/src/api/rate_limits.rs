@@ -1,22 +1,34 @@
-use axum::{extract::{Path, State}, http::StatusCode, response::IntoResponse, Json};
 use crate::AppState;
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
 
 /// GET /api/rate-limits
 pub async fn list_rate_limits(State(state): State<AppState>) -> impl IntoResponse {
     match state.store.list_rate_limits().await {
         Ok(rate_limits) => {
-            let rules: Vec<serde_json::Value> = rate_limits.iter().map(|r| {
-                serde_json::json!({
-                    "name": r.name,
-                    "key_headers": r.key_headers,
-                    "window_secs": r.window_secs,
-                    "max_requests": r.max_requests,
-                    "max_tokens": r.max_tokens,
-                    "enabled": r.enabled,
-                    "overrides": r.overrides.len(),
+            let rules: Vec<serde_json::Value> = rate_limits
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "name": r.name,
+                        "key_headers": r.key_headers,
+                        "window_secs": r.window_secs,
+                        "max_requests": r.max_requests,
+                        "max_tokens": r.max_tokens,
+                        "enabled": r.enabled,
+                        "overrides": r.overrides.len(),
+                    })
                 })
-            }).collect();
-            (StatusCode::OK, Json(serde_json::json!({"rate_limits": rules}))).into_response()
+                .collect();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"rate_limits": rules})),
+            )
+                .into_response()
         }
         Err(e) => error_response(e.to_string()),
     }
@@ -29,7 +41,11 @@ pub async fn create_rate_limit(
 ) -> impl IntoResponse {
     let name = rule.name.clone();
     match state.store.upsert_rate_limit(&name, rule).await {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"status": "ok", "name": name}))).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "ok", "name": name})),
+        )
+            .into_response(),
         Err(e) => error_response(e.to_string()),
     }
 }
@@ -41,7 +57,11 @@ pub async fn update_rate_limit(
     Json(rule): Json<prism_router::config::types::RateLimitConfig>,
 ) -> impl IntoResponse {
     match state.store.upsert_rate_limit(&name, rule).await {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"status": "ok", "name": name}))).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "ok", "name": name})),
+        )
+            .into_response(),
         Err(e) => error_response(e.to_string()),
     }
 }
@@ -52,11 +72,19 @@ pub async fn delete_rate_limit(
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     match state.store.delete_rate_limit(&name).await {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"status": "deleted", "name": name}))).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "deleted", "name": name})),
+        )
+            .into_response(),
         Err(e) => error_response(e.to_string()),
     }
 }
 
 fn error_response(e: String) -> axum::response::Response {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))).into_response()
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({"error": e})),
+    )
+        .into_response()
 }

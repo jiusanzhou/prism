@@ -9,12 +9,12 @@ use prism_core::registry::ModelRegistryTrait;
 use prism_core::router::PrismRouter;
 use prism_core::selector::{create_l2_selector, create_l3_selector, create_l4_selector};
 use prism_core::strategy::{
-    BackoffStrategy, CircuitBreakerPolicy, ModelSelectionStrategy, ResiliencePolicy, RetryCondition,
-    RetryPolicy, RetryScope, RoutingObjective, TimeoutPolicy,
+    BackoffStrategy, CircuitBreakerPolicy, ModelSelectionStrategy, ResiliencePolicy,
+    RetryCondition, RetryPolicy, RetryScope, RoutingObjective, TimeoutPolicy,
 };
 
-use super::PrismConfig;
 use super::types::RoutingConfig;
+use super::PrismConfig;
 
 /// Build an `InMemoryRegistry` from a parsed configuration.
 pub fn build_registry(config: &PrismConfig) -> InMemoryRegistry {
@@ -31,10 +31,14 @@ pub fn build_registry(config: &PrismConfig) -> InMemoryRegistry {
     for (id, pc) in &config.providers {
         if let Some(provider) = registry.providers.get_mut(id) {
             if let Some(t) = pc.request_timeout_secs {
-                provider.metadata.insert("request_timeout_secs".into(), t.to_string());
+                provider
+                    .metadata
+                    .insert("request_timeout_secs".into(), t.to_string());
             }
             if let Some(t) = pc.idle_timeout_secs {
-                provider.metadata.insert("idle_timeout_secs".into(), t.to_string());
+                provider
+                    .metadata
+                    .insert("idle_timeout_secs".into(), t.to_string());
             }
         }
     }
@@ -121,9 +125,11 @@ pub fn build_registry(config: &PrismConfig) -> InMemoryRegistry {
         let default_acct_id = format!("{}-acct", variant.endpoint_id.trim_end_matches("-ep"));
         if variant.account_id.as_deref() == Some(&default_acct_id) {
             // Find the first enabled config account for this provider
-            if let Some(ac) = config.accounts.iter().find(|a| {
-                a.enabled && format!("{}-ep", a.provider_id) == variant.endpoint_id
-            }) {
+            if let Some(ac) = config
+                .accounts
+                .iter()
+                .find(|a| a.enabled && format!("{}-ep", a.provider_id) == variant.endpoint_id)
+            {
                 variant.account_id = Some(ac.id.clone());
             }
         }
@@ -153,10 +159,7 @@ pub fn build_registry_with_discoveries(
 }
 
 /// Convert a strategy name string + RoutingConfig into a `ModelSelectionStrategy`.
-pub fn parse_strategy_from_config(
-    name: &str,
-    routing: &RoutingConfig,
-) -> ModelSelectionStrategy {
+pub fn parse_strategy_from_config(name: &str, routing: &RoutingConfig) -> ModelSelectionStrategy {
     match name {
         "cost_first" => ModelSelectionStrategy::Auto {
             objective: RoutingObjective::CostFirst {
@@ -199,9 +202,7 @@ pub fn parse_strategy_from_config(
 }
 
 /// Convert a `ResilienceConfig` (from YAML) into a core `ResiliencePolicy`.
-fn resilience_policy_from_config(
-    cfg: &super::types::ResilienceConfig,
-) -> ResiliencePolicy {
+fn resilience_policy_from_config(cfg: &super::types::ResilienceConfig) -> ResiliencePolicy {
     let retry_on: Vec<RetryCondition> = cfg
         .retry
         .retry_on
@@ -531,11 +532,12 @@ variants:
         let strategy = parse_strategy_from_config("balanced", &routing);
         match strategy {
             ModelSelectionStrategy::Auto {
-                objective: RoutingObjective::Balanced {
-                    cost_weight,
-                    quality_weight,
-                    latency_weight,
-                },
+                objective:
+                    RoutingObjective::Balanced {
+                        cost_weight,
+                        quality_weight,
+                        latency_weight,
+                    },
                 ..
             } => {
                 assert!((cost_weight - 0.3).abs() < 0.01);
@@ -559,11 +561,12 @@ variants:
         let strategy = parse_strategy_from_config("balanced", &routing);
         match strategy {
             ModelSelectionStrategy::Auto {
-                objective: RoutingObjective::Balanced {
-                    cost_weight,
-                    quality_weight,
-                    latency_weight,
-                },
+                objective:
+                    RoutingObjective::Balanced {
+                        cost_weight,
+                        quality_weight,
+                        latency_weight,
+                    },
                 ..
             } => {
                 assert!((cost_weight - 0.6).abs() < 0.01);
@@ -830,7 +833,11 @@ pools:
             resilience: super::super::types::ResilienceConfig {
                 retry: super::super::types::RetryConfig {
                     max_retries: 5,
-                    retry_on: vec!["RateLimit".into(), "Timeout".into(), "ConnectionError".into()],
+                    retry_on: vec![
+                        "RateLimit".into(),
+                        "Timeout".into(),
+                        "ConnectionError".into(),
+                    ],
                     backoff: "Jittered".into(),
                     retry_scope: "SameProvider".into(),
                 },

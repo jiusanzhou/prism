@@ -63,9 +63,7 @@ pub fn is_leader(metadata: &HashMap<String, String>) -> bool {
 }
 
 /// Group P/D variants and validate completeness.
-pub fn group_pd_variants(
-    variant_metadata: &[(String, HashMap<String, String>)],
-) -> PDGroupResult {
+pub fn group_pd_variants(variant_metadata: &[(String, HashMap<String, String>)]) -> PDGroupResult {
     let mut colocated = Vec::new();
     let mut groups: HashMap<String, PDGroup> = HashMap::new();
 
@@ -90,7 +88,10 @@ pub fn group_pd_variants(
         .filter(|(_, g)| !g.prefill_variants.is_empty() && !g.decode_variants.is_empty())
         .collect();
 
-    PDGroupResult { colocated, pd_groups: complete_groups }
+    PDGroupResult {
+        colocated,
+        pd_groups: complete_groups,
+    }
 }
 
 #[derive(Debug, Default)]
@@ -121,12 +122,18 @@ impl PDGroupResult {
         all_metadata: &HashMap<String, HashMap<String, String>>,
     ) -> PDDecision {
         if self.colocated.contains(&selected_variant_id.to_string()) {
-            return PDDecision::Single { variant_id: selected_variant_id.into() };
+            return PDDecision::Single {
+                variant_id: selected_variant_id.into(),
+            };
         }
 
         let meta = match all_metadata.get(selected_variant_id) {
             Some(m) => m,
-            None => return PDDecision::Single { variant_id: selected_variant_id.into() },
+            None => {
+                return PDDecision::Single {
+                    variant_id: selected_variant_id.into(),
+                }
+            }
         };
 
         let role = PDRole::from_metadata(meta);
@@ -134,7 +141,11 @@ impl PDGroupResult {
 
         let group = match self.pd_groups.get(&pd_group) {
             Some(g) => g,
-            None => return PDDecision::Single { variant_id: selected_variant_id.into() },
+            None => {
+                return PDDecision::Single {
+                    variant_id: selected_variant_id.into(),
+                }
+            }
         };
 
         match role {
@@ -148,7 +159,9 @@ impl PDGroupResult {
                 decode_variant_ids: group.decode_variants.clone(),
                 pd_group,
             },
-            PDRole::Colocated => PDDecision::Single { variant_id: selected_variant_id.into() },
+            PDRole::Colocated => PDDecision::Single {
+                variant_id: selected_variant_id.into(),
+            },
         }
     }
 }
@@ -167,9 +180,15 @@ mod tests {
 
     fn meta(role: &str, group: &str, leader: bool) -> HashMap<String, String> {
         let mut m = HashMap::new();
-        if !role.is_empty() { m.insert(META_ROLE.into(), role.into()); }
-        if !group.is_empty() { m.insert(META_PD_GROUP.into(), group.into()); }
-        if leader { m.insert(META_LEADER_ID.into(), LEADER_VALUE.into()); }
+        if !role.is_empty() {
+            m.insert(META_ROLE.into(), role.into());
+        }
+        if !group.is_empty() {
+            m.insert(META_PD_GROUP.into(), group.into());
+        }
+        if leader {
+            m.insert(META_LEADER_ID.into(), LEADER_VALUE.into());
+        }
         m
     }
 
@@ -209,7 +228,11 @@ mod tests {
         let r = group_pd_variants(&v);
         let all: HashMap<String, HashMap<String, String>> = v.into_iter().collect();
         match r.resolve("p1", &all) {
-            PDDecision::Split { prefill_variant_ids, decode_variant_ids, pd_group } => {
+            PDDecision::Split {
+                prefill_variant_ids,
+                decode_variant_ids,
+                pd_group,
+            } => {
                 assert!(prefill_variant_ids.contains(&"p1".to_string()));
                 assert_eq!(decode_variant_ids, vec!["d1"]);
                 assert_eq!(pd_group, "g1");
@@ -227,7 +250,11 @@ mod tests {
         let r = group_pd_variants(&v);
         let all: HashMap<String, HashMap<String, String>> = v.into_iter().collect();
         match r.resolve("d1", &all) {
-            PDDecision::Split { prefill_variant_ids, decode_variant_ids, .. } => {
+            PDDecision::Split {
+                prefill_variant_ids,
+                decode_variant_ids,
+                ..
+            } => {
                 assert!(prefill_variant_ids.contains(&"p1".to_string()));
                 assert!(decode_variant_ids.contains(&"d1".to_string()));
             }
@@ -275,7 +302,11 @@ mod tests {
 
         let all: HashMap<String, HashMap<String, String>> = v.into_iter().collect();
         match r.resolve("p1", &all) {
-            PDDecision::Split { prefill_variant_ids, decode_variant_ids, .. } => {
+            PDDecision::Split {
+                prefill_variant_ids,
+                decode_variant_ids,
+                ..
+            } => {
                 assert_eq!(prefill_variant_ids.len(), 2);
                 assert_eq!(decode_variant_ids.len(), 3);
             }
@@ -296,7 +327,11 @@ mod tests {
 
         let all: HashMap<String, HashMap<String, String>> = v.into_iter().collect();
         match r.resolve("p1", &all) {
-            PDDecision::Split { prefill_variant_ids, decode_variant_ids, .. } => {
+            PDDecision::Split {
+                prefill_variant_ids,
+                decode_variant_ids,
+                ..
+            } => {
                 assert!(prefill_variant_ids.contains(&"p1".to_string()));
                 assert_eq!(decode_variant_ids.len(), 3);
                 assert!(decode_variant_ids.contains(&"d1".to_string()));

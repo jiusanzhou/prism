@@ -27,7 +27,7 @@ pub enum CircuitState {
 #[allow(dead_code)]
 struct ProviderCircuit {
     consecutive_failures: AtomicU32,
-    opened_at: AtomicU64, // epoch secs when circuit opened (0 = closed)
+    opened_at: AtomicU64,        // epoch secs when circuit opened (0 = closed)
     half_open_active: AtomicU32, // 1 if a half-open probe is in flight
 }
 

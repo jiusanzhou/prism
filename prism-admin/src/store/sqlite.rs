@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use prism_router::config::types::*;
 use sqlx::SqlitePool;
 
-use crate::cluster::{Cluster, ProxyInstance, ProxyStatus};
 use super::{Store, StoreError, StoreResult};
+use crate::cluster::{Cluster, ProxyInstance, ProxyStatus};
 
 pub struct SqliteStore {
     pool: SqlitePool,
@@ -78,11 +78,10 @@ impl SqliteStore {
 impl Store for SqliteStore {
     // Providers
     async fn list_providers(&self) -> StoreResult<Vec<(String, ProviderConfig)>> {
-        let rows: Vec<(String, String)> =
-            sqlx::query_as("SELECT id, config FROM prism_providers")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let rows: Vec<(String, String)> = sqlx::query_as("SELECT id, config FROM prism_providers")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
         rows.into_iter()
             .map(|(id, json)| {
                 let config = Self::parse_json(&json, &format!("provider '{}'", id))?;
@@ -128,11 +127,10 @@ impl Store for SqliteStore {
 
     // Accounts
     async fn list_accounts(&self) -> StoreResult<Vec<AccountConfig>> {
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT config FROM prism_accounts")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT config FROM prism_accounts")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
         rows.into_iter()
             .map(|(json,)| Self::parse_json(&json, "account"))
             .collect()
@@ -175,11 +173,10 @@ impl Store for SqliteStore {
 
     // Models
     async fn list_models(&self) -> StoreResult<Vec<ModelConfig>> {
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT config FROM prism_models")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT config FROM prism_models")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
         rows.into_iter()
             .map(|(json,)| Self::parse_json(&json, "model"))
             .collect()
@@ -222,11 +219,10 @@ impl Store for SqliteStore {
 
     // Variants
     async fn list_variants(&self) -> StoreResult<Vec<VariantConfig>> {
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT config FROM prism_variants")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT config FROM prism_variants")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
         rows.into_iter()
             .map(|(json,)| Self::parse_json(&json, "variant"))
             .collect()
@@ -269,11 +265,10 @@ impl Store for SqliteStore {
 
     // Pools
     async fn list_pools(&self) -> StoreResult<Vec<PoolConfig>> {
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT config FROM prism_pools")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT config FROM prism_pools")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
         rows.into_iter()
             .map(|(json,)| Self::parse_json(&json, "pool"))
             .collect()
@@ -303,11 +298,10 @@ impl Store for SqliteStore {
 
     // Rate Limits
     async fn list_rate_limits(&self) -> StoreResult<Vec<RateLimitConfig>> {
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT config FROM prism_rate_limits")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT config FROM prism_rate_limits")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
         rows.into_iter()
             .map(|(json,)| Self::parse_json(&json, "rate_limit"))
             .collect()
@@ -337,11 +331,10 @@ impl Store for SqliteStore {
 
     // Plugins
     async fn list_plugins(&self) -> StoreResult<Vec<PluginConfig>> {
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT config FROM prism_plugins")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT config FROM prism_plugins")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
         rows.into_iter()
             .map(|(json,)| Self::parse_json(&json, "plugin"))
             .collect()
@@ -371,11 +364,10 @@ impl Store for SqliteStore {
 
     // Client Keys
     async fn list_client_keys(&self) -> StoreResult<Vec<ClientKeyConfig>> {
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT config FROM prism_client_keys")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT config FROM prism_client_keys")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
         rows.into_iter()
             .map(|(json,)| Self::parse_json(&json, "client_key"))
             .collect()
@@ -500,14 +492,38 @@ impl Store for SqliteStore {
 
     // Bulk import
     async fn import_config(&self, config: PrismConfig) -> StoreResult<()> {
-        sqlx::query("DELETE FROM prism_providers").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
-        sqlx::query("DELETE FROM prism_accounts").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
-        sqlx::query("DELETE FROM prism_models").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
-        sqlx::query("DELETE FROM prism_variants").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
-        sqlx::query("DELETE FROM prism_pools").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
-        sqlx::query("DELETE FROM prism_rate_limits").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
-        sqlx::query("DELETE FROM prism_plugins").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
-        sqlx::query("DELETE FROM prism_client_keys").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
+        sqlx::query("DELETE FROM prism_providers")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        sqlx::query("DELETE FROM prism_accounts")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        sqlx::query("DELETE FROM prism_models")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        sqlx::query("DELETE FROM prism_variants")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        sqlx::query("DELETE FROM prism_pools")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        sqlx::query("DELETE FROM prism_rate_limits")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        sqlx::query("DELETE FROM prism_plugins")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        sqlx::query("DELETE FROM prism_client_keys")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
         for (id, provider) in &config.providers {
             self.upsert_provider(id, provider.clone()).await?;
         }
@@ -530,7 +546,8 @@ impl Store for SqliteStore {
             self.upsert_plugin(&plugin.name, plugin.clone()).await?;
         }
         for client_key in &config.client_keys {
-            self.upsert_client_key(&client_key.name, client_key.clone()).await?;
+            self.upsert_client_key(&client_key.name, client_key.clone())
+                .await?;
         }
         self.set_auth(config.auth).await?;
         self.set_access_log(config.access_log).await?;
@@ -552,7 +569,13 @@ impl Store for SqliteStore {
                 let created_at = chrono::DateTime::parse_from_rfc3339(&created_at)
                     .map(|dt| dt.with_timezone(&chrono::Utc))
                     .unwrap_or_else(|_| chrono::Utc::now());
-                Cluster { id, name, description, tags, created_at }
+                Cluster {
+                    id,
+                    name,
+                    description,
+                    tags,
+                    created_at,
+                }
             })
             .collect())
     }
@@ -571,7 +594,13 @@ impl Store for SqliteStore {
                 let created_at = chrono::DateTime::parse_from_rfc3339(&created_at)
                     .map(|dt| dt.with_timezone(&chrono::Utc))
                     .unwrap_or_else(|_| chrono::Utc::now());
-                Ok(Cluster { id, name, description, tags, created_at })
+                Ok(Cluster {
+                    id,
+                    name,
+                    description,
+                    tags,
+                    created_at,
+                })
             }
             None => Err(StoreError::NotFound(format!("cluster '{}'", id))),
         }
@@ -639,21 +668,8 @@ impl Store for SqliteStore {
         };
         Ok(rows
             .into_iter()
-            .map(|(instance_id, cluster_id, address, version, status, last_heartbeat, registered_at, config_version, metadata)| {
-                let status = match status.as_str() {
-                    "offline" => ProxyStatus::Offline,
-                    "degraded" => ProxyStatus::Degraded,
-                    _ => ProxyStatus::Online,
-                };
-                let metadata: std::collections::HashMap<String, String> =
-                    serde_json::from_str(&metadata).unwrap_or_default();
-                let last_heartbeat = chrono::DateTime::parse_from_rfc3339(&last_heartbeat)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now());
-                let registered_at = chrono::DateTime::parse_from_rfc3339(&registered_at)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now());
-                ProxyInstance {
+            .map(
+                |(
                     instance_id,
                     cluster_id,
                     address,
@@ -661,10 +677,35 @@ impl Store for SqliteStore {
                     status,
                     last_heartbeat,
                     registered_at,
-                    config_version: config_version as u64,
+                    config_version,
                     metadata,
-                }
-            })
+                )| {
+                    let status = match status.as_str() {
+                        "offline" => ProxyStatus::Offline,
+                        "degraded" => ProxyStatus::Degraded,
+                        _ => ProxyStatus::Online,
+                    };
+                    let metadata: std::collections::HashMap<String, String> =
+                        serde_json::from_str(&metadata).unwrap_or_default();
+                    let last_heartbeat = chrono::DateTime::parse_from_rfc3339(&last_heartbeat)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now());
+                    let registered_at = chrono::DateTime::parse_from_rfc3339(&registered_at)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now());
+                    ProxyInstance {
+                        instance_id,
+                        cluster_id,
+                        address,
+                        version,
+                        status,
+                        last_heartbeat,
+                        registered_at,
+                        config_version: config_version as u64,
+                        metadata,
+                    }
+                },
+            )
             .collect())
     }
 

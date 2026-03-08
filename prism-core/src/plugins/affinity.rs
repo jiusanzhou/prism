@@ -77,7 +77,7 @@ mod tests {
                 status: VariantStatus::Active,
                 base_url: None,
                 upstream_model_name: None,
-            metadata: std::collections::HashMap::new(),
+                metadata: std::collections::HashMap::new(),
             },
             model: Model {
                 id: "model-1".into(),
@@ -175,7 +175,11 @@ mod tests {
             score3
         );
         // Score should be a valid value in [0.0, 1.0)
-        assert!(score1 >= 0.0 && score1 < 1.0, "score should be in [0, 1), got {}", score1);
+        assert!(
+            score1 >= 0.0 && score1 < 1.0,
+            "score should be in [0, 1), got {}",
+            score1
+        );
     }
 
     #[test]

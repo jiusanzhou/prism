@@ -192,7 +192,7 @@ fn build_test_registry(mock_port: u16) -> InMemoryRegistry {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
-    metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
     });
 
     // Pool
@@ -235,7 +235,7 @@ fn build_test_registry_with_model_rewrite(mock_port: u16) -> InMemoryRegistry {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: Some("deepseek-reasoner".to_string()),
-    metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
     });
 
     // Add to pool
@@ -612,7 +612,7 @@ mod proxy_tests {
             status: VariantStatus::Active,
             base_url: None,
             upstream_model_name: None,
-        metadata: std::collections::HashMap::new(),
+            metadata: std::collections::HashMap::new(),
         });
         registry.add_pool(ModelPool {
             id: "default".into(),
@@ -1033,7 +1033,9 @@ mod provider_plugin_e2e {
         let (tx, rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             axum::serve(listener, app)
-                .with_graceful_shutdown(async { rx.await.ok(); })
+                .with_graceful_shutdown(async {
+                    rx.await.ok();
+                })
                 .await
                 .ok();
         });
@@ -1066,7 +1068,10 @@ mod provider_plugin_e2e {
             id: "test-openai-ep".into(),
             provider_id: "test-openai".into(),
             base_url: Some(format!("http://127.0.0.1:{}/v1", port)),
-            region: None, auth_override: None, rate_limit: None, priority: 0,
+            region: None,
+            auth_override: None,
+            rate_limit: None,
+            priority: 0,
             status: HealthStatus::Healthy,
         });
         registry.add_account(Account {
@@ -1076,8 +1081,12 @@ mod provider_plugin_e2e {
                 key: "Bearer sk-e2e-test-key".into(),
                 header: "Authorization".into(),
             },
-            project_id: None, rate_limit: None, billing_tag: None, weight: 1.0,
-            status: HealthStatus::Healthy, metadata: HashMap::new(),
+            project_id: None,
+            rate_limit: None,
+            billing_tag: None,
+            weight: 1.0,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
         });
         registry.add_model(Model {
             id: "gpt-4o".into(),
@@ -1085,32 +1094,37 @@ mod provider_plugin_e2e {
             quality_tier: QualityTier::A,
             capabilities: ModelCapabilities::default(),
             pricing: ModelPricing::default(),
-            specialties: vec![], limits: None, status: ModelStatus::Available,
+            specialties: vec![],
+            limits: None,
+            status: ModelStatus::Available,
         });
         registry.add_variant(ModelVariant {
             id: "gpt-4o@test-openai".into(),
             model_id: "gpt-4o".into(),
             endpoint_id: "test-openai-ep".into(),
             account_id: Some("test-openai-acct".into()),
-            deployment_name: None, weight: 1.0,
+            deployment_name: None,
+            weight: 1.0,
             performance: ModelPerformance::default(),
-            pricing_override: None, status: VariantStatus::Active,
-            base_url: None, upstream_model_name: None,
-        metadata: std::collections::HashMap::new(),
+            pricing_override: None,
+            status: VariantStatus::Active,
+            base_url: None,
+            upstream_model_name: None,
+            metadata: std::collections::HashMap::new(),
         });
         registry.add_pool(ModelPool {
-            id: "default".into(), name: "Default".into(),
+            id: "default".into(),
+            name: "Default".into(),
             variants: vec!["gpt-4o@test-openai".into()],
-            selection_mode: SelectionMode::default(), description: None,
+            selection_mode: SelectionMode::default(),
+            description: None,
         });
 
         // Make a request through the full proxy pipeline
         let client = reqwest::Client::new();
         // Need to start actual proxy server for this — use the HTTP API route as proxy
         let router = PrismRouter::new(registry);
-        let app = build_prism_app_with_state(
-            AppState::new(router, PathBuf::from("e2e-test.yaml"))
-        );
+        let app = build_prism_app_with_state(AppState::new(router, PathBuf::from("e2e-test.yaml")));
 
         // Route request to verify routing works
         let req = axum::http::Request::builder()
@@ -1138,9 +1152,7 @@ mod provider_plugin_e2e {
 
         let mut registry = build_test_registry_with_model_rewrite(port);
         let router = PrismRouter::new(registry);
-        let app = build_prism_app_with_state(
-            AppState::new(router, PathBuf::from("e2e-test.yaml"))
-        );
+        let app = build_prism_app_with_state(AppState::new(router, PathBuf::from("e2e-test.yaml")));
 
         // Route deepseek-r1 → should map to mock with upstream_model_name = deepseek-reasoner
         let req = axum::http::Request::builder()
@@ -1178,9 +1190,7 @@ mod latency_bench {
         let (port, _shutdown) = start_mock_server().await;
         let registry = build_test_registry(port);
         let router = PrismRouter::new(registry);
-        let app = build_prism_app_with_state(
-            AppState::new(router, PathBuf::from("e2e-test.yaml")),
-        );
+        let app = build_prism_app_with_state(AppState::new(router, PathBuf::from("e2e-test.yaml")));
 
         // Warmup
         for _ in 0..3 {
@@ -1246,9 +1256,7 @@ mod latency_bench {
         let (port, _shutdown) = start_mock_server().await;
         let registry = build_test_registry_with_model_rewrite(port);
         let router = PrismRouter::new(registry);
-        let app = build_prism_app_with_state(
-            AppState::new(router, PathBuf::from("e2e-test.yaml")),
-        );
+        let app = build_prism_app_with_state(AppState::new(router, PathBuf::from("e2e-test.yaml")));
 
         // Warmup
         for _ in 0..3 {
@@ -1360,10 +1368,22 @@ mod latency_bench {
         println!("\n╔══════════════════════════════════════════════╗");
         println!("║  Provider Plugin Dispatch ({iterations} calls)    ║");
         println!("╠══════════════════════════════════════════════╣");
-        println!("║  build_auth       = {:>6}ns/call             ║", auth_per_call);
-        println!("║  rewrite_url      = {:>6}ns/call             ║", url_per_call);
-        println!("║  transform_body   = {:>6}ns/call             ║", body_per_call);
-        println!("║  total (all 3)    = {:>6}ns/call             ║", auth_per_call + url_per_call + body_per_call);
+        println!(
+            "║  build_auth       = {:>6}ns/call             ║",
+            auth_per_call
+        );
+        println!(
+            "║  rewrite_url      = {:>6}ns/call             ║",
+            url_per_call
+        );
+        println!(
+            "║  transform_body   = {:>6}ns/call             ║",
+            body_per_call
+        );
+        println!(
+            "║  total (all 3)    = {:>6}ns/call             ║",
+            auth_per_call + url_per_call + body_per_call
+        );
         println!("╚══════════════════════════════════════════════╝");
 
         // Provider plugin dispatch should add < 10µs overhead
@@ -1380,9 +1400,10 @@ mod latency_bench {
         let (port, _shutdown) = start_mock_server().await;
         let registry = build_test_registry(port);
         let router = PrismRouter::new(registry);
-        let app = Arc::new(build_prism_app_with_state(
-            AppState::new(router, PathBuf::from("e2e-test.yaml")),
-        ));
+        let app = Arc::new(build_prism_app_with_state(AppState::new(
+            router,
+            PathBuf::from("e2e-test.yaml"),
+        )));
 
         let concurrency = 10;
         let per_task = 50;
@@ -1430,7 +1451,10 @@ mod latency_bench {
         println!("\n╔══════════════════════════════════════════════╗");
         println!("║  Concurrent Routing ({concurrency}×{per_task} = {total} requests)   ║");
         println!("╠══════════════════════════════════════════════╣");
-        println!("║  wall time = {:>6.1}ms                        ║", wall_time.as_secs_f64() * 1000.0);
+        println!(
+            "║  wall time = {:>6.1}ms                        ║",
+            wall_time.as_secs_f64() * 1000.0
+        );
         println!("║  avg       = {:>8}µs                       ║", avg);
         println!("║  p50       = {:>8}µs                       ║", p50);
         println!("║  p99       = {:>8}µs                       ║", p99);

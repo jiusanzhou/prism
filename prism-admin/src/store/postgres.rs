@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use prism_router::config::types::*;
 use sqlx::PgPool;
 
-use crate::cluster::{Cluster, ProxyInstance, ProxyStatus};
 use super::{Store, StoreError, StoreResult};
+use crate::cluster::{Cluster, ProxyInstance, ProxyStatus};
 
 pub struct PostgresStore {
     pool: PgPool,
@@ -119,8 +119,9 @@ impl Store for PostgresStore {
                 .map_err(|e| StoreError::Internal(e.to_string()))?;
         rows.into_iter()
             .map(|(id, val)| {
-                let config: ProviderConfig = serde_json::from_value(val)
-                    .map_err(|e| StoreError::Internal(format!("deserialize provider '{}': {}", id, e)))?;
+                let config: ProviderConfig = serde_json::from_value(val).map_err(|e| {
+                    StoreError::Internal(format!("deserialize provider '{}': {}", id, e))
+                })?;
                 Ok((id, config))
             })
             .collect()
@@ -141,8 +142,7 @@ impl Store for PostgresStore {
     }
 
     async fn upsert_provider(&self, id: &str, config: ProviderConfig) -> StoreResult<()> {
-        let val = serde_json::to_value(&config)
-            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let val = serde_json::to_value(&config).map_err(|e| StoreError::Internal(e.to_string()))?;
         sqlx::query(
             "INSERT INTO prism_providers (id, config) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET config = $2",
         )
@@ -165,11 +165,10 @@ impl Store for PostgresStore {
 
     // Accounts
     async fn list_accounts(&self) -> StoreResult<Vec<AccountConfig>> {
-        let rows: Vec<(serde_json::Value,)> =
-            sqlx::query_as("SELECT config FROM prism_accounts")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let rows: Vec<(serde_json::Value,)> = sqlx::query_as("SELECT config FROM prism_accounts")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
         rows.into_iter()
             .map(|(val,)| {
                 serde_json::from_value(val)
@@ -193,8 +192,7 @@ impl Store for PostgresStore {
     }
 
     async fn upsert_account(&self, id: &str, config: AccountConfig) -> StoreResult<()> {
-        let val = serde_json::to_value(&config)
-            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let val = serde_json::to_value(&config).map_err(|e| StoreError::Internal(e.to_string()))?;
         sqlx::query(
             "INSERT INTO prism_accounts (id, config) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET config = $2",
         )
@@ -217,11 +215,10 @@ impl Store for PostgresStore {
 
     // Models
     async fn list_models(&self) -> StoreResult<Vec<ModelConfig>> {
-        let rows: Vec<(serde_json::Value,)> =
-            sqlx::query_as("SELECT config FROM prism_models")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let rows: Vec<(serde_json::Value,)> = sqlx::query_as("SELECT config FROM prism_models")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
         rows.into_iter()
             .map(|(val,)| {
                 serde_json::from_value(val)
@@ -245,8 +242,7 @@ impl Store for PostgresStore {
     }
 
     async fn upsert_model(&self, id: &str, config: ModelConfig) -> StoreResult<()> {
-        let val = serde_json::to_value(&config)
-            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let val = serde_json::to_value(&config).map_err(|e| StoreError::Internal(e.to_string()))?;
         sqlx::query(
             "INSERT INTO prism_models (id, config) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET config = $2",
         )
@@ -269,11 +265,10 @@ impl Store for PostgresStore {
 
     // Variants
     async fn list_variants(&self) -> StoreResult<Vec<VariantConfig>> {
-        let rows: Vec<(serde_json::Value,)> =
-            sqlx::query_as("SELECT config FROM prism_variants")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let rows: Vec<(serde_json::Value,)> = sqlx::query_as("SELECT config FROM prism_variants")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
         rows.into_iter()
             .map(|(val,)| {
                 serde_json::from_value(val)
@@ -297,8 +292,7 @@ impl Store for PostgresStore {
     }
 
     async fn upsert_variant(&self, id: &str, config: VariantConfig) -> StoreResult<()> {
-        let val = serde_json::to_value(&config)
-            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let val = serde_json::to_value(&config).map_err(|e| StoreError::Internal(e.to_string()))?;
         sqlx::query(
             "INSERT INTO prism_variants (id, config) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET config = $2",
         )
@@ -321,11 +315,10 @@ impl Store for PostgresStore {
 
     // Pools
     async fn list_pools(&self) -> StoreResult<Vec<PoolConfig>> {
-        let rows: Vec<(serde_json::Value,)> =
-            sqlx::query_as("SELECT config FROM prism_pools")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let rows: Vec<(serde_json::Value,)> = sqlx::query_as("SELECT config FROM prism_pools")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
         rows.into_iter()
             .map(|(val,)| {
                 serde_json::from_value(val)
@@ -335,8 +328,7 @@ impl Store for PostgresStore {
     }
 
     async fn upsert_pool(&self, id: &str, config: PoolConfig) -> StoreResult<()> {
-        let val = serde_json::to_value(&config)
-            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let val = serde_json::to_value(&config).map_err(|e| StoreError::Internal(e.to_string()))?;
         sqlx::query(
             "INSERT INTO prism_pools (id, config) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET config = $2",
         )
@@ -373,8 +365,7 @@ impl Store for PostgresStore {
     }
 
     async fn upsert_rate_limit(&self, name: &str, config: RateLimitConfig) -> StoreResult<()> {
-        let val = serde_json::to_value(&config)
-            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let val = serde_json::to_value(&config).map_err(|e| StoreError::Internal(e.to_string()))?;
         sqlx::query(
             "INSERT INTO prism_rate_limits (name, config) VALUES ($1, $2) ON CONFLICT (name) DO UPDATE SET config = $2",
         )
@@ -397,11 +388,10 @@ impl Store for PostgresStore {
 
     // Plugins
     async fn list_plugins(&self) -> StoreResult<Vec<PluginConfig>> {
-        let rows: Vec<(serde_json::Value,)> =
-            sqlx::query_as("SELECT config FROM prism_plugins")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let rows: Vec<(serde_json::Value,)> = sqlx::query_as("SELECT config FROM prism_plugins")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
         rows.into_iter()
             .map(|(val,)| {
                 serde_json::from_value(val)
@@ -411,8 +401,7 @@ impl Store for PostgresStore {
     }
 
     async fn upsert_plugin(&self, name: &str, config: PluginConfig) -> StoreResult<()> {
-        let val = serde_json::to_value(&config)
-            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let val = serde_json::to_value(&config).map_err(|e| StoreError::Internal(e.to_string()))?;
         sqlx::query(
             "INSERT INTO prism_plugins (name, config) VALUES ($1, $2) ON CONFLICT (name) DO UPDATE SET config = $2",
         )
@@ -463,8 +452,7 @@ impl Store for PostgresStore {
     }
 
     async fn upsert_client_key(&self, name: &str, config: ClientKeyConfig) -> StoreResult<()> {
-        let val = serde_json::to_value(&config)
-            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let val = serde_json::to_value(&config).map_err(|e| StoreError::Internal(e.to_string()))?;
         sqlx::query(
             "INSERT INTO prism_client_keys (name, config) VALUES ($1, $2) ON CONFLICT (name) DO UPDATE SET config = $2",
         )
@@ -500,8 +488,7 @@ impl Store for PostgresStore {
     }
 
     async fn set_auth(&self, config: AuthConfig) -> StoreResult<()> {
-        let val = serde_json::to_value(&config)
-            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let val = serde_json::to_value(&config).map_err(|e| StoreError::Internal(e.to_string()))?;
         sqlx::query(
             "INSERT INTO prism_settings (key, value) VALUES ('auth', $1) ON CONFLICT (key) DO UPDATE SET value = $1",
         )
@@ -527,8 +514,7 @@ impl Store for PostgresStore {
     }
 
     async fn set_access_log(&self, config: AccessLogConfig) -> StoreResult<()> {
-        let val = serde_json::to_value(&config)
-            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let val = serde_json::to_value(&config).map_err(|e| StoreError::Internal(e.to_string()))?;
         sqlx::query(
             "INSERT INTO prism_settings (key, value) VALUES ('access_log', $1) ON CONFLICT (key) DO UPDATE SET value = $1",
         )
@@ -573,14 +559,38 @@ impl Store for PostgresStore {
 
     // Bulk import
     async fn import_config(&self, config: PrismConfig) -> StoreResult<()> {
-        sqlx::query("DELETE FROM prism_providers").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
-        sqlx::query("DELETE FROM prism_accounts").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
-        sqlx::query("DELETE FROM prism_models").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
-        sqlx::query("DELETE FROM prism_variants").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
-        sqlx::query("DELETE FROM prism_pools").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
-        sqlx::query("DELETE FROM prism_rate_limits").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
-        sqlx::query("DELETE FROM prism_plugins").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
-        sqlx::query("DELETE FROM prism_client_keys").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
+        sqlx::query("DELETE FROM prism_providers")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        sqlx::query("DELETE FROM prism_accounts")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        sqlx::query("DELETE FROM prism_models")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        sqlx::query("DELETE FROM prism_variants")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        sqlx::query("DELETE FROM prism_pools")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        sqlx::query("DELETE FROM prism_rate_limits")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        sqlx::query("DELETE FROM prism_plugins")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        sqlx::query("DELETE FROM prism_client_keys")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
         for (id, provider) in &config.providers {
             self.upsert_provider(id, provider.clone()).await?;
         }
@@ -603,7 +613,8 @@ impl Store for PostgresStore {
             self.upsert_plugin(&plugin.name, plugin.clone()).await?;
         }
         for client_key in &config.client_keys {
-            self.upsert_client_key(&client_key.name, client_key.clone()).await?;
+            self.upsert_client_key(&client_key.name, client_key.clone())
+                .await?;
         }
         self.set_auth(config.auth).await?;
         self.set_access_log(config.access_log).await?;
@@ -625,7 +636,13 @@ impl Store for PostgresStore {
                 let created_at = chrono::DateTime::parse_from_rfc3339(&created_at)
                     .map(|dt| dt.with_timezone(&chrono::Utc))
                     .unwrap_or_else(|_| chrono::Utc::now());
-                Cluster { id, name, description, tags, created_at }
+                Cluster {
+                    id,
+                    name,
+                    description,
+                    tags,
+                    created_at,
+                }
             })
             .collect())
     }
@@ -644,7 +661,13 @@ impl Store for PostgresStore {
                 let created_at = chrono::DateTime::parse_from_rfc3339(&created_at)
                     .map(|dt| dt.with_timezone(&chrono::Utc))
                     .unwrap_or_else(|_| chrono::Utc::now());
-                Ok(Cluster { id, name, description, tags, created_at })
+                Ok(Cluster {
+                    id,
+                    name,
+                    description,
+                    tags,
+                    created_at,
+                })
             }
             None => Err(StoreError::NotFound(format!("cluster '{}'", id))),
         }
@@ -712,21 +735,8 @@ impl Store for PostgresStore {
         };
         Ok(rows
             .into_iter()
-            .map(|(instance_id, cluster_id, address, version, status, last_heartbeat, registered_at, config_version, metadata)| {
-                let status = match status.as_str() {
-                    "offline" => ProxyStatus::Offline,
-                    "degraded" => ProxyStatus::Degraded,
-                    _ => ProxyStatus::Online,
-                };
-                let metadata: std::collections::HashMap<String, String> =
-                    serde_json::from_str(&metadata).unwrap_or_default();
-                let last_heartbeat = chrono::DateTime::parse_from_rfc3339(&last_heartbeat)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now());
-                let registered_at = chrono::DateTime::parse_from_rfc3339(&registered_at)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now());
-                ProxyInstance {
+            .map(
+                |(
                     instance_id,
                     cluster_id,
                     address,
@@ -734,10 +744,35 @@ impl Store for PostgresStore {
                     status,
                     last_heartbeat,
                     registered_at,
-                    config_version: config_version as u64,
+                    config_version,
                     metadata,
-                }
-            })
+                )| {
+                    let status = match status.as_str() {
+                        "offline" => ProxyStatus::Offline,
+                        "degraded" => ProxyStatus::Degraded,
+                        _ => ProxyStatus::Online,
+                    };
+                    let metadata: std::collections::HashMap<String, String> =
+                        serde_json::from_str(&metadata).unwrap_or_default();
+                    let last_heartbeat = chrono::DateTime::parse_from_rfc3339(&last_heartbeat)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now());
+                    let registered_at = chrono::DateTime::parse_from_rfc3339(&registered_at)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now());
+                    ProxyInstance {
+                        instance_id,
+                        cluster_id,
+                        address,
+                        version,
+                        status,
+                        last_heartbeat,
+                        registered_at,
+                        config_version: config_version as u64,
+                        metadata,
+                    }
+                },
+            )
             .collect())
     }
 

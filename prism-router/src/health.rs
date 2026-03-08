@@ -163,7 +163,13 @@ impl HealthChecker {
     pub fn summary(&self) -> Vec<(String, EndpointHealthStatus, u32)> {
         self.states
             .iter()
-            .map(|e| (e.key().clone(), e.value().status, e.value().consecutive_failures))
+            .map(|e| {
+                (
+                    e.key().clone(),
+                    e.value().status,
+                    e.value().consecutive_failures,
+                )
+            })
             .collect()
     }
 
@@ -280,7 +286,10 @@ mod tests {
 
     #[test]
     fn test_record_failure_threshold() {
-        let config = HealthCheckConfig { unhealthy_threshold: 3, ..Default::default() };
+        let config = HealthCheckConfig {
+            unhealthy_threshold: 3,
+            ..Default::default()
+        };
         let hc = HealthChecker::new(config);
 
         hc.record_failure("ep1", "timeout");
@@ -293,7 +302,10 @@ mod tests {
 
     #[test]
     fn test_record_success_recovery() {
-        let config = HealthCheckConfig { unhealthy_threshold: 1, ..Default::default() };
+        let config = HealthCheckConfig {
+            unhealthy_threshold: 1,
+            ..Default::default()
+        };
         let hc = HealthChecker::new(config);
 
         hc.record_failure("ep1", "500");
@@ -304,7 +316,10 @@ mod tests {
 
     #[test]
     fn test_failure_count_resets_on_success() {
-        let config = HealthCheckConfig { unhealthy_threshold: 3, ..Default::default() };
+        let config = HealthCheckConfig {
+            unhealthy_threshold: 3,
+            ..Default::default()
+        };
         let hc = HealthChecker::new(config);
 
         hc.record_failure("ep1", "500");
@@ -317,7 +332,10 @@ mod tests {
 
     #[test]
     fn test_summary() {
-        let config = HealthCheckConfig { unhealthy_threshold: 2, ..Default::default() };
+        let config = HealthCheckConfig {
+            unhealthy_threshold: 2,
+            ..Default::default()
+        };
         let hc = HealthChecker::new(config);
 
         hc.record_success("ep1");
@@ -336,13 +354,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_check_all_with_mock() {
-        let app = axum::Router::new().route(
-            "/v1/models",
-            axum::routing::get(|| async { "ok" }),
-        );
+        let app = axum::Router::new().route("/v1/models", axum::routing::get(|| async { "ok" }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        tokio::spawn(async move { axum::serve(listener, app).await.ok(); });
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
         tokio::time::sleep(Duration::from_millis(10)).await;
 
         let hc = HealthChecker::new(HealthCheckConfig {

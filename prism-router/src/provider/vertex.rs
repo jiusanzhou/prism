@@ -92,9 +92,7 @@ impl ProviderPlugin for VertexPlugin {
         _api_key: &Option<String>,
         _account_headers: &HashMap<String, String>,
     ) -> Result<(), String> {
-        let project_id = provider_extra
-            .get("project_id")
-            .and_then(|v| v.as_str());
+        let project_id = provider_extra.get("project_id").and_then(|v| v.as_str());
         let region = provider_extra.get("region").and_then(|v| v.as_str());
         let sa_json = provider_extra
             .get("service_account_json")
@@ -114,7 +112,11 @@ impl ProviderPlugin for VertexPlugin {
         if let Some(json_str) = sa_json {
             let parsed: serde_json::Value = serde_json::from_str(json_str)
                 .map_err(|e| format!("service_account_json is not valid JSON: {}", e))?;
-            if parsed.get("client_email").and_then(|v| v.as_str()).is_none() {
+            if parsed
+                .get("client_email")
+                .and_then(|v| v.as_str())
+                .is_none()
+            {
                 return Err("service_account_json missing 'client_email' field".to_string());
             }
             if parsed.get("private_key").and_then(|v| v.as_str()).is_none() {
@@ -134,7 +136,10 @@ impl ProviderPlugin for VertexPlugin {
 
         // Check cache first
         {
-            let cache = self.token_cache.lock().map_err(|e| format!("lock error: {}", e))?;
+            let cache = self
+                .token_cache
+                .lock()
+                .map_err(|e| format!("lock error: {}", e))?;
             if let Some(ref cached) = *cache {
                 // Refresh 60s before expiry
                 if cached.expires_at > Instant::now() + std::time::Duration::from_secs(60) {
@@ -210,7 +215,10 @@ impl ProviderPlugin for VertexPlugin {
 
         // Cache the token
         {
-            let mut cache = self.token_cache.lock().map_err(|e| format!("lock error: {}", e))?;
+            let mut cache = self
+                .token_cache
+                .lock()
+                .map_err(|e| format!("lock error: {}", e))?;
             *cache = Some(CachedToken {
                 access_token: access_token.clone(),
                 expires_at: Instant::now() + std::time::Duration::from_secs(expires_in),
@@ -263,7 +271,10 @@ mod tests {
 
     fn make_ctx() -> ProviderRequestContext {
         let mut extra = HashMap::new();
-        extra.insert("project_id".to_string(), serde_json::json!("my-gcp-project"));
+        extra.insert(
+            "project_id".to_string(),
+            serde_json::json!("my-gcp-project"),
+        );
         extra.insert("region".to_string(), serde_json::json!("us-central1"));
         extra.insert(
             "service_account_json".to_string(),
@@ -467,7 +478,8 @@ mod tests {
     fn test_transform_request_body_passthrough() {
         let plugin = VertexPlugin::new();
         let ctx = make_ctx();
-        let body = br#"{"model":"gemini-pro","messages":[{"role":"user","content":"hi"}]}"#.to_vec();
+        let body =
+            br#"{"model":"gemini-pro","messages":[{"role":"user","content":"hi"}]}"#.to_vec();
         let result = plugin.transform_request_body(body.clone(), &ctx).unwrap();
         assert_eq!(result, body);
     }

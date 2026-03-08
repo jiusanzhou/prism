@@ -36,7 +36,12 @@ async fn make_backend(policy: DegradationPolicy) -> RedisBackend {
         .expect("Failed to connect to Redis")
 }
 
-fn make_rule(name: &str, key_headers: Vec<&str>, window_secs: u64, max_requests: u64) -> RateLimitRule {
+fn make_rule(
+    name: &str,
+    key_headers: Vec<&str>,
+    window_secs: u64,
+    max_requests: u64,
+) -> RateLimitRule {
     RateLimitRule {
         name: name.to_string(),
         key_headers: key_headers.into_iter().map(|s| s.to_string()).collect(),
@@ -52,11 +57,17 @@ fn make_rule(name: &str, key_headers: Vec<&str>, window_secs: u64, max_requests:
 }
 
 fn headers(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 fn req_quota(limit: u64) -> Vec<Quota> {
-    vec![Quota { metric: QuotaMetric::Requests, limit }]
+    vec![Quota {
+        metric: QuotaMetric::Requests,
+        limit,
+    }]
 }
 
 // ── RedisBackend trait tests ──
@@ -90,7 +101,9 @@ async fn test_redis_check_exceeds_limit() {
     for _ in 0..3 {
         assert!(backend.check_quotas("test_exceed", 60, &quotas).is_ok());
     }
-    let err = backend.check_quotas("test_exceed", 60, &quotas).unwrap_err();
+    let err = backend
+        .check_quotas("test_exceed", 60, &quotas)
+        .unwrap_err();
     assert_eq!(err.metric, QuotaMetric::Requests);
 }
 
@@ -110,8 +123,14 @@ async fn test_redis_independent_keys() {
 async fn test_redis_token_recording() {
     let backend = make_backend(DegradationPolicy::Local).await;
     let quotas = vec![
-        Quota { metric: QuotaMetric::Requests, limit: 100 },
-        Quota { metric: QuotaMetric::TotalTokens, limit: 1000 },
+        Quota {
+            metric: QuotaMetric::Requests,
+            limit: 100,
+        },
+        Quota {
+            metric: QuotaMetric::TotalTokens,
+            limit: 1000,
+        },
     ];
     assert!(backend.check_quotas("tok_test", 60, &quotas).is_ok());
     backend.record_metric("tok_test", &QuotaMetric::TotalTokens, 999);
@@ -125,10 +144,22 @@ async fn test_redis_token_recording() {
 async fn test_redis_multi_metric() {
     let backend = make_backend(DegradationPolicy::Local).await;
     let quotas = vec![
-        Quota { metric: QuotaMetric::Requests, limit: 100 },
-        Quota { metric: QuotaMetric::InputTokens, limit: 500 },
-        Quota { metric: QuotaMetric::OutputTokens, limit: 300 },
-        Quota { metric: QuotaMetric::CostMicros, limit: 10000 },
+        Quota {
+            metric: QuotaMetric::Requests,
+            limit: 100,
+        },
+        Quota {
+            metric: QuotaMetric::InputTokens,
+            limit: 500,
+        },
+        Quota {
+            metric: QuotaMetric::OutputTokens,
+            limit: 300,
+        },
+        Quota {
+            metric: QuotaMetric::CostMicros,
+            limit: 10000,
+        },
     ];
     assert!(backend.check_quotas("multi", 60, &quotas).is_ok());
     backend.record_metric("multi", &QuotaMetric::InputTokens, 200);
@@ -152,7 +183,8 @@ async fn test_redis_cleanup_no_panic() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_limiter_with_redis_backend() {
     let backend = Arc::new(make_backend(DegradationPolicy::Local).await);
-    let limiter = RateLimiter::with_backend(vec![make_rule("redis_global", vec![], 60, 3)], backend);
+    let limiter =
+        RateLimiter::with_backend(vec![make_rule("redis_global", vec![], 60, 3)], backend);
     assert_eq!(limiter.backend_name(), "redis");
     assert!(limiter.check(&headers(&[])).is_ok());
     assert!(limiter.check(&headers(&[])).is_ok());
@@ -165,7 +197,10 @@ async fn test_limiter_with_redis_backend() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_limiter_redis_per_model() {
     let backend = Arc::new(make_backend(DegradationPolicy::Local).await);
-    let limiter = RateLimiter::with_backend(vec![make_rule("redis_model", vec!["x-model"], 60, 2)], backend);
+    let limiter = RateLimiter::with_backend(
+        vec![make_rule("redis_model", vec!["x-model"], 60, 2)],
+        backend,
+    );
     let h_gpt4 = headers(&[("x-model", "gpt-4")]);
     let h_claude = headers(&[("x-model", "claude-3")]);
     assert!(limiter.check(&h_gpt4).is_ok());
@@ -199,7 +234,11 @@ async fn test_degradation_bad_url_fails_to_connect() {
         key_prefix: unique_prefix(),
         degradation_policy: DegradationPolicy::Local,
     };
-    let result = tokio::time::timeout(std::time::Duration::from_secs(3), RedisBackend::new(&config)).await;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        RedisBackend::new(&config),
+    )
+    .await;
     match result {
         Ok(Err(_)) => {}
         Err(_) => {}
@@ -230,8 +269,16 @@ async fn test_redis_parity_with_local() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_redis_shared_counter_across_instances() {
     let prefix = unique_prefix();
-    let config1 = RedisConfig { url: redis_url(), key_prefix: prefix.clone(), degradation_policy: DegradationPolicy::Local };
-    let config2 = RedisConfig { url: redis_url(), key_prefix: prefix, degradation_policy: DegradationPolicy::Local };
+    let config1 = RedisConfig {
+        url: redis_url(),
+        key_prefix: prefix.clone(),
+        degradation_policy: DegradationPolicy::Local,
+    };
+    let config2 = RedisConfig {
+        url: redis_url(),
+        key_prefix: prefix,
+        degradation_policy: DegradationPolicy::Local,
+    };
     let backend1 = Arc::new(RedisBackend::new(&config1).await.unwrap());
     let backend2 = Arc::new(RedisBackend::new(&config2).await.unwrap());
     let rules = vec![make_rule("shared", vec![], 60, 4)];
@@ -259,7 +306,10 @@ async fn test_redis_quota_denied_fields() {
         window_secs: 60,
         max_requests: None,
         max_tokens: None,
-        quotas: vec![Quota { metric: QuotaMetric::Requests, limit: 2 }],
+        quotas: vec![Quota {
+            metric: QuotaMetric::Requests,
+            limit: 2,
+        }],
         overrides: vec![],
         enabled: true,
         status_code: 429,
@@ -281,13 +331,18 @@ async fn test_redis_quota_denied_fields() {
 async fn test_redis_custom_metric() {
     let backend = make_backend(DegradationPolicy::Local).await;
     let custom = QuotaMetric::Custom("images".to_string());
-    let quotas = vec![Quota { metric: custom.clone(), limit: 5 }];
+    let quotas = vec![Quota {
+        metric: custom.clone(),
+        limit: 5,
+    }];
     // Custom metrics are post-record, so check passes until we record enough
     assert!(backend.check_quotas("custom_test", 60, &quotas).is_ok());
     backend.record_metric("custom_test", &custom, 4);
     assert!(backend.check_quotas("custom_test", 60, &quotas).is_ok());
     backend.record_metric("custom_test", &custom, 1);
-    let err = backend.check_quotas("custom_test", 60, &quotas).unwrap_err();
+    let err = backend
+        .check_quotas("custom_test", 60, &quotas)
+        .unwrap_err();
     assert_eq!(err.metric, QuotaMetric::Custom("images".to_string()));
     assert_eq!(err.current, 5);
     assert_eq!(err.limit, 5);
@@ -303,8 +358,14 @@ async fn test_redis_cost_micros() {
         max_requests: None,
         max_tokens: None,
         quotas: vec![
-            Quota { metric: QuotaMetric::Requests, limit: 1000 },
-            Quota { metric: QuotaMetric::CostMicros, limit: 100000 },
+            Quota {
+                metric: QuotaMetric::Requests,
+                limit: 1000,
+            },
+            Quota {
+                metric: QuotaMetric::CostMicros,
+                limit: 100000,
+            },
         ],
         overrides: vec![],
         enabled: true,
@@ -335,9 +396,18 @@ async fn test_redis_denied_metric_identifies_trigger() {
     // When multiple metrics are configured, denied should report the specific one that triggered
     let backend = make_backend(DegradationPolicy::Local).await;
     let quotas = vec![
-        Quota { metric: QuotaMetric::Requests, limit: 1000 },
-        Quota { metric: QuotaMetric::InputTokens, limit: 100 },
-        Quota { metric: QuotaMetric::OutputTokens, limit: 200 },
+        Quota {
+            metric: QuotaMetric::Requests,
+            limit: 1000,
+        },
+        Quota {
+            metric: QuotaMetric::InputTokens,
+            limit: 100,
+        },
+        Quota {
+            metric: QuotaMetric::OutputTokens,
+            limit: 200,
+        },
     ];
     assert!(backend.check_quotas("metric_id", 60, &quotas).is_ok());
     // Push input_tokens over limit
@@ -359,12 +429,21 @@ async fn test_redis_override_quota_format() {
         max_requests: None,
         max_tokens: None,
         quotas: vec![
-            Quota { metric: QuotaMetric::Requests, limit: 100 },
-            Quota { metric: QuotaMetric::TotalTokens, limit: 50000 },
+            Quota {
+                metric: QuotaMetric::Requests,
+                limit: 100,
+            },
+            Quota {
+                metric: QuotaMetric::TotalTokens,
+                limit: 50000,
+            },
         ],
         overrides: vec![RateLimitOverride {
             match_headers: [("x-model".to_string(), "gpt-4".to_string())].into(),
-            quotas: vec![Quota { metric: QuotaMetric::Requests, limit: 3 }],
+            quotas: vec![Quota {
+                metric: QuotaMetric::Requests,
+                limit: 3,
+            }],
             max_requests: None,
             max_tokens: None,
         }],

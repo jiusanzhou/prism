@@ -118,11 +118,7 @@ pub async fn list_proxies(
     State(state): State<AppState>,
     Query(query): Query<ListProxiesQuery>,
 ) -> impl IntoResponse {
-    match state
-        .store
-        .list_proxies(query.cluster_id.as_deref())
-        .await
-    {
+    match state.store.list_proxies(query.cluster_id.as_deref()).await {
         Ok(proxies) => (StatusCode::OK, Json(serde_json::json!(proxies))).into_response(),
         Err(e) => error_response(e).into_response(),
     }

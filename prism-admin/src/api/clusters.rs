@@ -83,7 +83,11 @@ pub async fn get_cluster(
 ) -> impl IntoResponse {
     match state.store.get_cluster(&id).await {
         Ok(cluster) => {
-            let proxies = state.store.list_proxies(Some(&id)).await.unwrap_or_default();
+            let proxies = state
+                .store
+                .list_proxies(Some(&id))
+                .await
+                .unwrap_or_default();
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -197,5 +201,9 @@ pub async fn sync_cluster(
             })
         })
         .collect();
-    (StatusCode::OK, Json(serde_json::json!({"results": summary}))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"results": summary})),
+    )
+        .into_response()
 }

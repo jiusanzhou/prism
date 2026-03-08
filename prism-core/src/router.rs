@@ -337,7 +337,10 @@ impl PrismRouter {
         self
     }
 
-    pub fn with_model_overrides(mut self, overrides: Vec<(String, ModelSelectionStrategy)>) -> Self {
+    pub fn with_model_overrides(
+        mut self,
+        overrides: Vec<(String, ModelSelectionStrategy)>,
+    ) -> Self {
         self.model_overrides = overrides;
         self
     }
@@ -432,10 +435,8 @@ impl Router for PrismRouter {
         let strategy = request.strategy.as_ref().unwrap_or_else(|| {
             // Check per-model overrides if a specific model was requested
             if let Some(ref model_id) = request.requested_model {
-                if let Some((_, override_strategy)) = self
-                    .model_overrides
-                    .iter()
-                    .find(|(mid, _)| mid == model_id)
+                if let Some((_, override_strategy)) =
+                    self.model_overrides.iter().find(|(mid, _)| mid == model_id)
                 {
                     return override_strategy;
                 }
@@ -448,7 +449,10 @@ impl Router for PrismRouter {
 
         // Filter by requested model if specified
         let candidates = if let Some(ref model_id) = request.requested_model {
-            candidates.into_iter().filter(|c| c.model.id == *model_id).collect()
+            candidates
+                .into_iter()
+                .filter(|c| c.model.id == *model_id)
+                .collect()
         } else {
             candidates
         };
@@ -469,12 +473,18 @@ impl Router for PrismRouter {
 
         // Inject in-flight snapshot for load-aware routing
         if let Some(ref snapshot) = request.inflight_snapshot {
-            state.set(crate::plugins::inflight_load::INFLIGHT_SNAPSHOT_KEY, snapshot.clone());
+            state.set(
+                crate::plugins::inflight_load::INFLIGHT_SNAPSHOT_KEY,
+                snapshot.clone(),
+            );
         }
 
         // Inject prefix cache index for cache-aware routing
         if let Some(ref index) = request.prefix_cache_index {
-            state.set::<std::sync::Arc<dyn crate::prefix_cache::PrefixCacheIndex>>("prefix_cache_index", index.clone());
+            state.set::<std::sync::Arc<dyn crate::prefix_cache::PrefixCacheIndex>>(
+                "prefix_cache_index",
+                index.clone(),
+            );
         }
 
         // Run the plugin framework
@@ -515,17 +525,20 @@ impl Router for PrismRouter {
             decision_time_us: decision_time.as_micros() as u64,
             pd_decision: {
                 // Build P/D decision from variant metadata
-                let variant_meta: Vec<(String, std::collections::HashMap<String, String>)> = candidates
-                    .iter()
-                    .map(|c| (c.variant.id.clone(), c.variant.metadata.clone()))
-                    .collect();
+                let variant_meta: Vec<(String, std::collections::HashMap<String, String>)> =
+                    candidates
+                        .iter()
+                        .map(|c| (c.variant.id.clone(), c.variant.metadata.clone()))
+                        .collect();
                 let pd_result = crate::plugins::pd_routing::group_pd_variants(&variant_meta);
 
                 if pd_result.pd_groups.is_empty() {
                     None // No P/D split variants, normal routing
                 } else {
-                    let all_meta: std::collections::HashMap<String, std::collections::HashMap<String, String>> =
-                        variant_meta.into_iter().collect();
+                    let all_meta: std::collections::HashMap<
+                        String,
+                        std::collections::HashMap<String, String>,
+                    > = variant_meta.into_iter().collect();
                     Some(pd_result.resolve(&winner.variant.id, &all_meta))
                 }
             },
@@ -605,12 +618,7 @@ mod tests {
         }
     }
 
-    fn make_variant(
-        id: &str,
-        model_id: &str,
-        endpoint_id: &str,
-        account_id: &str,
-    ) -> ModelVariant {
+    fn make_variant(id: &str, model_id: &str, endpoint_id: &str, account_id: &str) -> ModelVariant {
         ModelVariant {
             id: id.into(),
             model_id: model_id.into(),
@@ -623,7 +631,7 @@ mod tests {
             status: VariantStatus::Active,
             base_url: None,
             upstream_model_name: None,
-        metadata: std::collections::HashMap::new(),
+            metadata: std::collections::HashMap::new(),
         }
     }
 
@@ -645,7 +653,12 @@ mod tests {
         reg.add_endpoint(make_endpoint("endpoint-a", "provider-a", None));
         reg.add_account(make_account("account-a", "endpoint-a"));
         reg.add_model(make_model("model-a", QualityTier::A));
-        reg.add_variant(make_variant("variant-a", "model-a", "endpoint-a", "account-a"));
+        reg.add_variant(make_variant(
+            "variant-a",
+            "model-a",
+            "endpoint-a",
+            "account-a",
+        ));
         reg.add_pool(make_pool("pool-a", vec!["variant-a"]));
         reg
     }
@@ -673,7 +686,9 @@ mod tests {
         let registry = setup_registry();
         let router = PrismRouter::new(registry);
 
-        let decision = router.route(&basic_request()).expect("routing should succeed");
+        let decision = router
+            .route(&basic_request())
+            .expect("routing should succeed");
 
         assert_eq!(decision.selected_model, "model-a");
         assert_eq!(decision.selected_variant, "variant-a");
@@ -715,7 +730,9 @@ mod tests {
             prefix_cache_index: None,
         };
 
-        let decision = router.route(&request).expect("pinned routing should succeed");
+        let decision = router
+            .route(&request)
+            .expect("pinned routing should succeed");
         assert_eq!(
             decision.selected_model, "model-b",
             "pinned strategy must select the requested model"
@@ -869,7 +886,9 @@ mod tests {
             required_capabilities: None,
         });
 
-        let decision = router.route(&basic_request()).expect("routing should succeed");
+        let decision = router
+            .route(&basic_request())
+            .expect("routing should succeed");
         assert_eq!(decision.selected_variant, "variant-a");
     }
 
@@ -1024,7 +1043,9 @@ mod tests {
             .with_l3(create_l3_selector("round_robin"))
             .with_l4(create_l4_selector("weighted"));
 
-        let decision = router.route(&basic_request()).expect("routing should succeed");
+        let decision = router
+            .route(&basic_request())
+            .expect("routing should succeed");
         assert_eq!(decision.selected_variant, "variant-a");
     }
 
@@ -1043,7 +1064,9 @@ mod tests {
 
         let router = PrismRouter::new(registry).with_resilience_policy(custom_policy);
 
-        let decision = router.route(&basic_request()).expect("routing should succeed");
+        let decision = router
+            .route(&basic_request())
+            .expect("routing should succeed");
         assert_eq!(decision.selected_variant, "variant-a");
     }
 }

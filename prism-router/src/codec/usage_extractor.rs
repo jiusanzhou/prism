@@ -94,7 +94,11 @@ impl UsageExtractStrategy for OpenAIStrategy {
             total_tokens: u.total_tokens,
             metrics: Default::default(),
         };
-        if result.has_data() { Some(result) } else { None }
+        if result.has_data() {
+            Some(result)
+        } else {
+            None
+        }
     }
 }
 
@@ -126,7 +130,11 @@ impl UsageExtractStrategy for AnthropicStrategy {
             total_tokens: u.input_tokens.zip(u.output_tokens).map(|(i, o)| i + o),
             metrics: Default::default(),
         };
-        if result.has_data() { Some(result) } else { None }
+        if result.has_data() {
+            Some(result)
+        } else {
+            None
+        }
     }
 }
 
@@ -139,7 +147,9 @@ impl UsageExtractStrategy for AutoStrategy {
     }
 
     fn extract(&self, json: &str) -> Option<ExtractedUsage> {
-        OpenAIStrategy.extract(json).or_else(|| AnthropicStrategy.extract(json))
+        OpenAIStrategy
+            .extract(json)
+            .or_else(|| AnthropicStrategy.extract(json))
     }
 }
 
@@ -157,7 +167,6 @@ pub struct UsageExtractorPlugin {
     /// Fallback strategy when protocol doesn't match.
     fallback: Box<dyn UsageExtractStrategy>,
 }
-
 
 impl Default for UsageExtractorPlugin {
     fn default() -> Self {
@@ -177,7 +186,11 @@ impl UsageExtractorPlugin {
     }
 
     /// Register a custom strategy for a protocol.
-    pub fn with_strategy(mut self, protocol: &str, strategy: Box<dyn UsageExtractStrategy>) -> Self {
+    pub fn with_strategy(
+        mut self,
+        protocol: &str,
+        strategy: Box<dyn UsageExtractStrategy>,
+    ) -> Self {
         self.strategies.push((protocol.to_string(), strategy));
         self
     }
@@ -241,7 +254,8 @@ impl ProxyPlugin for UsageExtractorPlugin {
         for line in chunk.lines() {
             if let Some(new_usage) = self.extract_from_sse_line(protocol, line) {
                 // Merge with existing usage (streaming can have partial updates)
-                let mut current = ctx.get::<ExtractedUsage>(USAGE_KEY)
+                let mut current = ctx
+                    .get::<ExtractedUsage>(USAGE_KEY)
                     .cloned()
                     .unwrap_or_default();
                 current.merge(&new_usage);
@@ -334,7 +348,8 @@ mod tests {
         let mut ctx = ProxyContext::new();
         ctx.inbound_protocol = "openai".to_string();
 
-        let body = br#"{"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}"#.to_vec();
+        let body =
+            br#"{"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}"#.to_vec();
         let result = plugin.on_response_body(&mut ctx, body).unwrap();
         assert!(!result.is_empty()); // pass through
 
@@ -351,7 +366,12 @@ mod tests {
         ctx.inbound_protocol = "openai".to_string();
 
         // Regular content chunk — no usage
-        let r = plugin.on_response_stream_chunk(&mut ctx, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n").unwrap();
+        let r = plugin
+            .on_response_stream_chunk(
+                &mut ctx,
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n",
+            )
+            .unwrap();
         assert!(r.is_some());
         assert!(ctx.get::<ExtractedUsage>(USAGE_KEY).is_none());
 
@@ -369,7 +389,9 @@ mod tests {
         let mut ctx = ProxyContext::new();
         ctx.inbound_protocol = "openai".to_string();
 
-        let r = plugin.on_response_stream_chunk(&mut ctx, "data: [DONE]\n").unwrap();
+        let r = plugin
+            .on_response_stream_chunk(&mut ctx, "data: [DONE]\n")
+            .unwrap();
         assert!(r.is_some());
         assert!(ctx.get::<ExtractedUsage>(USAGE_KEY).is_none());
     }
@@ -395,7 +417,8 @@ mod tests {
         let mut ctx = ProxyContext::new();
         ctx.inbound_protocol = "custom-llm".to_string(); // unknown protocol
 
-        let body = br#"{"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}"#.to_vec();
+        let body =
+            br#"{"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}"#.to_vec();
         plugin.on_response_body(&mut ctx, body).unwrap();
 
         let usage = ctx.get::<ExtractedUsage>(USAGE_KEY).unwrap();
@@ -429,26 +452,41 @@ mod tests {
 
     struct ImageGenStrategy;
     impl UsageExtractStrategy for ImageGenStrategy {
-        fn name(&self) -> &str { "image_gen" }
+        fn name(&self) -> &str {
+            "image_gen"
+        }
         fn extract(&self, json: &str) -> Option<ExtractedUsage> {
             #[derive(Deserialize)]
-            struct ImgResp { steps: Option<u64>, width: Option<u64>, height: Option<u64> }
+            struct ImgResp {
+                steps: Option<u64>,
+                width: Option<u64>,
+                height: Option<u64>,
+            }
             let r: ImgResp = serde_json::from_str(json).ok()?;
             let mut metrics = std::collections::HashMap::new();
-            if let Some(s) = r.steps { metrics.insert("steps".to_string(), s); }
+            if let Some(s) = r.steps {
+                metrics.insert("steps".to_string(), s);
+            }
             if let (Some(w), Some(h)) = (r.width, r.height) {
                 metrics.insert("pixels".to_string(), w * h);
             }
-            if metrics.is_empty() { None } else {
-                Some(ExtractedUsage { input_tokens: None, output_tokens: None, total_tokens: None, metrics })
+            if metrics.is_empty() {
+                None
+            } else {
+                Some(ExtractedUsage {
+                    input_tokens: None,
+                    output_tokens: None,
+                    total_tokens: None,
+                    metrics,
+                })
             }
         }
     }
 
     #[test]
     fn test_custom_strategy_aigc() {
-        let plugin = UsageExtractorPlugin::new()
-            .with_strategy("image_gen", Box::new(ImageGenStrategy));
+        let plugin =
+            UsageExtractorPlugin::new().with_strategy("image_gen", Box::new(ImageGenStrategy));
         let mut ctx = ProxyContext::new();
         ctx.inbound_protocol = "image_gen".to_string();
 

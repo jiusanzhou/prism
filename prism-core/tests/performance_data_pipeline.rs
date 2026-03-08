@@ -118,7 +118,7 @@ fn build_two_variant_registry() -> InMemoryRegistry {
             status: VariantStatus::Active,
             base_url: None,
             upstream_model_name: None,
-        metadata: std::collections::HashMap::new(),
+            metadata: std::collections::HashMap::new(),
         });
     }
 
@@ -384,7 +384,7 @@ fn test_custom_data_layer_integration() {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
-    metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
     });
 
     // Candidate should use the data layer value (77), not the static value (999)

@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::RwLock;
 
-use crate::cluster::{Cluster, ProxyInstance, ProxyStatus};
 use super::{Store, StoreError, StoreResult};
+use crate::cluster::{Cluster, ProxyInstance, ProxyStatus};
 
 /// Supported configuration file formats for FileStore.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -88,36 +88,26 @@ impl FileStore {
             .map_err(|e| StoreError::Internal(format!("read {}: {}", path.display(), e)))?;
 
         match self.format {
-            FileFormat::Yaml | FileFormat::Auto => {
-                serde_yaml::from_str(&content)
-                    .map_err(|e| StoreError::Internal(format!("parse YAML: {}", e)))
-            }
+            FileFormat::Yaml | FileFormat::Auto => serde_yaml::from_str(&content)
+                .map_err(|e| StoreError::Internal(format!("parse YAML: {}", e))),
             FileFormat::Json => {
                 let stripped = strip_jsonc_comments(&content);
                 serde_json::from_str(&stripped)
                     .map_err(|e| StoreError::Internal(format!("parse JSON: {}", e)))
             }
-            FileFormat::Toml => {
-                toml::from_str(&content)
-                    .map_err(|e| StoreError::Internal(format!("parse TOML: {}", e)))
-            }
+            FileFormat::Toml => toml::from_str(&content)
+                .map_err(|e| StoreError::Internal(format!("parse TOML: {}", e))),
         }
     }
 
     async fn save(&self, config: &PrismConfig) -> StoreResult<()> {
         let serialized = match self.format {
-            FileFormat::Yaml | FileFormat::Auto => {
-                serde_yaml::to_string(config)
-                    .map_err(|e| StoreError::Internal(format!("serialize YAML: {}", e)))?
-            }
-            FileFormat::Json => {
-                serde_json::to_string_pretty(config)
-                    .map_err(|e| StoreError::Internal(format!("serialize JSON: {}", e)))?
-            }
-            FileFormat::Toml => {
-                toml::to_string_pretty(config)
-                    .map_err(|e| StoreError::Internal(format!("serialize TOML: {}", e)))?
-            }
+            FileFormat::Yaml | FileFormat::Auto => serde_yaml::to_string(config)
+                .map_err(|e| StoreError::Internal(format!("serialize YAML: {}", e)))?,
+            FileFormat::Json => serde_json::to_string_pretty(config)
+                .map_err(|e| StoreError::Internal(format!("serialize JSON: {}", e)))?,
+            FileFormat::Toml => toml::to_string_pretty(config)
+                .map_err(|e| StoreError::Internal(format!("serialize TOML: {}", e)))?,
         };
         let path = self.path.clone();
         tokio::fs::write(&path, serialized)
@@ -534,7 +524,11 @@ impl Store for FileStore {
     async fn list_proxies(&self, cluster_id: Option<&str>) -> StoreResult<Vec<ProxyInstance>> {
         let proxies = self.proxies.read().await;
         match cluster_id {
-            Some(cid) => Ok(proxies.values().filter(|p| p.cluster_id == cid).cloned().collect()),
+            Some(cid) => Ok(proxies
+                .values()
+                .filter(|p| p.cluster_id == cid)
+                .cloned()
+                .collect()),
             None => Ok(proxies.values().cloned().collect()),
         }
     }
@@ -616,12 +610,30 @@ mod tests {
 
     #[test]
     fn test_file_format_from_extension() {
-        assert_eq!(FileFormat::from_extension(std::path::Path::new("c.yaml")), FileFormat::Yaml);
-        assert_eq!(FileFormat::from_extension(std::path::Path::new("c.yml")), FileFormat::Yaml);
-        assert_eq!(FileFormat::from_extension(std::path::Path::new("c.json")), FileFormat::Json);
-        assert_eq!(FileFormat::from_extension(std::path::Path::new("c.jsonc")), FileFormat::Json);
-        assert_eq!(FileFormat::from_extension(std::path::Path::new("c.toml")), FileFormat::Toml);
-        assert_eq!(FileFormat::from_extension(std::path::Path::new("c.txt")), FileFormat::Yaml);
+        assert_eq!(
+            FileFormat::from_extension(std::path::Path::new("c.yaml")),
+            FileFormat::Yaml
+        );
+        assert_eq!(
+            FileFormat::from_extension(std::path::Path::new("c.yml")),
+            FileFormat::Yaml
+        );
+        assert_eq!(
+            FileFormat::from_extension(std::path::Path::new("c.json")),
+            FileFormat::Json
+        );
+        assert_eq!(
+            FileFormat::from_extension(std::path::Path::new("c.jsonc")),
+            FileFormat::Json
+        );
+        assert_eq!(
+            FileFormat::from_extension(std::path::Path::new("c.toml")),
+            FileFormat::Toml
+        );
+        assert_eq!(
+            FileFormat::from_extension(std::path::Path::new("c.txt")),
+            FileFormat::Yaml
+        );
     }
 
     #[test]

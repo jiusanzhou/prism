@@ -178,7 +178,13 @@ mod inner {
         }
 
         /// Record a metric value asynchronously.
-        async fn record_metric_async(&self, key: &str, metric: &QuotaMetric, value: u64, window_secs: u64) {
+        async fn record_metric_async(
+            &self,
+            key: &str,
+            metric: &QuotaMetric,
+            value: u64,
+            window_secs: u64,
+        ) {
             let rkey = self.metric_key(key, metric);
 
             // Use INCRBY + EXPIRE for post-record metrics
@@ -226,13 +232,13 @@ mod inner {
 
             match result {
                 Ok(()) => Ok(()),
-                Err(denied) if !self.is_healthy() => {
-                    match self.degradation_policy {
-                        DegradationPolicy::Allow => Ok(()),
-                        DegradationPolicy::Deny => Err(denied),
-                        DegradationPolicy::Local => self.fallback.check_quotas(key, window_secs, quotas),
+                Err(denied) if !self.is_healthy() => match self.degradation_policy {
+                    DegradationPolicy::Allow => Ok(()),
+                    DegradationPolicy::Deny => Err(denied),
+                    DegradationPolicy::Local => {
+                        self.fallback.check_quotas(key, window_secs, quotas)
                     }
-                }
+                },
                 Err(denied) => Err(denied),
             }
         }

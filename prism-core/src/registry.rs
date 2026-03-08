@@ -198,12 +198,24 @@ impl InMemoryRegistry {
                 variant_ids,
                 pool_ids,
             } => {
-                for id in provider_ids { self.providers.remove(id); }
-                for id in endpoint_ids { self.endpoints.remove(id); }
-                for id in account_ids { self.accounts.remove(id); }
-                for id in model_ids { self.models.remove(id); }
-                for id in variant_ids { self.variants.remove(id); }
-                for id in pool_ids { self.pools.remove(id); }
+                for id in provider_ids {
+                    self.providers.remove(id);
+                }
+                for id in endpoint_ids {
+                    self.endpoints.remove(id);
+                }
+                for id in account_ids {
+                    self.accounts.remove(id);
+                }
+                for id in model_ids {
+                    self.models.remove(id);
+                }
+                for id in variant_ids {
+                    self.variants.remove(id);
+                }
+                for id in pool_ids {
+                    self.pools.remove(id);
+                }
             }
             DiscoveryEvent::VariantUpsert(variant) => {
                 self.variants.insert(variant.id.clone(), variant.clone());

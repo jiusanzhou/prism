@@ -171,7 +171,11 @@ mod tests {
     fn test_validate_config_ok() {
         let plugin = OpenAICompatPlugin;
         assert!(plugin
-            .validate_config(&HashMap::new(), &Some("sk-123".to_string()), &HashMap::new())
+            .validate_config(
+                &HashMap::new(),
+                &Some("sk-123".to_string()),
+                &HashMap::new()
+            )
             .is_ok());
     }
 
@@ -188,11 +192,7 @@ mod tests {
     fn test_validate_config_empty_key_err() {
         let plugin = OpenAICompatPlugin;
         assert!(plugin
-            .validate_config(
-                &HashMap::new(),
-                &Some(String::new()),
-                &HashMap::new()
-            )
+            .validate_config(&HashMap::new(), &Some(String::new()), &HashMap::new())
             .is_err());
     }
 }

@@ -147,7 +147,10 @@ mod tests {
         ctx.request_headers
             .insert("authorization".to_string(), "Bearer sk-test123".to_string());
         assert_eq!(plugin.on_request_headers(&mut ctx), Action::Continue);
-        assert_eq!(ctx.get::<String>("prism.auth.key"), Some(&"sk-test123".to_string()));
+        assert_eq!(
+            ctx.get::<String>("prism.auth.key"),
+            Some(&"sk-test123".to_string())
+        );
     }
 
     #[test]
@@ -196,15 +199,18 @@ mod tests {
     #[test]
     fn test_custom_header() {
         let mut plugin = ApiKeyAuthPlugin::new();
-        plugin.on_config(&serde_json::json!({
-            "header": "x-api-key",
-            "keys": ["mykey123"],
-            "strip_prefix": null
-        })).unwrap();
+        plugin
+            .on_config(&serde_json::json!({
+                "header": "x-api-key",
+                "keys": ["mykey123"],
+                "strip_prefix": null
+            }))
+            .unwrap();
 
         let mut ctx = ProxyContext::new();
         ctx.request_path = "/v1/chat/completions".to_string();
-        ctx.request_headers.insert("x-api-key".to_string(), "mykey123".to_string());
+        ctx.request_headers
+            .insert("x-api-key".to_string(), "mykey123".to_string());
         assert_eq!(plugin.on_request_headers(&mut ctx), Action::Continue);
     }
 
@@ -217,12 +223,15 @@ mod tests {
     #[test]
     fn test_multiple_keys() {
         let plugin = ApiKeyAuthPlugin::with_keys(vec![
-            "sk-key1".to_string(), "sk-key2".to_string(), "sk-key3".to_string(),
+            "sk-key1".to_string(),
+            "sk-key2".to_string(),
+            "sk-key3".to_string(),
         ]);
         for key in &["sk-key1", "sk-key2", "sk-key3"] {
             let mut ctx = ProxyContext::new();
             ctx.request_path = "/v1/chat/completions".to_string();
-            ctx.request_headers.insert("authorization".to_string(), format!("Bearer {}", key));
+            ctx.request_headers
+                .insert("authorization".to_string(), format!("Bearer {}", key));
             assert_eq!(plugin.on_request_headers(&mut ctx), Action::Continue);
         }
     }

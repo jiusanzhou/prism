@@ -69,7 +69,7 @@ mod tests {
                 status: variant_status,
                 base_url: None,
                 upstream_model_name: None,
-            metadata: std::collections::HashMap::new(),
+                metadata: std::collections::HashMap::new(),
             },
             model: Model {
                 id: "model-1".into(),

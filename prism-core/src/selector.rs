@@ -1056,10 +1056,9 @@ mod tests {
     use crate::router::RouteMetadata;
     use crate::strategy::{
         BackoffStrategy, CircuitBreakerPolicy, FallbackPolicy, ModelSelectionStrategy,
-        ResiliencePolicy, RetryCondition, RetryPolicy, RetryScope, RoutingObjective,
-        TimeoutPolicy,
+        ResiliencePolicy, RetryCondition, RetryPolicy, RetryScope, RoutingObjective, TimeoutPolicy,
     };
-    
+
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -1155,7 +1154,7 @@ mod tests {
                 status: VariantStatus::Active,
                 base_url: None,
                 upstream_model_name: None,
-            metadata: std::collections::HashMap::new(),
+                metadata: std::collections::HashMap::new(),
             },
             model: Model {
                 id: opts.model_id.into(),
@@ -1439,7 +1438,10 @@ mod tests {
             "C tier candidate should be filtered by quality floor"
         );
         // Cheapest qualifying candidate should rank first
-        assert_eq!(result[0], 0, "cheapest qualifying candidate should rank first");
+        assert_eq!(
+            result[0], 0,
+            "cheapest qualifying candidate should rank first"
+        );
     }
 
     #[test]
@@ -1488,7 +1490,10 @@ mod tests {
         };
 
         let result = selector.select(&candidates, &ctx).unwrap();
-        assert_eq!(result[0], 0, "S tier should rank first in QualityFirst mode");
+        assert_eq!(
+            result[0], 0,
+            "S tier should rank first in QualityFirst mode"
+        );
     }
 
     #[test]
@@ -1563,7 +1568,10 @@ mod tests {
         let result = selector.select(&candidates, &ctx).unwrap();
         // Only the good candidate should survive: slow one has p99=2000>500, low quality has 0.25<0.4, slow ttft has 600>200
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0], 0, "only the good candidate should survive SLO filtering");
+        assert_eq!(
+            result[0], 0,
+            "only the good candidate should survive SLO filtering"
+        );
     }
 
     #[test]
@@ -1629,7 +1637,10 @@ mod tests {
         let result = selector.select(&candidates, &ctx).unwrap();
         // Only vision-capable candidate should be returned
         assert!(result.contains(&0), "vision candidate should be included");
-        assert!(!result.contains(&1), "non-vision reasoning candidate should be filtered");
+        assert!(
+            !result.contains(&1),
+            "non-vision reasoning candidate should be filtered"
+        );
         assert!(!result.contains(&2), "basic candidate should be filtered");
 
         // Test reasoning requirement from profile
@@ -1643,8 +1654,14 @@ mod tests {
         };
 
         let result2 = selector.select(&candidates, &ctx2).unwrap();
-        assert!(result2.contains(&1), "reasoning candidate should be included");
-        assert!(!result2.contains(&2), "basic candidate should be filtered out for reasoning");
+        assert!(
+            result2.contains(&1),
+            "reasoning candidate should be included"
+        );
+        assert!(
+            !result2.contains(&2),
+            "basic candidate should be filtered out for reasoning"
+        );
 
         // Test context window filtering via XLarge context need
         let mut profile3 = default_profile();
@@ -1658,7 +1675,10 @@ mod tests {
 
         let result3 = selector.select(&candidates, &ctx3).unwrap();
         // Small context candidate (2000) should be filtered out for XLarge (min 128000)
-        assert!(!result3.contains(&3), "small context candidate should be filtered for XLarge need");
+        assert!(
+            !result3.contains(&3),
+            "small context candidate should be filtered for XLarge need"
+        );
 
         // Test RequiredCapabilities filter
         let strategy_with_caps = ModelSelectionStrategy::Auto {
@@ -1683,8 +1703,14 @@ mod tests {
         };
 
         let result4 = selector.select(&candidates, &ctx4).unwrap();
-        assert!(result4.contains(&0), "vision candidate should survive RequiredCapabilities filter");
-        assert!(!result4.contains(&2), "basic candidate should be filtered by RequiredCapabilities");
+        assert!(
+            result4.contains(&0),
+            "vision candidate should survive RequiredCapabilities filter"
+        );
+        assert!(
+            !result4.contains(&2),
+            "basic candidate should be filtered by RequiredCapabilities"
+        );
     }
 
     #[test]
@@ -2154,7 +2180,10 @@ mod tests {
         };
 
         let result = selector.select(&candidates_refs, &ctx).unwrap();
-        assert_eq!(result, 1, "should pick the candidate with lowest current_qps (2.0)");
+        assert_eq!(
+            result, 1,
+            "should pick the candidate with lowest current_qps (2.0)"
+        );
     }
 
     #[test]
@@ -2417,7 +2446,7 @@ mod tests {
                 status: VariantStatus::Active,
                 base_url: None,
                 upstream_model_name: None,
-            metadata: std::collections::HashMap::new(),
+                metadata: std::collections::HashMap::new(),
             },
         );
         reg.variants.insert(
@@ -2434,7 +2463,7 @@ mod tests {
                 status: VariantStatus::Active,
                 base_url: None,
                 upstream_model_name: None,
-            metadata: std::collections::HashMap::new(),
+                metadata: std::collections::HashMap::new(),
             },
         );
 
@@ -2480,9 +2509,15 @@ mod tests {
             .unwrap();
 
         match result {
-            RecoveryAction::Retry { variant_id, delay_ms } => {
+            RecoveryAction::Retry {
+                variant_id,
+                delay_ms,
+            } => {
                 // CrossProvider scope should try a different provider's variant
-                assert_eq!(variant_id, "var-b", "should retry on different provider's variant");
+                assert_eq!(
+                    variant_id, "var-b",
+                    "should retry on different provider's variant"
+                );
                 assert!(delay_ms > 0, "delay should be positive");
             }
             other => panic!("expected Retry, got: {:?}", other),
@@ -2518,7 +2553,10 @@ mod tests {
 
         match result {
             RecoveryAction::Fallback { variant_id } => {
-                assert_ne!(variant_id, "var-a", "fallback should choose a different variant");
+                assert_ne!(
+                    variant_id, "var-a",
+                    "fallback should choose a different variant"
+                );
             }
             other => panic!("expected Fallback after max retries, got: {:?}", other),
         }

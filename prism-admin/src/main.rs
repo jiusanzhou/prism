@@ -132,8 +132,14 @@ async fn main() {
         .route("/api/providers", get(api::providers::list_providers))
         .route("/api/providers/{id}", get(api::providers::get_provider))
         .route("/api/providers/{id}", put(api::providers::update_provider))
-        .route("/api/providers/{id}", delete(api::providers::delete_provider))
-        .route("/api/provider-types", get(api::providers::list_provider_types))
+        .route(
+            "/api/providers/{id}",
+            delete(api::providers::delete_provider),
+        )
+        .route(
+            "/api/provider-types",
+            get(api::providers::list_provider_types),
+        )
         .route("/api/accounts", get(api::accounts::list_accounts))
         .route("/api/accounts", post(api::accounts::create_account))
         .route("/api/accounts/{id}", get(api::accounts::get_account))
@@ -148,9 +154,18 @@ async fn main() {
         .route("/api/variants/{id}", put(api::variants::update_variant))
         .route("/api/variants/{id}", delete(api::variants::delete_variant))
         .route("/api/rate-limits", get(api::rate_limits::list_rate_limits))
-        .route("/api/rate-limits", post(api::rate_limits::create_rate_limit))
-        .route("/api/rate-limits/{name}", put(api::rate_limits::update_rate_limit))
-        .route("/api/rate-limits/{name}", delete(api::rate_limits::delete_rate_limit))
+        .route(
+            "/api/rate-limits",
+            post(api::rate_limits::create_rate_limit),
+        )
+        .route(
+            "/api/rate-limits/{name}",
+            put(api::rate_limits::update_rate_limit),
+        )
+        .route(
+            "/api/rate-limits/{name}",
+            delete(api::rate_limits::delete_rate_limit),
+        )
         .route("/api/pools", get(api::pools::list_pools))
         .route("/api/pools", post(api::pools::create_pool))
         .route("/api/pools/{id}", put(api::pools::update_pool))
@@ -163,10 +178,22 @@ async fn main() {
         .route("/api/auth", put(api::auth::update_auth))
         // Client Keys
         .route("/api/client-keys", get(api::client_keys::list_client_keys))
-        .route("/api/client-keys", post(api::client_keys::create_client_key))
-        .route("/api/client-keys/{name}", get(api::client_keys::get_client_key))
-        .route("/api/client-keys/{name}", put(api::client_keys::update_client_key))
-        .route("/api/client-keys/{name}", delete(api::client_keys::delete_client_key))
+        .route(
+            "/api/client-keys",
+            post(api::client_keys::create_client_key),
+        )
+        .route(
+            "/api/client-keys/{name}",
+            get(api::client_keys::get_client_key),
+        )
+        .route(
+            "/api/client-keys/{name}",
+            put(api::client_keys::update_client_key),
+        )
+        .route(
+            "/api/client-keys/{name}",
+            delete(api::client_keys::delete_client_key),
+        )
         .route("/api/access-log", get(api::access_log::get_access_log))
         .route("/api/access-log", put(api::access_log::update_access_log))
         .route("/api/status", get(api::status::get_status))
@@ -177,13 +204,22 @@ async fn main() {
         .route("/api/clusters/{id}", get(api::clusters::get_cluster))
         .route("/api/clusters/{id}", put(api::clusters::update_cluster))
         .route("/api/clusters/{id}", delete(api::clusters::delete_cluster))
-        .route("/api/clusters/{id}/config", get(api::clusters::get_cluster_config))
+        .route(
+            "/api/clusters/{id}/config",
+            get(api::clusters::get_cluster_config),
+        )
         .route("/api/clusters/{id}/sync", post(api::clusters::sync_cluster))
         // Proxies
         .route("/api/proxies", get(api::proxies::list_proxies))
         .route("/api/proxies/register", post(api::proxies::register_proxy))
-        .route("/api/proxies/heartbeat", post(api::proxies::heartbeat_proxy))
-        .route("/api/proxies/{instance_id}", delete(api::proxies::delete_proxy))
+        .route(
+            "/api/proxies/heartbeat",
+            post(api::proxies::heartbeat_proxy),
+        )
+        .route(
+            "/api/proxies/{instance_id}",
+            delete(api::proxies::delete_proxy),
+        )
         // Routing
         .route("/api/routing", get(api::routing::get_routing))
         .route("/api/routing", put(api::routing::update_routing))

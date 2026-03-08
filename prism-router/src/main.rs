@@ -1,15 +1,15 @@
 mod api;
+#[cfg(feature = "proxy")]
+mod client_keys;
 pub mod codec;
 mod config;
-pub mod provider;
 mod config_watcher;
 pub mod metrics;
 pub mod plugin_loader;
 pub mod plugin_manager;
+pub mod provider;
 mod state;
 pub mod unified_plugin;
-#[cfg(feature = "proxy")]
-mod client_keys;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;
@@ -25,6 +25,9 @@ mod gen {
 #[cfg(feature = "proxy")]
 mod access_log;
 #[cfg(feature = "proxy")]
+mod circuit_breaker;
+mod discovery_runner;
+#[cfg(feature = "proxy")]
 mod health;
 #[cfg(feature = "proxy")]
 mod protocol;
@@ -32,9 +35,6 @@ mod protocol;
 mod proxy;
 #[cfg(feature = "proxy")]
 pub mod ratelimit;
-#[cfg(feature = "proxy")]
-mod circuit_breaker;
-mod discovery_runner;
 mod sidecar_discovery;
 
 use std::net::SocketAddr;
@@ -104,8 +104,8 @@ async fn main() {
     // Build registry and router
     let registry = build_registry(&config);
     let router = crate::config::build_router_from_config(registry, &config.routing);
-    let state = AppState::new(router, cli.config.clone())
-        .with_model_aliases(config.model_aliases.clone());
+    let state =
+        AppState::new(router, cli.config.clone()).with_model_aliases(config.model_aliases.clone());
 
     // Start config watcher
     let _config_watcher = config_watcher::spawn_config_watcher(
@@ -193,14 +193,16 @@ async fn main() {
         });
     if let Some(ref tls) = tls_config {
         info!("  HTTP  → {} (TLS)", http_addr);
-        let rustls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&tls.cert_path, &tls.key_path)
-            .await
-            .unwrap_or_else(|e| {
-                error!("Failed to load TLS cert/key for HTTP: {}", e);
-                std::process::exit(1);
-            });
-        let http_server = axum_server::from_tcp_rustls(http_listener.into_std().unwrap(), rustls_config)
-            .serve(app.into_make_service());
+        let rustls_config =
+            axum_server::tls_rustls::RustlsConfig::from_pem_file(&tls.cert_path, &tls.key_path)
+                .await
+                .unwrap_or_else(|e| {
+                    error!("Failed to load TLS cert/key for HTTP: {}", e);
+                    std::process::exit(1);
+                });
+        let http_server =
+            axum_server::from_tcp_rustls(http_listener.into_std().unwrap(), rustls_config)
+                .serve(app.into_make_service());
         // Spawn TLS HTTP server — we'll select on shutdown below
         let http_handle = tokio::spawn(async move {
             if let Err(e) = http_server.await {
@@ -268,9 +270,9 @@ async fn main() {
             // Build codec registry with built-in plugins
             let codec_registry = {
                 use crate::codec::chain::ProxyPluginChain;
+                use crate::codec::quota_recorder::QuotaRecorderPlugin;
                 use crate::codec::registry::CodecRegistry;
                 use crate::codec::usage_extractor::UsageExtractorPlugin;
-                use crate::codec::quota_recorder::QuotaRecorderPlugin;
 
                 let mut registry = CodecRegistry::new();
                 let mut global_chain = ProxyPluginChain::new();
@@ -384,7 +386,10 @@ async fn main() {
                 use crate::access_log::AccessLogger;
                 match AccessLogger::new(config.access_log.clone()) {
                     Ok(logger) => {
-                        info!("  Access log → enabled (format: {:?})", config.access_log.format);
+                        info!(
+                            "  Access log → enabled (format: {:?})",
+                            config.access_log.format
+                        );
                         Some(Arc::new(logger))
                     }
                     Err(e) => {
@@ -421,25 +426,30 @@ async fn main() {
             }
             // Build health checker from registry endpoints
             let health_checker = {
-                use crate::health::{HealthChecker, HealthCheckConfig, EndpointInfo};
+                use crate::health::{EndpointInfo, HealthCheckConfig, HealthChecker};
                 let hc_config = HealthCheckConfig::default();
                 let hc = std::sync::Arc::new(HealthChecker::new(hc_config));
 
                 // Collect endpoint info from registry for active probing
                 let router_guard = state.router.load();
-                let endpoints: Vec<EndpointInfo> = router_guard.registry.endpoints.iter()
+                let endpoints: Vec<EndpointInfo> = router_guard
+                    .registry
+                    .endpoints
+                    .iter()
                     .map(|(id, ep)| {
                         let provider = router_guard.registry.providers.get(&ep.provider_id);
-                        let base_url = ep.base_url.clone()
+                        let base_url = ep
+                            .base_url
+                            .clone()
                             .or_else(|| provider.map(|p| p.base_url.clone()))
                             .unwrap_or_default();
-                        let auth_header = provider.and_then(|p| {
-                            match &p.auth {
-                                prism_core::types::AuthConfig::ApiKey { key, header } if !key.is_empty() => {
-                                    Some((header.clone(), key.clone()))
-                                }
-                                _ => None,
+                        let auth_header = provider.and_then(|p| match &p.auth {
+                            prism_core::types::AuthConfig::ApiKey { key, header }
+                                if !key.is_empty() =>
+                            {
+                                Some((header.clone(), key.clone()))
                             }
+                            _ => None,
                         });
                         EndpointInfo {
                             id: id.clone(),
@@ -455,11 +465,7 @@ async fn main() {
                 // Spawn background health check loop
                 let hc_clone = std::sync::Arc::clone(&hc);
                 let (_hc_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-                hc_clone.spawn_checker(
-                    endpoints,
-                    std::time::Duration::from_secs(30),
-                    shutdown_rx,
-                );
+                hc_clone.spawn_checker(endpoints, std::time::Duration::from_secs(30), shutdown_rx);
 
                 // _hc_shutdown_tx is intentionally leaked (kept alive) —
                 // health checker runs for the lifetime of the process.
@@ -474,16 +480,21 @@ async fn main() {
                 .with_max_request_body(config.server.max_request_body_bytes)
                 .with_auth(config.auth.clone())
                 .with_health_checker(health_checker)
-                .with_retry_on_5xx(config.server.retry_on_5xx, config.server.retry_5xx_codes.clone());
+                .with_retry_on_5xx(
+                    config.server.retry_on_5xx,
+                    config.server.retry_5xx_codes.clone(),
+                );
 
             // Build client key manager from config
             if !config.client_keys.is_empty() {
                 if let Some(ckm) = client_keys::ClientKeyManager::new(&config.client_keys) {
-                    info!("  Client keys → {} keys configured", config.client_keys.len());
+                    info!(
+                        "  Client keys → {} keys configured",
+                        config.client_keys.len()
+                    );
                     prism_proxy = prism_proxy.with_client_key_manager(Arc::new(ckm));
                 }
             }
-
 
             let prism_proxy = prism_proxy;
 
@@ -561,7 +572,6 @@ async fn shutdown_signal() {
         _ = terminate => { info!("Received SIGTERM, shutting down..."); }
     }
 }
-
 
 fn init_tracing() {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()

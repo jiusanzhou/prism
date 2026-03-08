@@ -20,7 +20,9 @@ impl prism_router::config::ConfigSource for DbConfigSource {
         "database"
     }
 
-    fn load(&self) -> Result<prism_router::config::types::PrismConfig, prism_router::config::ConfigError> {
+    fn load(
+        &self,
+    ) -> Result<prism_router::config::types::PrismConfig, prism_router::config::ConfigError> {
         self.runtime.block_on(async {
             self.store
                 .snapshot()

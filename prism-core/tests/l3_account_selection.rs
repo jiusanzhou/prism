@@ -95,7 +95,7 @@ fn build_multi_account_registry() -> InMemoryRegistry {
             status: VariantStatus::Active,
             base_url: None,
             upstream_model_name: None,
-        metadata: std::collections::HashMap::new(),
+            metadata: std::collections::HashMap::new(),
         });
     }
 
@@ -270,7 +270,7 @@ fn test_soft_affinity_migrates_on_overload() {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
-    metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
     });
 
     reg.add_variant(ModelVariant {
@@ -296,7 +296,7 @@ fn test_soft_affinity_migrates_on_overload() {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
-    metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
     });
 
     reg.add_pool(ModelPool {
@@ -413,7 +413,7 @@ fn test_hard_affinity_rejects_on_overload() {
             status: VariantStatus::Active,
             base_url: None,
             upstream_model_name: None,
-        metadata: std::collections::HashMap::new(),
+            metadata: std::collections::HashMap::new(),
         });
     }
 
@@ -452,9 +452,9 @@ fn test_load_balanced_distribution() {
             metadata: RouteMetadata::default(),
             analyze_context: None,
             required_protocol: None,
-        requested_model: None,
-        inflight_snapshot: None,
-        prefix_cache_index: None,
+            requested_model: None,
+            inflight_snapshot: None,
+            prefix_cache_index: None,
         };
         let decision = router.route(&req).unwrap();
         *account_counts

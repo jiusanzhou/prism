@@ -1,16 +1,16 @@
 //! prism-router library — re-exports for integration tests and embedding.
 
 pub mod api;
+pub mod client_keys;
 pub mod codec;
 pub mod config;
-pub mod provider;
 pub mod config_watcher;
 pub mod metrics;
 pub mod plugin_loader;
 pub mod plugin_manager;
+pub mod provider;
 pub mod state;
 pub mod unified_plugin;
-pub mod client_keys;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;
@@ -25,6 +25,8 @@ pub mod gen {
 
 #[cfg(feature = "proxy")]
 pub mod access_log;
+#[cfg(feature = "proxy")]
+pub mod circuit_breaker;
 pub mod health;
 #[cfg(feature = "proxy")]
 pub mod protocol;
@@ -32,5 +34,3 @@ pub mod protocol;
 pub mod proxy;
 #[cfg(feature = "proxy")]
 pub mod ratelimit;
-#[cfg(feature = "proxy")]
-pub mod circuit_breaker;

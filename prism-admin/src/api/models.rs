@@ -1,5 +1,10 @@
-use axum::{extract::{Path, State}, http::StatusCode, response::IntoResponse, Json};
 use crate::AppState;
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
 
 /// GET /api/models
 pub async fn list_models(State(state): State<AppState>) -> impl IntoResponse {
@@ -28,7 +33,11 @@ pub async fn create_model(
 ) -> impl IntoResponse {
     let id = model.id.clone();
     match state.store.upsert_model(&id, model).await {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"status": "ok", "id": id}))).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "ok", "id": id})),
+        )
+            .into_response(),
         Err(e) => error_response(e.to_string()),
     }
 }
@@ -40,7 +49,11 @@ pub async fn update_model(
     Json(model): Json<prism_router::config::types::ModelConfig>,
 ) -> impl IntoResponse {
     match state.store.upsert_model(&id, model).await {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"status": "ok", "id": id}))).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "ok", "id": id})),
+        )
+            .into_response(),
         Err(e) => error_response(e.to_string()),
     }
 }
@@ -51,11 +64,19 @@ pub async fn delete_model(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match state.store.delete_model(&id).await {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"status": "deleted", "id": id}))).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "deleted", "id": id})),
+        )
+            .into_response(),
         Err(e) => error_response(e.to_string()),
     }
 }
 
 fn error_response(e: String) -> axum::response::Response {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))).into_response()
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({"error": e})),
+    )
+        .into_response()
 }

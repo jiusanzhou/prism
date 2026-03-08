@@ -98,7 +98,7 @@ fn build_full_registry() -> InMemoryRegistry {
             status: VariantStatus::Active,
             base_url: None,
             upstream_model_name: None,
-        metadata: std::collections::HashMap::new(),
+            metadata: std::collections::HashMap::new(),
         };
         reg.add_variant(variant);
     }
@@ -174,7 +174,7 @@ fn build_full_registry() -> InMemoryRegistry {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
-    metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
     });
 
     reg.add_pool(ModelPool {

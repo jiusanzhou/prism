@@ -881,7 +881,7 @@ impl AccessLogger {
         tracing::info!(path = %path, "Access log rotated");
     }
 
- // Format as text using pre-parsed segments.
+    // Format as text using pre-parsed segments.
     pub fn format_text(&self, data: &AccessLogData) -> String {
         let mut out = String::with_capacity(256);
         for seg in &self.segments {
@@ -937,16 +937,13 @@ impl AccessLogger {
                                 drop(w);
                                 Self::rotate_file(path, self.config.max_files);
                                 // Reopen the file
-                                if let Ok(file) = OpenOptions::new()
-                                    .create(true)
-                                    .append(true)
-                                    .open(path)
+                                if let Ok(file) =
+                                    OpenOptions::new().create(true).append(true).open(path)
                                 {
                                     if let Ok(mut w2) = writer.lock() {
                                         *w2 = BufWriter::new(file);
                                     }
                                 }
-
                             }
                         }
                     }

@@ -213,10 +213,7 @@ mod tests {
         let plugin = RetryPlugin::new();
         let mut ctx = ProxyContext::new();
         ctx.response_status = Some(429);
-        ctx.set(
-            FALLBACK_CHAIN_KEY,
-            vec!["variant-b".to_string()],
-        );
+        ctx.set(FALLBACK_CHAIN_KEY, vec!["variant-b".to_string()]);
         ctx.set(RETRY_ATTEMPT_KEY, 0u32);
 
         assert_eq!(plugin.on_response_headers(&mut ctx), Action::Continue);
@@ -228,10 +225,7 @@ mod tests {
         let plugin = RetryPlugin::new();
         let mut ctx = ProxyContext::new();
         ctx.response_status = Some(200);
-        ctx.set(
-            FALLBACK_CHAIN_KEY,
-            vec!["variant-b".to_string()],
-        );
+        ctx.set(FALLBACK_CHAIN_KEY, vec!["variant-b".to_string()]);
         ctx.set(RETRY_ATTEMPT_KEY, 0u32);
 
         assert_eq!(plugin.on_response_headers(&mut ctx), Action::Continue);
@@ -243,10 +237,7 @@ mod tests {
         let plugin = RetryPlugin::new();
         let mut ctx = ProxyContext::new();
         ctx.response_status = Some(400);
-        ctx.set(
-            FALLBACK_CHAIN_KEY,
-            vec!["variant-b".to_string()],
-        );
+        ctx.set(FALLBACK_CHAIN_KEY, vec!["variant-b".to_string()]);
         ctx.set(RETRY_ATTEMPT_KEY, 0u32);
 
         assert_eq!(plugin.on_response_headers(&mut ctx), Action::Continue);
@@ -258,10 +249,7 @@ mod tests {
         let plugin = RetryPlugin::new(); // max_retries = 2
         let mut ctx = ProxyContext::new();
         ctx.response_status = Some(502);
-        ctx.set(
-            FALLBACK_CHAIN_KEY,
-            vec!["variant-b".to_string()],
-        );
+        ctx.set(FALLBACK_CHAIN_KEY, vec!["variant-b".to_string()]);
         ctx.set(RETRY_ATTEMPT_KEY, 2u32); // already at max
 
         assert_eq!(plugin.on_response_headers(&mut ctx), Action::Continue);
@@ -294,10 +282,7 @@ mod tests {
     #[test]
     fn test_sequential_retries() {
         let plugin = RetryPlugin::new();
-        let fallbacks = vec![
-            "variant-b".to_string(),
-            "variant-c".to_string(),
-        ];
+        let fallbacks = vec!["variant-b".to_string(), "variant-c".to_string()];
 
         // First retry
         let mut ctx = ProxyContext::new();

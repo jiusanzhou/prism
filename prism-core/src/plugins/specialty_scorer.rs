@@ -50,7 +50,7 @@ mod tests {
                 status: VariantStatus::Active,
                 base_url: None,
                 upstream_model_name: None,
-            metadata: std::collections::HashMap::new(),
+                metadata: std::collections::HashMap::new(),
             },
             model: Model {
                 id: "m-1".to_string(),
@@ -127,7 +127,8 @@ mod tests {
     fn test_matching_specialty_scores_1() {
         let plugin = SpecialtyScorerPlugin;
         let state = make_state_with_task(TaskType::CodeGeneration);
-        let candidate = make_candidate_with_specialties(vec![TaskType::CodeGeneration, TaskType::Reasoning]);
+        let candidate =
+            make_candidate_with_specialties(vec![TaskType::CodeGeneration, TaskType::Reasoning]);
         let score = plugin.score(&state, &candidate);
         assert!(
             (score - 1.0).abs() < f32::EPSILON,
@@ -139,7 +140,8 @@ mod tests {
     fn test_no_matching_specialty_scores_0() {
         let plugin = SpecialtyScorerPlugin;
         let state = make_state_with_task(TaskType::CodeGeneration);
-        let candidate = make_candidate_with_specialties(vec![TaskType::Translation, TaskType::Creative]);
+        let candidate =
+            make_candidate_with_specialties(vec![TaskType::Translation, TaskType::Creative]);
         let score = plugin.score(&state, &candidate);
         assert!(
             score.abs() < f32::EPSILON,

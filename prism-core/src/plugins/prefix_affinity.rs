@@ -127,12 +127,18 @@ impl RoutingPlugin for PrefixAffinityPlugin {
         }
 
         // If prefix cache index is available, compute block-level matches
-        if let Some(index) = state.get::<std::sync::Arc<dyn crate::prefix_cache::PrefixCacheIndex>>("prefix_cache_index") {
+        if let Some(index) = state
+            .get::<std::sync::Arc<dyn crate::prefix_cache::PrefixCacheIndex>>("prefix_cache_index")
+        {
             let index = index.clone();
             // Get model name from first candidate
-            let model = candidates.first().map(|c| c.model.id.as_str()).unwrap_or("");
+            let model = candidates
+                .first()
+                .map(|c| c.model.id.as_str())
+                .unwrap_or("");
             // Collect candidate addresses (base_url)
-            let addrs: Vec<&str> = candidates.iter()
+            let addrs: Vec<&str> = candidates
+                .iter()
                 .filter_map(|c| c.variant.base_url.as_deref())
                 .collect();
 
@@ -150,7 +156,9 @@ impl RoutingPlugin for PrefixAffinityPlugin {
 
     fn score(&self, state: &PluginState, candidate: &ModelCandidate) -> f32 {
         // Try prefix cache index match first (block-level, more precise)
-        if let Some(match_ratios) = state.get::<std::collections::HashMap<String, f32>>("prefix_match_ratios") {
+        if let Some(match_ratios) =
+            state.get::<std::collections::HashMap<String, f32>>("prefix_match_ratios")
+        {
             if let Some(base_url) = &candidate.variant.base_url {
                 if let Some(&ratio) = match_ratios.get(base_url.as_str()) {
                     let perf = &candidate.variant.performance;
@@ -177,7 +185,9 @@ impl RoutingPlugin for PrefixAffinityPlugin {
             || perf.waiting_requests > OVERLOAD_WAITING_THRESHOLD;
 
         if is_target {
-            if overloaded { return 0.3; }
+            if overloaded {
+                return 0.3;
+            }
             return 1.0;
         }
 
@@ -232,7 +242,7 @@ mod tests {
                 // Self-hosted pod — has base_url so prefix affinity activates
                 base_url: Some(format!("http://{variant_id}:8000")),
                 upstream_model_name: None,
-            metadata: std::collections::HashMap::new(),
+                metadata: std::collections::HashMap::new(),
             },
             model: Model {
                 id: "model-1".into(),

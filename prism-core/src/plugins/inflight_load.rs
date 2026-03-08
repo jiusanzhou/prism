@@ -74,7 +74,8 @@ mod tests {
             None,
         );
 
-        let snapshot: HashMap<String, u32> = loads.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        let snapshot: HashMap<String, u32> =
+            loads.iter().map(|(k, v)| (k.to_string(), *v)).collect();
         state.set(INFLIGHT_SNAPSHOT_KEY, snapshot);
         state
     }

@@ -199,7 +199,9 @@ impl WasmDiscovery {
                     let url = {
                         let p = url_ptr as usize;
                         let l = url_len as usize;
-                        if p + l > data.len() { return 0; }
+                        if p + l > data.len() {
+                            return 0;
+                        }
                         String::from_utf8_lossy(&data[p..p + l]).to_string()
                     };
 
@@ -207,7 +209,9 @@ impl WasmDiscovery {
                     let opts_json = if opts_len > 0 {
                         let p = opts_ptr as usize;
                         let l = opts_len as usize;
-                        if p + l > data.len() { return 0; }
+                        if p + l > data.len() {
+                            return 0;
+                        }
                         String::from_utf8_lossy(&data[p..p + l]).to_string()
                     } else {
                         "{}".to_string()
@@ -222,16 +226,21 @@ impl WasmDiscovery {
                         #[serde(default)]
                         body: Option<String>,
                     }
-                    fn default_get() -> String { "GET".to_string() }
+                    fn default_get() -> String {
+                        "GET".to_string()
+                    }
 
                     let opts: FetchOpts = serde_json::from_str(&opts_json).unwrap_or_default();
 
                     // Execute HTTP request via ureq
-                    let response_json = match execute_http_fetch(&url, &opts.method, &opts.headers, opts.body.as_deref()) {
+                    let response_json = match execute_http_fetch(
+                        &url,
+                        &opts.method,
+                        &opts.headers,
+                        opts.body.as_deref(),
+                    ) {
                         Ok(json) => json,
-                        Err(e) => {
-                            serde_json::json!({"error": e}).to_string()
-                        }
+                        Err(e) => serde_json::json!({"error": e}).to_string(),
                     };
 
                     // Write response back to WASM memory
@@ -243,7 +252,14 @@ impl WasmDiscovery {
                         _ => return 0,
                     };
                     let mut results = [wasmtime::Val::I32(0)];
-                    if alloc_fn.call(&mut caller, &[wasmtime::Val::I32(total as i32)], &mut results).is_err() {
+                    if alloc_fn
+                        .call(
+                            &mut caller,
+                            &[wasmtime::Val::I32(total as i32)],
+                            &mut results,
+                        )
+                        .is_err()
+                    {
                         return 0;
                     }
                     let ptr = results[0].unwrap_i32();
@@ -254,7 +270,9 @@ impl WasmDiscovery {
                     };
                     let mem_data = mem.data_mut(&mut caller);
                     let p = ptr as usize;
-                    if p + total > mem_data.len() { return 0; }
+                    if p + total > mem_data.len() {
+                        return 0;
+                    }
                     mem_data[p..p + 4].copy_from_slice(&(resp_bytes.len() as u32).to_le_bytes());
                     mem_data[p + 4..p + 4 + resp_bytes.len()].copy_from_slice(resp_bytes);
                     ptr
@@ -282,18 +300,24 @@ impl WasmDiscovery {
                     let url = {
                         let p = url_ptr as usize;
                         let l = url_len as usize;
-                        if p + l > data.len() { return -1; }
+                        if p + l > data.len() {
+                            return -1;
+                        }
                         String::from_utf8_lossy(&data[p..p + l]).to_string()
                     };
 
                     // Parse optional headers
-                    let mut headers: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                    let mut headers: std::collections::HashMap<String, String> =
+                        std::collections::HashMap::new();
                     if opts_len > 0 {
                         let p = opts_ptr as usize;
                         let l = opts_len as usize;
                         if p + l <= data.len() {
                             let opts_str = String::from_utf8_lossy(&data[p..p + l]).to_string();
-                            if let Ok(h) = serde_json::from_str::<std::collections::HashMap<String, String>>(&opts_str) {
+                            if let Ok(h) = serde_json::from_str::<
+                                std::collections::HashMap<String, String>,
+                            >(&opts_str)
+                            {
                                 headers = h;
                             }
                         }
@@ -335,9 +359,7 @@ impl WasmDiscovery {
             .func_wrap(
                 "env",
                 "prism_sse_next",
-                |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
-                 handle: i32|
-                 -> i32 {
+                |mut caller: Caller<'_, Arc<Mutex<HostState>>>, handle: i32| -> i32 {
                     let state = caller.data().clone();
                     let event_json = {
                         let mut s = match state.lock() {
@@ -365,7 +387,14 @@ impl WasmDiscovery {
                         _ => return 0,
                     };
                     let mut results = [wasmtime::Val::I32(0)];
-                    if alloc_fn.call(&mut caller, &[wasmtime::Val::I32(total as i32)], &mut results).is_err() {
+                    if alloc_fn
+                        .call(
+                            &mut caller,
+                            &[wasmtime::Val::I32(total as i32)],
+                            &mut results,
+                        )
+                        .is_err()
+                    {
                         return 0;
                     }
                     let ptr = results[0].unwrap_i32();
@@ -376,7 +405,9 @@ impl WasmDiscovery {
                     };
                     let mem_data = mem.data_mut(&mut caller);
                     let p = ptr as usize;
-                    if p + total > mem_data.len() { return 0; }
+                    if p + total > mem_data.len() {
+                        return 0;
+                    }
                     mem_data[p..p + 4].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
                     mem_data[p + 4..p + 4 + bytes.len()].copy_from_slice(bytes);
                     ptr
@@ -389,10 +420,11 @@ impl WasmDiscovery {
             .func_wrap(
                 "env",
                 "prism_sse_close",
-                |caller: Caller<'_, Arc<Mutex<HostState>>>,
-                 handle: i32| {
+                |caller: Caller<'_, Arc<Mutex<HostState>>>, handle: i32| {
                     let state = caller.data().clone();
-                    let _ = state.lock().map(|mut s| { s.sse_streams.remove(&handle); });
+                    let _ = state.lock().map(|mut s| {
+                        s.sse_streams.remove(&handle);
+                    });
                 },
             )
             .map_err(|e| format!("Failed to link prism_sse_close: {}", e))?;
@@ -547,30 +579,32 @@ fn execute_http_fetch(
             let resp_headers: std::collections::HashMap<String, String> = r
                 .headers_names()
                 .into_iter()
-                .filter_map(|name| {
-                    r.header(&name).map(|v| (name, v.to_string()))
-                })
+                .filter_map(|name| r.header(&name).map(|v| (name, v.to_string())))
                 .collect();
             let body_str = r.into_string().unwrap_or_default();
             Ok(serde_json::json!({
                 "status": status,
                 "headers": resp_headers,
                 "body": body_str,
-            }).to_string())
+            })
+            .to_string())
         }
         Err(ureq::Error::Status(code, r)) => {
             let body_str = r.into_string().unwrap_or_default();
             Ok(serde_json::json!({
                 "status": code,
                 "body": body_str,
-            }).to_string())
+            })
+            .to_string())
         }
         Err(e) => Err(format!("request failed: {}", e)),
     }
 }
 
 /// Read one SSE event from a BufReader. Returns None on EOF/error.
-fn read_sse_event(reader: &mut std::io::BufReader<Box<dyn std::io::Read + Send + Sync>>) -> Option<String> {
+fn read_sse_event(
+    reader: &mut std::io::BufReader<Box<dyn std::io::Read + Send + Sync>>,
+) -> Option<String> {
     let mut event_type = String::new();
     let mut data_lines = Vec::new();
     let mut got_data = false;
@@ -589,10 +623,13 @@ fn read_sse_event(reader: &mut std::io::BufReader<Box<dyn std::io::Read + Send +
             // Empty line = end of event
             if got_data {
                 let data = data_lines.join("\n");
-                return Some(serde_json::json!({
-                    "event": if event_type.is_empty() { "message" } else { &event_type },
-                    "data": data,
-                }).to_string());
+                return Some(
+                    serde_json::json!({
+                        "event": if event_type.is_empty() { "message" } else { &event_type },
+                        "data": data,
+                    })
+                    .to_string(),
+                );
             }
             continue;
         }
@@ -617,9 +654,7 @@ impl WasmDiscovery {
     /// to send incremental events through the returned channel.
     ///
     /// This method blocks the calling thread. Run it in a dedicated thread.
-    pub fn run_streaming(
-        &self,
-    ) -> Result<std::sync::mpsc::Receiver<DiscoveryEvent>, String> {
+    pub fn run_streaming(&self) -> Result<std::sync::mpsc::Receiver<DiscoveryEvent>, String> {
         let (tx, rx) = std::sync::mpsc::channel();
 
         let host_state = Arc::new(Mutex::new(HostState {
@@ -694,19 +729,24 @@ impl WasmDiscovery {
     /// Check if the WASM module exports `prism_discovery_run` (streaming mode).
     pub fn supports_streaming(&self) -> bool {
         // Quick check by trying to compile and inspect exports
-        let mut store = Store::new(&self.engine, Arc::new(Mutex::new(HostState {
-            result_json: None,
-            log_messages: Vec::new(),
-            sse_streams: HashMap::new(),
-            next_sse_handle: 1,
-            event_sender: None,
-        })));
+        let mut store = Store::new(
+            &self.engine,
+            Arc::new(Mutex::new(HostState {
+                result_json: None,
+                log_messages: Vec::new(),
+                sse_streams: HashMap::new(),
+                next_sse_handle: 1,
+                event_sender: None,
+            })),
+        );
         let mut linker = Linker::new(&self.engine);
         if Self::register_host_functions(&mut linker).is_err() {
             return false;
         }
         if let Ok(instance) = linker.instantiate(&mut store, &self.module) {
-            instance.get_typed_func::<(), i32>(&mut store, "prism_discovery_run").is_ok()
+            instance
+                .get_typed_func::<(), i32>(&mut store, "prism_discovery_run")
+                .is_ok()
         } else {
             false
         }
@@ -887,7 +927,7 @@ mod tests {
                 status: VariantStatus::Active,
                 base_url: None,
                 upstream_model_name: None,
-            metadata: std::collections::HashMap::new(),
+                metadata: std::collections::HashMap::new(),
             }],
             pools: vec![ModelPool {
                 id: "test-pool".to_string(),

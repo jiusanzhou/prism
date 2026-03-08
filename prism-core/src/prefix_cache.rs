@@ -18,7 +18,7 @@
 //! 5. On route: record the routed instance for future lookups
 
 use std::collections::HashMap;
-use std::sync::{RwLock, Arc};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 /// Result of a prefix match query.
@@ -43,12 +43,7 @@ pub trait PrefixCacheIndex: Send + Sync {
 
     /// Record that an instance was selected for this prefix.
     /// Called after routing to update the index.
-    fn record(
-        &self,
-        prefix_hashes: &[u64],
-        model: &str,
-        instance_addr: &str,
-    );
+    fn record(&self, prefix_hashes: &[u64], model: &str, instance_addr: &str);
 }
 
 // ── HashPrefixIndex — gateway-side block hash table ──
@@ -158,7 +153,9 @@ impl PrefixCacheIndex for HashPrefixIndex {
             // Check which candidates have this block cached (and not expired)
             let mut any_match = false;
             for (addr, last_seen) in pods {
-                if candidate_set.contains(addr.as_str()) && now.duration_since(*last_seen) < self.ttl {
+                if candidate_set.contains(addr.as_str())
+                    && now.duration_since(*last_seen) < self.ttl
+                {
                     *matches.entry(addr.clone()).or_insert(0) = block_idx + 1;
                     any_match = true;
                 }
@@ -181,12 +178,7 @@ impl PrefixCacheIndex for HashPrefixIndex {
         }
     }
 
-    fn record(
-        &self,
-        prefix_hashes: &[u64],
-        model: &str,
-        instance_addr: &str,
-    ) {
+    fn record(&self, prefix_hashes: &[u64], model: &str, instance_addr: &str) {
         let now = Instant::now();
         let mut store = self.store.write().unwrap();
 

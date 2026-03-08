@@ -84,7 +84,11 @@ mod tests {
     use crate::types::*;
     use std::collections::HashMap;
 
-    fn make_state_with(requires_vision: bool, requires_reasoning: bool, ctx: ContextSize) -> PluginState {
+    fn make_state_with(
+        requires_vision: bool,
+        requires_reasoning: bool,
+        ctx: ContextSize,
+    ) -> PluginState {
         PluginState::new(
             RequestProfile {
                 complexity: 0.3,
@@ -116,7 +120,7 @@ mod tests {
                 status: VariantStatus::Active,
                 base_url: None,
                 upstream_model_name: None,
-            metadata: std::collections::HashMap::new(),
+                metadata: std::collections::HashMap::new(),
             },
             model: Model {
                 id: "model-1".into(),

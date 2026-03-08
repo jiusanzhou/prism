@@ -87,9 +87,7 @@ impl PrismConfig {
             // Synthesize a DiscoveryConfig from the plugin's source and config.
             let source_type = match &plugin.source {
                 PluginSourceConfig::Wasm { wasm } => DiscoverySourceType::Wasm {
-                    wasm: DiscoveryWasmConfig {
-                        path: wasm.clone(),
-                    },
+                    wasm: DiscoveryWasmConfig { path: wasm.clone() },
                 },
                 _ => continue, // Only WASM plugins can be discovery sources currently
             };
@@ -1702,7 +1700,11 @@ fn default_strip_prefix() -> Option<String> {
 }
 
 fn default_skip_paths() -> Vec<String> {
-    vec!["/health".to_string(), "/readyz".to_string(), "/version".to_string()]
+    vec![
+        "/health".to_string(),
+        "/readyz".to_string(),
+        "/version".to_string(),
+    ]
 }
 
 /// Concurrency limiting configuration.

@@ -32,11 +32,11 @@
 pub mod bedrock;
 pub mod openai;
 pub mod registry;
+#[cfg(test)]
+mod tests;
 pub mod vertex;
 #[cfg(feature = "wasm")]
 pub mod wasm_host;
-#[cfg(test)]
-mod tests;
 
 use std::collections::HashMap;
 

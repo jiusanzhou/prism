@@ -130,10 +130,14 @@ mod tests {
         for _ in 0..10 {
             let t = Arc::clone(&tracker);
             handles.push(thread::spawn(move || {
-                for _ in 0..1000 { t.increment("v1"); }
+                for _ in 0..1000 {
+                    t.increment("v1");
+                }
             }));
         }
-        for h in handles { h.join().unwrap(); }
+        for h in handles {
+            h.join().unwrap();
+        }
         assert_eq!(tracker.get("v1"), 10_000);
     }
 }

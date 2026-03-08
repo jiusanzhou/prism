@@ -212,10 +212,7 @@ mod tests {
             .on_response_stream_chunk(&mut ctx, "data: {}\n")
             .unwrap();
         assert!(result.unwrap().contains("quota_exceeded"));
-        assert_eq!(
-            ctx.get::<bool>(STREAMING_QUOTA_EXCEEDED_KEY),
-            Some(&true)
-        );
+        assert_eq!(ctx.get::<bool>(STREAMING_QUOTA_EXCEEDED_KEY), Some(&true));
     }
 
     #[test]

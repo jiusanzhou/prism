@@ -297,8 +297,8 @@ impl ProviderPlugin for WasmProviderPlugin {
     fn build_auth(&self, ctx: &ProviderRequestContext) -> Result<AuthResult, String> {
         match self.call_with_ctx("prism_provider_build_auth", ctx) {
             Ok(json) => {
-                let v: serde_json::Value = serde_json::from_str(&json)
-                    .map_err(|e| format!("Invalid auth JSON: {}", e))?;
+                let v: serde_json::Value =
+                    serde_json::from_str(&json).map_err(|e| format!("Invalid auth JSON: {}", e))?;
                 let headers = v
                     .get("headers")
                     .and_then(|h| h.as_array())
@@ -334,8 +334,8 @@ impl ProviderPlugin for WasmProviderPlugin {
     fn rewrite_url(&self, ctx: &ProviderRequestContext) -> Result<UrlRewriteResult, String> {
         match self.call_with_ctx("prism_provider_rewrite_url", ctx) {
             Ok(json) => {
-                let v: serde_json::Value = serde_json::from_str(&json)
-                    .map_err(|e| format!("Invalid URL JSON: {}", e))?;
+                let v: serde_json::Value =
+                    serde_json::from_str(&json).map_err(|e| format!("Invalid URL JSON: {}", e))?;
                 Ok(UrlRewriteResult {
                     path: v
                         .get("path")

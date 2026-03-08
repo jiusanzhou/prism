@@ -11,8 +11,8 @@
 #![cfg(feature = "proxy")]
 use std::sync::Arc;
 
-use super::{ProxyContext, ProxyPlugin};
 use super::usage_extractor::{ExtractedUsage, USAGE_KEY};
+use super::{ProxyContext, ProxyPlugin};
 use crate::ratelimit::{QuotaMetric, RateLimiter};
 
 /// Key for the request headers snapshot in ProxyContext data.
@@ -110,7 +110,10 @@ mod tests {
     }
 
     fn headers(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -118,20 +121,32 @@ mod tests {
         let limiter = Arc::new(RateLimiter::new(vec![make_rule(
             "test",
             vec![
-                Quota { metric: QuotaMetric::Requests, limit: 1000 },
-                Quota { metric: QuotaMetric::InputTokens, limit: 100000 },
-                Quota { metric: QuotaMetric::OutputTokens, limit: 50000 },
+                Quota {
+                    metric: QuotaMetric::Requests,
+                    limit: 1000,
+                },
+                Quota {
+                    metric: QuotaMetric::InputTokens,
+                    limit: 100000,
+                },
+                Quota {
+                    metric: QuotaMetric::OutputTokens,
+                    limit: 50000,
+                },
             ],
         )]));
 
         let plugin = QuotaRecorderPlugin::new();
         let mut ctx = ProxyContext::new();
-        ctx.set(USAGE_KEY, ExtractedUsage {
-            input_tokens: Some(42),
-            output_tokens: Some(128),
-            total_tokens: Some(170),
-            metrics: Default::default(),
-        });
+        ctx.set(
+            USAGE_KEY,
+            ExtractedUsage {
+                input_tokens: Some(42),
+                output_tokens: Some(128),
+                total_tokens: Some(170),
+                metrics: Default::default(),
+            },
+        );
         ctx.set(LIMITER_KEY, Arc::clone(&limiter));
         ctx.set(HEADERS_KEY, headers(&[]));
 
@@ -148,7 +163,10 @@ mod tests {
     fn test_quota_recorder_no_usage_noop() {
         let limiter = Arc::new(RateLimiter::new(vec![make_rule(
             "test",
-            vec![Quota { metric: QuotaMetric::InputTokens, limit: 100 }],
+            vec![Quota {
+                metric: QuotaMetric::InputTokens,
+                limit: 100,
+            }],
         )]));
 
         let plugin = QuotaRecorderPlugin::new();
@@ -162,12 +180,15 @@ mod tests {
     fn test_quota_recorder_no_limiter_noop() {
         let plugin = QuotaRecorderPlugin::new();
         let mut ctx = ProxyContext::new();
-        ctx.set(USAGE_KEY, ExtractedUsage {
-            input_tokens: Some(42),
-            output_tokens: None,
-            total_tokens: None,
-            metrics: Default::default(),
-        });
+        ctx.set(
+            USAGE_KEY,
+            ExtractedUsage {
+                input_tokens: Some(42),
+                output_tokens: None,
+                total_tokens: None,
+                metrics: Default::default(),
+            },
+        );
         // No limiter set — should be a no-op
         plugin.on_log(&mut ctx);
     }
@@ -176,19 +197,23 @@ mod tests {
     fn test_quota_recorder_custom_metrics() {
         let limiter = Arc::new(RateLimiter::new(vec![make_rule(
             "aigc",
-            vec![
-                Quota { metric: QuotaMetric::Custom("steps".to_string()), limit: 1000 },
-            ],
+            vec![Quota {
+                metric: QuotaMetric::Custom("steps".to_string()),
+                limit: 1000,
+            }],
         )]));
 
         let plugin = QuotaRecorderPlugin::new();
         let mut ctx = ProxyContext::new();
-        ctx.set(USAGE_KEY, ExtractedUsage {
-            input_tokens: None,
-            output_tokens: None,
-            total_tokens: None,
-            metrics: [("steps".to_string(), 50)].into(),
-        });
+        ctx.set(
+            USAGE_KEY,
+            ExtractedUsage {
+                input_tokens: None,
+                output_tokens: None,
+                total_tokens: None,
+                metrics: [("steps".to_string(), 50)].into(),
+            },
+        );
         ctx.set(LIMITER_KEY, Arc::clone(&limiter));
         ctx.set(HEADERS_KEY, headers(&[]));
 
@@ -203,19 +228,28 @@ mod tests {
         let limiter = Arc::new(RateLimiter::new(vec![make_rule(
             "strict",
             vec![
-                Quota { metric: QuotaMetric::Requests, limit: 1000 },
-                Quota { metric: QuotaMetric::InputTokens, limit: 100 },
+                Quota {
+                    metric: QuotaMetric::Requests,
+                    limit: 1000,
+                },
+                Quota {
+                    metric: QuotaMetric::InputTokens,
+                    limit: 100,
+                },
             ],
         )]));
 
         let plugin = QuotaRecorderPlugin::new();
         let mut ctx = ProxyContext::new();
-        ctx.set(USAGE_KEY, ExtractedUsage {
-            input_tokens: Some(101), // over limit
-            output_tokens: None,
-            total_tokens: None,
-            metrics: Default::default(),
-        });
+        ctx.set(
+            USAGE_KEY,
+            ExtractedUsage {
+                input_tokens: Some(101), // over limit
+                output_tokens: None,
+                total_tokens: None,
+                metrics: Default::default(),
+            },
+        );
         ctx.set(LIMITER_KEY, Arc::clone(&limiter));
         ctx.set(HEADERS_KEY, headers(&[]));
 

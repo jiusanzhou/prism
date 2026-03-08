@@ -7,10 +7,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::{ProviderConfigSchema, ProviderPlugin};
 use super::bedrock::BedrockPlugin;
 use super::openai::OpenAICompatPlugin;
 use super::vertex::VertexPlugin;
+use super::{ProviderConfigSchema, ProviderPlugin};
 
 /// Registry of provider plugins, keyed by provider type.
 pub struct ProviderPluginRegistry {
@@ -109,9 +109,7 @@ mod tests {
         fn build_auth(&self, ctx: &ProviderRequestContext) -> Result<AuthResult, String> {
             let mut result = AuthResult::default();
             if let Some(ref key) = ctx.account_api_key {
-                result
-                    .headers
-                    .push((self.auth_header.clone(), key.clone()));
+                result.headers.push((self.auth_header.clone(), key.clone()));
             }
             Ok(result)
         }

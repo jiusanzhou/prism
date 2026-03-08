@@ -1,8 +1,8 @@
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::collections::HashMap;
 use prism_core::inflight::InFlightTracker;
 use prism_core::prefix_cache::PrefixCacheIndex;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use arc_swap::ArcSwap;
@@ -146,8 +146,7 @@ mod tests {
         aliases.insert("gpt-4".to_string(), "qwen3-72b".to_string());
         aliases.insert("claude-sonnet".to_string(), "deepseek-r1".to_string());
         aliases.insert("*".to_string(), "qwen3-0.6b".to_string());
-        let state = AppState::new(router, PathBuf::from("test.yaml"))
-            .with_model_aliases(aliases);
+        let state = AppState::new(router, PathBuf::from("test.yaml")).with_model_aliases(aliases);
 
         assert_eq!(state.resolve_model_alias("gpt-4"), "qwen3-72b");
         assert_eq!(state.resolve_model_alias("claude-sonnet"), "deepseek-r1");
@@ -159,8 +158,7 @@ mod tests {
         let mut aliases = HashMap::new();
         aliases.insert("gpt-4".to_string(), "qwen3-72b".to_string());
         aliases.insert("*".to_string(), "qwen3-0.6b".to_string());
-        let state = AppState::new(router, PathBuf::from("test.yaml"))
-            .with_model_aliases(aliases);
+        let state = AppState::new(router, PathBuf::from("test.yaml")).with_model_aliases(aliases);
 
         assert_eq!(state.resolve_model_alias("unknown-model"), "qwen3-0.6b");
     }
@@ -170,8 +168,7 @@ mod tests {
         let router = PrismRouter::new(InMemoryRegistry::new());
         let mut aliases = HashMap::new();
         aliases.insert("gpt-4".to_string(), "qwen3-72b".to_string());
-        let state = AppState::new(router, PathBuf::from("test.yaml"))
-            .with_model_aliases(aliases);
+        let state = AppState::new(router, PathBuf::from("test.yaml")).with_model_aliases(aliases);
 
         assert_eq!(state.resolve_model_alias("unknown-model"), "unknown-model");
     }

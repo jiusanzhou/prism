@@ -46,7 +46,7 @@ mod tests {
                 status: VariantStatus::Active,
                 base_url: None,
                 upstream_model_name: None,
-            metadata: std::collections::HashMap::new(),
+                metadata: std::collections::HashMap::new(),
             },
             model: Model {
                 id: "m-1".to_string(),
@@ -129,10 +129,22 @@ mod tests {
         let b = plugin.score(&state, &make_candidate(QualityTier::B));
         let c = plugin.score(&state, &make_candidate(QualityTier::C));
 
-        assert!((s - 1.0).abs() < f32::EPSILON, "S tier should be 1.0, got {s}");
-        assert!((a - 0.75).abs() < f32::EPSILON, "A tier should be 0.75, got {a}");
-        assert!((b - 0.5).abs() < f32::EPSILON, "B tier should be 0.5, got {b}");
-        assert!((c - 0.25).abs() < f32::EPSILON, "C tier should be 0.25, got {c}");
+        assert!(
+            (s - 1.0).abs() < f32::EPSILON,
+            "S tier should be 1.0, got {s}"
+        );
+        assert!(
+            (a - 0.75).abs() < f32::EPSILON,
+            "A tier should be 0.75, got {a}"
+        );
+        assert!(
+            (b - 0.5).abs() < f32::EPSILON,
+            "B tier should be 0.5, got {b}"
+        );
+        assert!(
+            (c - 0.25).abs() < f32::EPSILON,
+            "C tier should be 0.25, got {c}"
+        );
     }
 
     #[test]

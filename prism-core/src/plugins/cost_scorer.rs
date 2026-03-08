@@ -42,7 +42,7 @@ mod tests {
                 status: VariantStatus::Active,
                 base_url: None,
                 upstream_model_name: None,
-            metadata: std::collections::HashMap::new(),
+                metadata: std::collections::HashMap::new(),
             },
             model: Model {
                 id: "m-1".to_string(),
@@ -129,7 +129,10 @@ mod tests {
         let state = default_state();
         let candidate = make_candidate(0.0, 0.0);
         let score = plugin.score(&state, &candidate);
-        assert!((score - 1.0).abs() < f32::EPSILON, "free model should score 1.0, got {score}");
+        assert!(
+            (score - 1.0).abs() < f32::EPSILON,
+            "free model should score 1.0, got {score}"
+        );
     }
 
     #[test]
@@ -139,7 +142,10 @@ mod tests {
         // cost_per_1m = (100 + 100) / 2 = 100
         let candidate = make_candidate(100.0, 100.0);
         let score = plugin.score(&state, &candidate);
-        assert!(score < 0.01, "expensive model (cost=100) should score ~0.0, got {score}");
+        assert!(
+            score < 0.01,
+            "expensive model (cost=100) should score ~0.0, got {score}"
+        );
     }
 
     #[test]
@@ -149,6 +155,9 @@ mod tests {
         // cost_per_1m = (10 + 10) / 2 = 10
         let candidate = make_candidate(10.0, 10.0);
         let score = plugin.score(&state, &candidate);
-        assert!((score - 0.9).abs() < 0.01, "mid-cost model (cost=10) should score ~0.9, got {score}");
+        assert!(
+            (score - 0.9).abs() < 0.01,
+            "mid-cost model (cost=10) should score ~0.9, got {score}"
+        );
     }
 }

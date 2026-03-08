@@ -16,8 +16,8 @@ use prism_core::discovery::Discovery;
 #[cfg(feature = "wasm")]
 use prism_core::discovery::WasmDiscovery;
 
-use crate::config::{build_registry, build_router_from_config, load_config};
 use crate::config::types::{DiscoverySourceType, PrismConfig};
+use crate::config::{build_registry, build_router_from_config, load_config};
 use crate::state::AppState;
 
 const DEFAULT_POLL_INTERVAL_SECS: u64 = 15;
@@ -159,7 +159,8 @@ pub fn spawn_discovery_runner(
                 let plugins_clone = Arc::clone(&poll_plugins);
                 let _ = tokio::task::spawn_blocking(move || {
                     poll_once(&state_clone, &plugins_clone);
-                }).await;
+                })
+                .await;
             }
 
             loop {
@@ -168,7 +169,8 @@ pub fn spawn_discovery_runner(
                 let plugins_clone = Arc::clone(&poll_plugins);
                 let _ = tokio::task::spawn_blocking(move || {
                     poll_once(&state_clone, &plugins_clone);
-                }).await;
+                })
+                .await;
             }
         } else {
             // All plugins are streaming — keep task alive
@@ -184,9 +186,15 @@ pub fn spawn_discovery_runner(
 fn log_event(plugin: &str, event: &prism_core::discovery::DiscoveryEvent) {
     use prism_core::discovery::DiscoveryEvent;
     let desc = match event {
-        DiscoveryEvent::FullSync(r) => format!("full_sync ({} models, {} variants)", r.models.len(), r.variants.len()),
+        DiscoveryEvent::FullSync(r) => format!(
+            "full_sync ({} models, {} variants)",
+            r.models.len(),
+            r.variants.len()
+        ),
         DiscoveryEvent::IncrementalUpsert(r) => format!("upsert ({} variants)", r.variants.len()),
-        DiscoveryEvent::Remove { variant_ids, .. } => format!("remove ({} variants)", variant_ids.len()),
+        DiscoveryEvent::Remove { variant_ids, .. } => {
+            format!("remove ({} variants)", variant_ids.len())
+        }
         DiscoveryEvent::VariantUpsert(v) => format!("variant_upsert({})", v.id),
         DiscoveryEvent::VariantRemove(id) => format!("variant_remove({})", id),
     };
@@ -221,7 +229,11 @@ fn poll_once(state: &AppState, plugins: &[Box<dyn Discovery>]) {
     let new_router = build_router_from_config(registry, &base_config.routing);
     state.swap_router(new_router);
 
-    info!(generation = state.generation(), variants = total_v, "Poll cycle done");
+    info!(
+        generation = state.generation(),
+        variants = total_v,
+        "Poll cycle done"
+    );
 }
 
 #[cfg(test)]
@@ -238,16 +250,18 @@ mod tests {
     #[test]
     fn test_disabled_plugin_skipped() {
         let mut config = PrismConfig::default();
-        config.discoveries.push(crate::config::types::DiscoveryConfig {
-            name: "disabled".into(),
-            source_type: DiscoverySourceType::Wasm {
-                wasm: crate::config::types::DiscoveryWasmConfig {
-                    path: "./test.wasm".into(),
+        config
+            .discoveries
+            .push(crate::config::types::DiscoveryConfig {
+                name: "disabled".into(),
+                source_type: DiscoverySourceType::Wasm {
+                    wasm: crate::config::types::DiscoveryWasmConfig {
+                        path: "./test.wasm".into(),
+                    },
                 },
-            },
-            config: serde_json::Value::Null,
-            enabled: false,
-        });
+                config: serde_json::Value::Null,
+                enabled: false,
+            });
         let plugins = load_discovery_plugins(&config);
         assert!(plugins.is_empty());
     }

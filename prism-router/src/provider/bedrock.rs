@@ -73,8 +73,12 @@ impl ProviderPlugin for BedrockPlugin {
         _account_headers: &HashMap<String, String>,
     ) -> Result<(), String> {
         let region = provider_extra.get("aws_region").and_then(|v| v.as_str());
-        let access = provider_extra.get("aws_access_key").and_then(|v| v.as_str());
-        let secret = provider_extra.get("aws_secret_key").and_then(|v| v.as_str());
+        let access = provider_extra
+            .get("aws_access_key")
+            .and_then(|v| v.as_str());
+        let secret = provider_extra
+            .get("aws_secret_key")
+            .and_then(|v| v.as_str());
 
         if region.unwrap_or("").is_empty() {
             return Err("aws_region is required".to_string());
@@ -166,10 +170,7 @@ impl ProviderPlugin for BedrockPlugin {
     }
 
     fn rewrite_url(&self, ctx: &ProviderRequestContext) -> Result<UrlRewriteResult, String> {
-        let model_id = ctx
-            .upstream_model_name
-            .as_deref()
-            .unwrap_or(&ctx.model_id);
+        let model_id = ctx.upstream_model_name.as_deref().unwrap_or(&ctx.model_id);
 
         let region = ctx
             .provider_extra
@@ -274,8 +275,7 @@ impl ProviderPlugin for BedrockPlugin {
 
         // Forward inference config
         if let Some(temp) = openai.get("temperature") {
-            bedrock_body["inferenceConfig"] =
-                serde_json::json!({"temperature": temp});
+            bedrock_body["inferenceConfig"] = serde_json::json!({"temperature": temp});
         }
         if let Some(max_tokens) = openai.get("max_tokens") {
             let config = bedrock_body
@@ -392,8 +392,7 @@ fn url_encode_model(model_id: &str) -> String {
 
 /// HMAC-SHA256
 fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut mac =
-        HmacSha256::new_from_slice(key).expect("HMAC can take key of any size");
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC can take key of any size");
     mac.update(data);
     mac.finalize().into_bytes().to_vec()
 }
@@ -422,10 +421,7 @@ mod tests {
 
     fn make_ctx() -> ProviderRequestContext {
         let mut extra = HashMap::new();
-        extra.insert(
-            "aws_region".to_string(),
-            serde_json::json!("us-east-1"),
-        );
+        extra.insert("aws_region".to_string(), serde_json::json!("us-east-1"));
         extra.insert(
             "aws_access_key".to_string(),
             serde_json::json!("AKIAIOSFODNN7EXAMPLE"),
@@ -445,9 +441,7 @@ mod tests {
             account_headers: HashMap::new(),
             variant_id: "claude-3@bedrock".to_string(),
             model_id: "anthropic.claude-3-sonnet-20240229-v1:0".to_string(),
-            upstream_model_name: Some(
-                "anthropic.claude-3-sonnet-20240229-v1:0".to_string(),
-            ),
+            upstream_model_name: Some("anthropic.claude-3-sonnet-20240229-v1:0".to_string()),
             deployment_name: None,
             original_path: "/v1/chat/completions".to_string(),
             method: "POST".to_string(),
@@ -480,7 +474,9 @@ mod tests {
         extra.insert("aws_region".into(), serde_json::json!("us-east-1"));
         extra.insert("aws_access_key".into(), serde_json::json!("AKIA..."));
         extra.insert("aws_secret_key".into(), serde_json::json!("secret"));
-        assert!(plugin.validate_config(&extra, &None, &HashMap::new()).is_ok());
+        assert!(plugin
+            .validate_config(&extra, &None, &HashMap::new())
+            .is_ok());
     }
 
     #[test]
@@ -489,7 +485,9 @@ mod tests {
         let mut extra = HashMap::new();
         extra.insert("aws_access_key".into(), serde_json::json!("AKIA..."));
         extra.insert("aws_secret_key".into(), serde_json::json!("secret"));
-        let err = plugin.validate_config(&extra, &None, &HashMap::new()).unwrap_err();
+        let err = plugin
+            .validate_config(&extra, &None, &HashMap::new())
+            .unwrap_err();
         assert!(err.contains("aws_region"));
     }
 
@@ -499,7 +497,9 @@ mod tests {
         let mut extra = HashMap::new();
         extra.insert("aws_region".into(), serde_json::json!("us-east-1"));
         extra.insert("aws_secret_key".into(), serde_json::json!("secret"));
-        let err = plugin.validate_config(&extra, &None, &HashMap::new()).unwrap_err();
+        let err = plugin
+            .validate_config(&extra, &None, &HashMap::new())
+            .unwrap_err();
         assert!(err.contains("aws_access_key"));
     }
 
@@ -509,7 +509,9 @@ mod tests {
         let mut extra = HashMap::new();
         extra.insert("aws_region".into(), serde_json::json!("us-east-1"));
         extra.insert("aws_access_key".into(), serde_json::json!("AKIA..."));
-        let err = plugin.validate_config(&extra, &None, &HashMap::new()).unwrap_err();
+        let err = plugin
+            .validate_config(&extra, &None, &HashMap::new())
+            .unwrap_err();
         assert!(err.contains("aws_secret_key"));
     }
 
@@ -524,7 +526,9 @@ mod tests {
 
         let auth = &result.headers[0];
         assert_eq!(auth.0, "Authorization");
-        assert!(auth.1.starts_with("AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/"));
+        assert!(auth
+            .1
+            .starts_with("AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/"));
         assert!(auth.1.contains("/us-east-1/bedrock/aws4_request"));
         assert!(auth.1.contains("SignedHeaders=host;x-amz-date"));
 
@@ -666,6 +670,9 @@ mod tests {
             url_encode_model("anthropic.claude-3-sonnet-20240229-v1:0"),
             "anthropic.claude-3-sonnet-20240229-v1%3A0"
         );
-        assert_eq!(url_encode_model("amazon.titan-embed-text-v1"), "amazon.titan-embed-text-v1");
+        assert_eq!(
+            url_encode_model("amazon.titan-embed-text-v1"),
+            "amazon.titan-embed-text-v1"
+        );
     }
 }

@@ -346,7 +346,7 @@ fn test_feedback_influences_routing() {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
-    metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
     };
     registry.add_variant(v1);
 
@@ -362,7 +362,7 @@ fn test_feedback_influences_routing() {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
-    metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
     };
     registry.add_variant(v2);
 

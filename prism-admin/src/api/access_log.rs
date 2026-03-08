@@ -1,12 +1,14 @@
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use crate::AppState;
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 
 /// GET /api/access-log
 pub async fn get_access_log(State(state): State<AppState>) -> impl IntoResponse {
     match state.store.get_access_log().await {
-        Ok(access_log) => {
-            (StatusCode::OK, Json(serde_json::to_value(&access_log).unwrap_or_default())).into_response()
-        }
+        Ok(access_log) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(&access_log).unwrap_or_default()),
+        )
+            .into_response(),
         Err(e) => error_response(e.to_string()),
     }
 }
@@ -23,5 +25,9 @@ pub async fn update_access_log(
 }
 
 fn error_response(e: String) -> axum::response::Response {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))).into_response()
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({"error": e})),
+    )
+        .into_response()
 }

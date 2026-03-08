@@ -88,7 +88,7 @@ fn build_variant_registry() -> InMemoryRegistry {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
-    metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
     });
 
     // Variant B: faster but higher error rate (canary)
@@ -115,7 +115,7 @@ fn build_variant_registry() -> InMemoryRegistry {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
-    metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
     });
 
     // Variant C: high weight (preferred)
@@ -142,7 +142,7 @@ fn build_variant_registry() -> InMemoryRegistry {
         status: VariantStatus::Active,
         base_url: None,
         upstream_model_name: None,
-    metadata: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
     });
 
     reg.add_pool(ModelPool {

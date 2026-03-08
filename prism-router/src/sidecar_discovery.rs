@@ -85,7 +85,6 @@ struct SSEEvent {
     models: HashMap<String, Vec<SidecarInstance>>,
 }
 
-
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 struct SidecarInstance {
     address: String,
@@ -98,7 +97,10 @@ struct SidecarInstance {
 }
 
 /// Convert sidecar `/prism` payload to a DiscoveryResult.
-fn payload_to_discovery_result(payload: &SidecarPrismPayload, provider_id: &str) -> DiscoveryResult {
+fn payload_to_discovery_result(
+    payload: &SidecarPrismPayload,
+    provider_id: &str,
+) -> DiscoveryResult {
     let mut result = DiscoveryResult::default();
 
     // Models
@@ -170,9 +172,10 @@ fn instances_to_discovery_result(
         let mut pool_variants = vec![];
 
         for inst in instances {
-            let pod_name = inst.pod_name.clone().unwrap_or_else(|| {
-                inst.address.replace('.', "-").replace(':', "-")
-            });
+            let pod_name = inst
+                .pod_name
+                .clone()
+                .unwrap_or_else(|| inst.address.replace('.', "-").replace(':', "-"));
             let vid = format!("{}-{}", model_name, pod_name);
 
             let mut metadata = HashMap::new();
@@ -305,9 +308,7 @@ pub fn spawn_sidecar_discovery(
                 let pid = provider_id.clone();
                 let surl = sidecar_url.clone();
 
-                tokio::task::spawn_blocking(move || {
-                    run_sse_loop(&state, &pid, &url, &surl)
-                }).await
+                tokio::task::spawn_blocking(move || run_sse_loop(&state, &pid, &url, &surl)).await
             };
 
             match sse_result {
@@ -324,7 +325,8 @@ pub fn spawn_sidecar_discovery(
                         if let Err(e) = poll_and_apply(&state2, &pid2, &surl2) {
                             error!(provider = %pid2, "Fallback poll failed: {}", e);
                         }
-                    }).await;
+                    })
+                    .await;
                 }
                 Err(e) => {
                     error!(provider = %provider_id, "spawn_blocking panic: {}", e);
@@ -425,11 +427,17 @@ fn apply_sse_event(
         "instance_add" => {
             let model = match &event.model {
                 Some(m) => m.clone(),
-                None => { warn!(provider = %provider_id, "instance_add missing model"); return false; }
+                None => {
+                    warn!(provider = %provider_id, "instance_add missing model");
+                    return false;
+                }
             };
             let inst = match &event.instance {
                 Some(i) => i.clone(),
-                None => { warn!(provider = %provider_id, "instance_add missing instance"); return false; }
+                None => {
+                    warn!(provider = %provider_id, "instance_add missing instance");
+                    return false;
+                }
             };
             info!(provider = %provider_id, model = %model, addr = %inst.address, "SSE instance_add");
             let entries = local.entry(model).or_default();
@@ -444,11 +452,17 @@ fn apply_sse_event(
         "instance_del" => {
             let model = match &event.model {
                 Some(m) => m.clone(),
-                None => { warn!(provider = %provider_id, "instance_del missing model"); return false; }
+                None => {
+                    warn!(provider = %provider_id, "instance_del missing model");
+                    return false;
+                }
             };
             let inst = match &event.instance {
                 Some(i) => i.clone(),
-                None => { warn!(provider = %provider_id, "instance_del missing instance"); return false; }
+                None => {
+                    warn!(provider = %provider_id, "instance_del missing instance");
+                    return false;
+                }
             };
             info!(provider = %provider_id, model = %model, addr = %inst.address, "SSE instance_del");
             if let Some(entries) = local.get_mut(&model) {
@@ -462,7 +476,10 @@ fn apply_sse_event(
         "model_remove" => {
             let model = match &event.model {
                 Some(m) => m.clone(),
-                None => { warn!(provider = %provider_id, "model_remove missing model"); return false; }
+                None => {
+                    warn!(provider = %provider_id, "model_remove missing model");
+                    return false;
+                }
             };
             info!(provider = %provider_id, model = %model, "SSE model_remove");
             local.remove(&model);

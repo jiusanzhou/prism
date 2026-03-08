@@ -45,7 +45,7 @@ mod tests {
                 status: VariantStatus::Active,
                 base_url: None,
                 upstream_model_name: None,
-            metadata: std::collections::HashMap::new(),
+                metadata: std::collections::HashMap::new(),
             },
             model: Model {
                 id: "m-1".to_string(),
@@ -124,7 +124,10 @@ mod tests {
         let state = default_state();
         let candidate = make_candidate(0);
         let score = plugin.score(&state, &candidate);
-        assert!((score - 1.0).abs() < f32::EPSILON, "zero latency should score 1.0, got {score}");
+        assert!(
+            (score - 1.0).abs() < f32::EPSILON,
+            "zero latency should score 1.0, got {score}"
+        );
     }
 
     #[test]
@@ -133,7 +136,10 @@ mod tests {
         let state = default_state();
         let candidate = make_candidate(10000);
         let score = plugin.score(&state, &candidate);
-        assert!(score.abs() < f32::EPSILON, "max latency (10000ms) should score 0.0, got {score}");
+        assert!(
+            score.abs() < f32::EPSILON,
+            "max latency (10000ms) should score 0.0, got {score}"
+        );
     }
 
     #[test]
@@ -142,6 +148,9 @@ mod tests {
         let state = default_state();
         let candidate = make_candidate(5000);
         let score = plugin.score(&state, &candidate);
-        assert!((score - 0.5).abs() < 0.01, "mid latency (5000ms) should score ~0.5, got {score}");
+        assert!(
+            (score - 0.5).abs() < 0.01,
+            "mid latency (5000ms) should score ~0.5, got {score}"
+        );
     }
 }
