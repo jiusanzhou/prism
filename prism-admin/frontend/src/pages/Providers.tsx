@@ -6,15 +6,22 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { Trash2, Pencil, Plus, ArrowLeft, X, ChevronDown, Eye, EyeOff, Loader2, Key } from "lucide-react"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 
 const KNOWN_PROTOCOLS = ["openai", "anthropic", "azure", "gemini", "bedrock", "minimax", "cohere", "mistral", "deepseek"]
 
+interface ProviderDiscovery {
+  sidecar_url?: string; cluster_name?: string; namespace?: string
+  label_selector?: string; enable_pd_filter?: boolean; poll_interval_secs?: number
+}
+
 interface Provider {
   id: string; base_url: string; protocols: string[]; api_key?: string; timeout_ms?: number
   circuit_breaker_threshold: number; circuit_breaker_recovery_secs: number; headers?: Record<string, string>
+  provider_type?: string; discovery?: ProviderDiscovery
 }
 
 interface Account {
@@ -28,11 +35,22 @@ interface ProviderForm {
   id: string; base_url: string; protocols: string[]; api_key: string; timeout_ms: string
   circuit_breaker_threshold: string; circuit_breaker_recovery_secs: string
   headers: { key: string; value: string }[]
+  provider_type: "api" | "k8s"
+  discovery: {
+    sidecar_url: string; cluster_name: string; namespace: string
+    label_selector: string; enable_pd_filter: boolean; poll_interval_secs: string
+  }
+}
+
+const emptyDiscoveryForm = {
+  sidecar_url: "", cluster_name: "", namespace: "",
+  label_selector: "", enable_pd_filter: false, poll_interval_secs: "",
 }
 
 const emptyProviderForm: ProviderForm = {
   id: "", base_url: "", protocols: ["openai"], api_key: "", timeout_ms: "",
   circuit_breaker_threshold: "5", circuit_breaker_recovery_secs: "30", headers: [],
+  provider_type: "api", discovery: { ...emptyDiscoveryForm },
 }
 
 interface AccountForm {
@@ -86,6 +104,43 @@ function ProtocolsSelect({ value, onChange }: { value: string[]; onChange: (v: s
   )
 }
 
+// ── Provider Type Selector ──
+function ProviderTypeSelect({ value, onChange }: { value: "api" | "k8s"; onChange: (v: "api" | "k8s") => void }) {
+  return (
+    <div>
+      <Label>Type</Label>
+      <Select value={value} onValueChange={v => onChange(v as "api" | "k8s")}>
+        <SelectTrigger><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="api">API Provider</SelectItem>
+          <SelectItem value="k8s">K8s Discovery</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+  )
+}
+
+// ── K8s Discovery Fields ──
+function DiscoveryFields({ discovery, onChange }: { discovery: ProviderForm["discovery"]; onChange: (d: ProviderForm["discovery"]) => void }) {
+  const upd = <K extends keyof ProviderForm["discovery"]>(k: K, v: ProviderForm["discovery"][K]) => onChange({ ...discovery, [k]: v })
+  return (
+    <div className="space-y-4">
+      <Separator />
+      <p className="text-xs font-medium text-[hsl(var(--muted-foreground))] uppercase tracking-wider">Discovery Configuration</p>
+      <div><Label>Sidecar URL <span className="text-red-400">*</span></Label><Input value={discovery.sidecar_url} onChange={e => upd("sidecar_url", e.target.value)} placeholder="http://sidecar:9091" /></div>
+      <div className="grid grid-cols-2 gap-3">
+        <div><Label>Cluster Name</Label><Input value={discovery.cluster_name} onChange={e => upd("cluster_name", e.target.value)} placeholder="ai-infra-staging" /></div>
+        <div><Label>Namespace</Label><Input value={discovery.namespace} onChange={e => upd("namespace", e.target.value)} placeholder="default" /></div>
+      </div>
+      <div><Label>Label Selector</Label><Input value={discovery.label_selector} onChange={e => upd("label_selector", e.target.value)} placeholder="app=inference-service" /></div>
+      <div className="grid grid-cols-2 gap-3">
+        <div><Label>Poll Interval (secs)</Label><Input type="number" value={discovery.poll_interval_secs} onChange={e => upd("poll_interval_secs", e.target.value)} placeholder="30" /></div>
+        <div className="flex items-end pb-2"><div className="flex items-center gap-2"><Switch checked={discovery.enable_pd_filter} onCheckedChange={v => upd("enable_pd_filter", v)} /><Label>P/D Filter</Label></div></div>
+      </div>
+    </div>
+  )
+}
+
 // ════════════════════════════════════════
 // Provider Detail View
 // ════════════════════════════════════════
@@ -128,30 +183,16 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
   // Provider edit
   const openProviderEdit = () => {
     if (!provider) return
-    setProviderForm({
-      id: provider.id, base_url: provider.base_url, protocols: provider.protocols || [],
-      api_key: provider.api_key || "", timeout_ms: provider.timeout_ms?.toString() || "",
-      circuit_breaker_threshold: (provider.circuit_breaker_threshold ?? 5).toString(),
-      circuit_breaker_recovery_secs: (provider.circuit_breaker_recovery_secs ?? 30).toString(),
-      headers: Object.entries(provider.headers || {}).map(([key, value]) => ({ key, value })),
-    })
+    setProviderForm(providerToForm(provider))
     setProviderDialogOpen(true)
   }
 
   const saveProvider = async () => {
     setProviderSaving(true)
-    const headers: Record<string, string> = {}
-    providerForm.headers.forEach(h => { if (h.key) headers[h.key] = h.value })
+    const body = buildProviderBody(providerForm)
     await fetch(`/api/providers/${providerId}`, {
       method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        base_url: providerForm.base_url, protocols: providerForm.protocols,
-        api_key: providerForm.api_key || null,
-        timeout_ms: providerForm.timeout_ms ? parseInt(providerForm.timeout_ms) : null,
-        circuit_breaker_threshold: parseInt(providerForm.circuit_breaker_threshold) || 5,
-        circuit_breaker_recovery_secs: parseInt(providerForm.circuit_breaker_recovery_secs) || 30,
-        headers,
-      }),
+      body: JSON.stringify(body),
     })
     setProviderSaving(false); setProviderDialogOpen(false); loadDetail(); onUpdated()
   }
@@ -221,6 +262,8 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
   if (loading) return <div className="flex items-center justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-[hsl(var(--muted-foreground))]" /></div>
   if (!provider) return <div className="text-center py-12 text-[hsl(var(--muted-foreground))]">Provider not found</div>
 
+  const isK8s = provider.provider_type === "k8s"
+
   return (
     <div>
       {/* Header */}
@@ -229,16 +272,17 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-xl sm:text-2xl font-bold">{provider.id}</h1>
+            {isK8s && <Badge className="bg-purple-600/80 text-purple-100 hover:bg-purple-600/80">K8s</Badge>}
             {provider.protocols.map(p => <Badge key={p} variant="secondary">{p}</Badge>)}
           </div>
-          <p className="text-sm text-[hsl(var(--muted-foreground))] truncate">{provider.base_url}</p>
+          <p className="text-sm text-[hsl(var(--muted-foreground))] truncate">{isK8s ? provider.discovery?.sidecar_url || "K8s discovery" : provider.base_url}</p>
         </div>
         <Button variant="outline" size="sm" onClick={openProviderEdit}><Pencil className="h-3.5 w-3.5 mr-1.5" /> Edit</Button>
       </div>
 
       {/* Tabs */}
       <div className="flex gap-1 mb-4 border-b border-[hsl(var(--border))]">
-        {([["overview", "Overview"], ["accounts", `Accounts (${accounts.length})`]] as const).map(([key, label]) => (
+        {(isK8s ? [["overview", "Overview"]] as const : [["overview", "Overview"], ["accounts", `Accounts (${accounts.length})`]] as const).map(([key, label]) => (
           <button key={key} onClick={() => setActiveTab(key)}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${activeTab === key ? "border-[hsl(var(--foreground))] text-[hsl(var(--foreground))]" : "border-transparent text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"}`}>{label}</button>
         ))}
@@ -248,35 +292,60 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
       {activeTab === "overview" && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <Card>
-            <CardHeader className="pb-3"><CardTitle className="text-sm">Configuration</CardTitle></CardHeader>
+            <CardHeader className="pb-3"><CardTitle className="text-sm">{isK8s ? "Discovery Configuration" : "Configuration"}</CardTitle></CardHeader>
             <CardContent className="space-y-3 text-sm">
-              <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Base URL</span><span className="font-mono text-xs truncate max-w-[200px]">{provider.base_url || "—"}</span></div>
-              <Separator />
-              <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Protocols</span><div className="flex gap-1">{provider.protocols.map(p => <Badge key={p} variant="outline" className="text-[10px]">{p}</Badge>)}</div></div>
-              <Separator />
-              <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Timeout</span><span>{provider.timeout_ms ? `${provider.timeout_ms}ms` : "default"}</span></div>
-              <Separator />
-              <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Circuit Breaker</span><span>{provider.circuit_breaker_threshold} / {provider.circuit_breaker_recovery_secs}s</span></div>
-              {provider.headers && Object.keys(provider.headers).length > 0 && (<><Separator /><div><span className="text-[hsl(var(--muted-foreground))]">Headers</span><div className="mt-1 space-y-1">{Object.entries(provider.headers).map(([k, v]) => <div key={k} className="font-mono text-xs"><span className="text-[hsl(var(--muted-foreground))]">{k}:</span> {v}</div>)}</div></div></>)}
+              {isK8s ? (<>
+                <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Sidecar URL</span><span className="font-mono text-xs truncate max-w-[200px]">{provider.discovery?.sidecar_url || "—"}</span></div>
+                <Separator />
+                <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Cluster</span><span>{provider.discovery?.cluster_name || "—"}</span></div>
+                <Separator />
+                <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Namespace</span><span>{provider.discovery?.namespace || "all"}</span></div>
+                <Separator />
+                <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Label Selector</span><span className="font-mono text-xs truncate max-w-[200px]">{provider.discovery?.label_selector || "default"}</span></div>
+                <Separator />
+                <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">P/D Filter</span><Badge variant={provider.discovery?.enable_pd_filter ? "default" : "secondary"}>{provider.discovery?.enable_pd_filter ? "Enabled" : "Disabled"}</Badge></div>
+                <Separator />
+                <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Poll Interval</span><span>{provider.discovery?.poll_interval_secs || 30}s</span></div>
+              </>) : (<>
+                <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Base URL</span><span className="font-mono text-xs truncate max-w-[200px]">{provider.base_url || "—"}</span></div>
+                <Separator />
+                <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Protocols</span><div className="flex gap-1">{provider.protocols.map(p => <Badge key={p} variant="outline" className="text-[10px]">{p}</Badge>)}</div></div>
+                <Separator />
+                <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Timeout</span><span>{provider.timeout_ms ? `${provider.timeout_ms}ms` : "default"}</span></div>
+                <Separator />
+                <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Circuit Breaker</span><span>{provider.circuit_breaker_threshold} / {provider.circuit_breaker_recovery_secs}s</span></div>
+                {provider.headers && Object.keys(provider.headers).length > 0 && (<><Separator /><div><span className="text-[hsl(var(--muted-foreground))]">Headers</span><div className="mt-1 space-y-1">{Object.entries(provider.headers).map(([k, v]) => <div key={k} className="font-mono text-xs"><span className="text-[hsl(var(--muted-foreground))]">{k}:</span> {v}</div>)}</div></div></>)}
+              </>)}
             </CardContent>
           </Card>
-          <Card>
-            <CardHeader className="pb-3"><CardTitle className="text-sm">Accounts Summary</CardTitle></CardHeader>
-            <CardContent className="space-y-3 text-sm">
-              <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Total</span><span className="font-medium">{accounts.length}</span></div>
-              <Separator />
-              <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Enabled</span><Badge variant="secondary" className="bg-green-900/50 text-green-400">{enabledCount}</Badge></div>
-              <Separator />
-              <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Disabled</span><Badge variant="secondary">{accounts.length - enabledCount}</Badge></div>
-              <Separator />
-              <Button variant="outline" size="sm" className="w-full" onClick={() => setActiveTab("accounts")}><Key className="h-3.5 w-3.5 mr-1.5" /> Manage Accounts</Button>
-            </CardContent>
-          </Card>
+          {isK8s ? (
+            <Card>
+              <CardHeader className="pb-3"><CardTitle className="text-sm">K8s Discovery</CardTitle></CardHeader>
+              <CardContent className="text-sm text-[hsl(var(--muted-foreground))]">
+                <p>Instances are auto-discovered from the Kubernetes cluster via the sidecar. Accounts are not applicable for K8s providers.</p>
+                <Separator className="my-3" />
+                <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Circuit Breaker</span><span>{provider.circuit_breaker_threshold} / {provider.circuit_breaker_recovery_secs}s</span></div>
+              </CardContent>
+            </Card>
+          ) : (
+            <Card>
+              <CardHeader className="pb-3"><CardTitle className="text-sm">Accounts Summary</CardTitle></CardHeader>
+              <CardContent className="space-y-3 text-sm">
+                <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Total</span><span className="font-medium">{accounts.length}</span></div>
+                <Separator />
+                <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Enabled</span><Badge variant="secondary" className="bg-green-900/50 text-green-400">{enabledCount}</Badge></div>
+                <Separator />
+                <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Disabled</span><Badge variant="secondary">{accounts.length - enabledCount}</Badge></div>
+                <Separator />
+                <Button variant="outline" size="sm" className="w-full" onClick={() => setActiveTab("accounts")}><Key className="h-3.5 w-3.5 mr-1.5" /> Manage Accounts</Button>
+              </CardContent>
+            </Card>
+          )}
         </div>
       )}
 
       {/* Accounts Tab */}
-      {activeTab === "accounts" && (
+      {activeTab === "accounts" && !isK8s && (
         <div>
           <div className="flex items-center justify-between mb-4">
             <div><h2 className="text-lg font-semibold">Accounts</h2><p className="text-sm text-[hsl(var(--muted-foreground))]">API accounts and credentials for this provider</p></div>
@@ -327,20 +396,26 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
         <DialogContent className="max-h-[85vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Edit Provider: {providerId}</DialogTitle><DialogDescription>Update provider configuration</DialogDescription></DialogHeader>
           <div className="space-y-4">
-            <div><Label>Base URL</Label><Input value={providerForm.base_url} onChange={e => setProviderForm(f => ({ ...f, base_url: e.target.value }))} placeholder="https://api.openai.com/v1" /></div>
-            <div><Label>Protocols</Label><ProtocolsSelect value={providerForm.protocols} onChange={protocols => setProviderForm(f => ({ ...f, protocols }))} /></div>
-            <div><Label>API Key</Label><Input type="password" value={providerForm.api_key} onChange={e => setProviderForm(f => ({ ...f, api_key: e.target.value }))} placeholder="sk-..." /></div>
-            <div className="grid grid-cols-2 gap-3">
-              <div><Label>Timeout (ms)</Label><Input type="number" value={providerForm.timeout_ms} onChange={e => setProviderForm(f => ({ ...f, timeout_ms: e.target.value }))} placeholder="30000" /></div>
-              <div><Label>CB Threshold</Label><Input type="number" value={providerForm.circuit_breaker_threshold} onChange={e => setProviderForm(f => ({ ...f, circuit_breaker_threshold: e.target.value }))} /></div>
-            </div>
-            <div><Label>CB Recovery (secs)</Label><Input type="number" value={providerForm.circuit_breaker_recovery_secs} onChange={e => setProviderForm(f => ({ ...f, circuit_breaker_recovery_secs: e.target.value }))} /></div>
-            <div>
-              <div className="flex items-center justify-between mb-2"><Label>Headers</Label><Button variant="ghost" size="sm" onClick={addProviderHeader}><Plus className="h-3 w-3 mr-1" /> Add</Button></div>
-              {providerForm.headers.map((h, i) => (<div key={i} className="flex gap-2 mb-2"><Input placeholder="Key" value={h.key} onChange={e => updateProviderHeader(i, "key", e.target.value)} className="flex-1" /><Input placeholder="Value" value={h.value} onChange={e => updateProviderHeader(i, "value", e.target.value)} className="flex-1" /><Button variant="ghost" size="icon" onClick={() => removeProviderHeader(i)}><X className="h-4 w-4" /></Button></div>))}
-            </div>
+            <ProviderTypeSelect value={providerForm.provider_type} onChange={provider_type => setProviderForm(f => ({ ...f, provider_type }))} />
+            {providerForm.provider_type === "api" && (<>
+              <div><Label>Base URL</Label><Input value={providerForm.base_url} onChange={e => setProviderForm(f => ({ ...f, base_url: e.target.value }))} placeholder="https://api.openai.com/v1" /></div>
+              <div><Label>Protocols</Label><ProtocolsSelect value={providerForm.protocols} onChange={protocols => setProviderForm(f => ({ ...f, protocols }))} /></div>
+              <div><Label>API Key</Label><Input type="password" value={providerForm.api_key} onChange={e => setProviderForm(f => ({ ...f, api_key: e.target.value }))} placeholder="sk-..." /></div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label>Timeout (ms)</Label><Input type="number" value={providerForm.timeout_ms} onChange={e => setProviderForm(f => ({ ...f, timeout_ms: e.target.value }))} placeholder="30000" /></div>
+                <div><Label>CB Threshold</Label><Input type="number" value={providerForm.circuit_breaker_threshold} onChange={e => setProviderForm(f => ({ ...f, circuit_breaker_threshold: e.target.value }))} /></div>
+              </div>
+              <div><Label>CB Recovery (secs)</Label><Input type="number" value={providerForm.circuit_breaker_recovery_secs} onChange={e => setProviderForm(f => ({ ...f, circuit_breaker_recovery_secs: e.target.value }))} /></div>
+              <div>
+                <div className="flex items-center justify-between mb-2"><Label>Headers</Label><Button variant="ghost" size="sm" onClick={addProviderHeader}><Plus className="h-3 w-3 mr-1" /> Add</Button></div>
+                {providerForm.headers.map((h, i) => (<div key={i} className="flex gap-2 mb-2"><Input placeholder="Key" value={h.key} onChange={e => updateProviderHeader(i, "key", e.target.value)} className="flex-1" /><Input placeholder="Value" value={h.value} onChange={e => updateProviderHeader(i, "value", e.target.value)} className="flex-1" /><Button variant="ghost" size="icon" onClick={() => removeProviderHeader(i)}><X className="h-4 w-4" /></Button></div>))}
+              </div>
+            </>)}
+            {providerForm.provider_type === "k8s" && (
+              <DiscoveryFields discovery={providerForm.discovery} onChange={discovery => setProviderForm(f => ({ ...f, discovery }))} />
+            )}
           </div>
-          <DialogFooter><Button variant="outline" onClick={() => setProviderDialogOpen(false)}>Cancel</Button><Button onClick={saveProvider} disabled={providerSaving}>{providerSaving ? "Saving..." : "Save"}</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => setProviderDialogOpen(false)}>Cancel</Button><Button onClick={saveProvider} disabled={providerSaving || (providerForm.provider_type === "k8s" && !providerForm.discovery.sidecar_url)}>{providerSaving ? "Saving..." : "Save"}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -366,6 +441,55 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
         onConfirm={() => { if (deleteTarget) deleteAccount(deleteTarget) }} />
     </div>
   )
+}
+
+// ── Build provider JSON body from form ──
+function buildProviderBody(form: ProviderForm) {
+  if (form.provider_type === "k8s") {
+    const d = form.discovery
+    return {
+      type: "k8s",
+      discovery: {
+        sidecar_url: d.sidecar_url || undefined,
+        cluster_name: d.cluster_name || undefined,
+        namespace: d.namespace || undefined,
+        label_selector: d.label_selector || undefined,
+        enable_pd_filter: d.enable_pd_filter,
+        poll_interval_secs: d.poll_interval_secs ? parseInt(d.poll_interval_secs) : undefined,
+      },
+      circuit_breaker_threshold: parseInt(form.circuit_breaker_threshold) || 5,
+      circuit_breaker_recovery_secs: parseInt(form.circuit_breaker_recovery_secs) || 30,
+    }
+  }
+  const headers: Record<string, string> = {}
+  form.headers.forEach(h => { if (h.key) headers[h.key] = h.value })
+  return {
+    base_url: form.base_url, protocols: form.protocols, api_key: form.api_key || null,
+    timeout_ms: form.timeout_ms ? parseInt(form.timeout_ms) : null,
+    circuit_breaker_threshold: parseInt(form.circuit_breaker_threshold) || 5,
+    circuit_breaker_recovery_secs: parseInt(form.circuit_breaker_recovery_secs) || 30, headers,
+  }
+}
+
+// ── Map Provider to ProviderForm ──
+function providerToForm(p: Provider): ProviderForm {
+  const isK8s = p.provider_type === "k8s"
+  return {
+    id: p.id, base_url: p.base_url || "", protocols: p.protocols || [],
+    api_key: p.api_key || "", timeout_ms: p.timeout_ms?.toString() || "",
+    circuit_breaker_threshold: (p.circuit_breaker_threshold ?? 5).toString(),
+    circuit_breaker_recovery_secs: (p.circuit_breaker_recovery_secs ?? 30).toString(),
+    headers: Object.entries(p.headers || {}).map(([key, value]) => ({ key, value })),
+    provider_type: isK8s ? "k8s" : "api",
+    discovery: isK8s && p.discovery ? {
+      sidecar_url: p.discovery.sidecar_url || "",
+      cluster_name: p.discovery.cluster_name || "",
+      namespace: p.discovery.namespace || "",
+      label_selector: p.discovery.label_selector || "",
+      enable_pd_filter: p.discovery.enable_pd_filter || false,
+      poll_interval_secs: p.discovery.poll_interval_secs?.toString() || "",
+    } : { ...emptyDiscoveryForm },
+  }
 }
 
 // ════════════════════════════════════════
@@ -395,16 +519,10 @@ export default function Providers() {
 
   const handleNewProvider = async () => {
     setNewSaving(true)
-    const headers: Record<string, string> = {}
-    newForm.headers.forEach(h => { if (h.key) headers[h.key] = h.value })
+    const body = buildProviderBody(newForm)
     await fetch(`/api/providers/${newForm.id}`, {
       method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        base_url: newForm.base_url, protocols: newForm.protocols, api_key: newForm.api_key || null,
-        timeout_ms: newForm.timeout_ms ? parseInt(newForm.timeout_ms) : null,
-        circuit_breaker_threshold: parseInt(newForm.circuit_breaker_threshold) || 5,
-        circuit_breaker_recovery_secs: parseInt(newForm.circuit_breaker_recovery_secs) || 30, headers,
-      }),
+      body: JSON.stringify(body),
     })
     setNewSaving(false); setNewDialogOpen(false); setNewForm(emptyProviderForm); load()
   }
@@ -413,7 +531,7 @@ export default function Providers() {
 
   if (selectedProvider) return <ProviderDetail providerId={selectedProvider} onBack={() => { setSelectedProvider(null); load() }} onUpdated={load} />
 
-  const filtered = search ? providers.filter(p => p.id.toLowerCase().includes(search.toLowerCase()) || p.protocols.some(pr => pr.toLowerCase().includes(search.toLowerCase()))) : providers
+  const filtered = search ? providers.filter(p => p.id.toLowerCase().includes(search.toLowerCase()) || p.protocols.some(pr => pr.toLowerCase().includes(search.toLowerCase())) || (p.provider_type === "k8s" && "k8s".includes(search.toLowerCase()))) : providers
 
   if (loading) return <div className="flex items-center justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-[hsl(var(--muted-foreground))]" /></div>
 
@@ -433,7 +551,7 @@ export default function Providers() {
               <table className="w-full text-sm">
                 <thead><tr className="border-b border-[hsl(var(--border))]">
                   <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Provider</th>
-                  <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden sm:table-cell">Base URL</th>
+                  <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden sm:table-cell">Endpoint</th>
                   <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Protocols</th>
                   <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Accounts</th>
                   <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden md:table-cell">Circuit Breaker</th>
@@ -443,12 +561,13 @@ export default function Providers() {
                   {filtered.map(p => {
                     const pa = accounts.filter(a => a.provider_id === p.id)
                     const en = pa.filter(a => a.enabled).length
+                    const pIsK8s = p.provider_type === "k8s"
                     return (
                       <tr key={p.id} className="border-b border-[hsl(var(--border))] last:border-0 hover:bg-[hsl(var(--accent))]/50 cursor-pointer transition-colors" onClick={() => setSelectedProvider(p.id)}>
-                        <td className="px-4 py-3 font-medium">{p.id}</td>
-                        <td className="px-4 py-3 hidden sm:table-cell"><span className="text-xs text-[hsl(var(--muted-foreground))] font-mono truncate max-w-[200px] block">{p.base_url || "—"}</span></td>
-                        <td className="px-4 py-3"><div className="flex gap-1 flex-wrap">{p.protocols.map(pr => <Badge key={pr} variant="outline" className="text-[10px]">{pr}</Badge>)}</div></td>
-                        <td className="px-4 py-3">{pa.length > 0 ? <span className="font-mono text-xs">{en}/{pa.length}</span> : <span className="text-xs text-[hsl(var(--muted-foreground))] italic">none</span>}</td>
+                        <td className="px-4 py-3 font-medium"><div className="flex items-center gap-2">{p.id}{pIsK8s && <Badge className="bg-purple-600/80 text-purple-100 hover:bg-purple-600/80 text-[10px]">K8s</Badge>}</div></td>
+                        <td className="px-4 py-3 hidden sm:table-cell"><span className="text-xs text-[hsl(var(--muted-foreground))] font-mono truncate max-w-[200px] block">{pIsK8s ? (p.discovery?.sidecar_url || "—") : (p.base_url || "—")}</span></td>
+                        <td className="px-4 py-3"><div className="flex gap-1 flex-wrap">{pIsK8s ? <span className="text-xs text-[hsl(var(--muted-foreground))] italic">discovery</span> : p.protocols.map(pr => <Badge key={pr} variant="outline" className="text-[10px]">{pr}</Badge>)}</div></td>
+                        <td className="px-4 py-3">{pIsK8s ? <span className="text-xs text-[hsl(var(--muted-foreground))] italic">n/a</span> : pa.length > 0 ? <span className="font-mono text-xs">{en}/{pa.length}</span> : <span className="text-xs text-[hsl(var(--muted-foreground))] italic">none</span>}</td>
                         <td className="px-4 py-3 hidden md:table-cell"><span className="text-xs text-[hsl(var(--muted-foreground))]">{p.circuit_breaker_threshold} / {p.circuit_breaker_recovery_secs}s</span></td>
                         <td className="px-4 py-3" onClick={e => e.stopPropagation()}><div className="flex justify-end gap-1">
                           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSelectedProvider(p.id)}><Pencil className="h-3.5 w-3.5" /></Button>
@@ -470,13 +589,19 @@ export default function Providers() {
           <DialogHeader><DialogTitle>New Provider</DialogTitle><DialogDescription>Add a new LLM provider</DialogDescription></DialogHeader>
           <div className="space-y-4">
             <div><Label>ID</Label><Input value={newForm.id} onChange={e => setNewForm(f => ({ ...f, id: e.target.value }))} placeholder="openai" /><p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Cannot be changed later</p></div>
-            <div><Label>Base URL</Label><Input value={newForm.base_url} onChange={e => setNewForm(f => ({ ...f, base_url: e.target.value }))} placeholder="https://api.openai.com/v1" /></div>
-            <div><Label>Protocols</Label><ProtocolsSelect value={newForm.protocols} onChange={protocols => setNewForm(f => ({ ...f, protocols }))} /></div>
-            <div><Label>API Key</Label><Input type="password" value={newForm.api_key} onChange={e => setNewForm(f => ({ ...f, api_key: e.target.value }))} placeholder="sk-..." /></div>
-            <div className="grid grid-cols-2 gap-3"><div><Label>Timeout (ms)</Label><Input type="number" value={newForm.timeout_ms} onChange={e => setNewForm(f => ({ ...f, timeout_ms: e.target.value }))} placeholder="30000" /></div><div><Label>CB Threshold</Label><Input type="number" value={newForm.circuit_breaker_threshold} onChange={e => setNewForm(f => ({ ...f, circuit_breaker_threshold: e.target.value }))} /></div></div>
-            <div><Label>CB Recovery (secs)</Label><Input type="number" value={newForm.circuit_breaker_recovery_secs} onChange={e => setNewForm(f => ({ ...f, circuit_breaker_recovery_secs: e.target.value }))} /></div>
+            <ProviderTypeSelect value={newForm.provider_type} onChange={provider_type => setNewForm(f => ({ ...f, provider_type, ...(provider_type === "k8s" ? { protocols: [], base_url: "", api_key: "" } : {}) }))} />
+            {newForm.provider_type === "api" && (<>
+              <div><Label>Base URL</Label><Input value={newForm.base_url} onChange={e => setNewForm(f => ({ ...f, base_url: e.target.value }))} placeholder="https://api.openai.com/v1" /></div>
+              <div><Label>Protocols</Label><ProtocolsSelect value={newForm.protocols} onChange={protocols => setNewForm(f => ({ ...f, protocols }))} /></div>
+              <div><Label>API Key</Label><Input type="password" value={newForm.api_key} onChange={e => setNewForm(f => ({ ...f, api_key: e.target.value }))} placeholder="sk-..." /></div>
+              <div className="grid grid-cols-2 gap-3"><div><Label>Timeout (ms)</Label><Input type="number" value={newForm.timeout_ms} onChange={e => setNewForm(f => ({ ...f, timeout_ms: e.target.value }))} placeholder="30000" /></div><div><Label>CB Threshold</Label><Input type="number" value={newForm.circuit_breaker_threshold} onChange={e => setNewForm(f => ({ ...f, circuit_breaker_threshold: e.target.value }))} /></div></div>
+              <div><Label>CB Recovery (secs)</Label><Input type="number" value={newForm.circuit_breaker_recovery_secs} onChange={e => setNewForm(f => ({ ...f, circuit_breaker_recovery_secs: e.target.value }))} /></div>
+            </>)}
+            {newForm.provider_type === "k8s" && (
+              <DiscoveryFields discovery={newForm.discovery} onChange={discovery => setNewForm(f => ({ ...f, discovery }))} />
+            )}
           </div>
-          <DialogFooter><Button variant="outline" onClick={() => setNewDialogOpen(false)}>Cancel</Button><Button onClick={handleNewProvider} disabled={newSaving || !newForm.id}>{newSaving ? "Creating..." : "Create"}</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => setNewDialogOpen(false)}>Cancel</Button><Button onClick={handleNewProvider} disabled={newSaving || !newForm.id || (newForm.provider_type === "k8s" && !newForm.discovery.sidecar_url)}>{newSaving ? "Creating..." : "Create"}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
