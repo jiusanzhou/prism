@@ -1,14 +1,15 @@
-//! Client key manager — per-key quota enforcement for multi-tenant API access.
+//! Client key manager — per-key, per-model quota enforcement for multi-tenant API access.
 //!
 //! Provides sliding-window QPM, daily token budgets, concurrent request limits,
-//! and per-key model access control. All state is in-memory using std atomics.
+//! and per-key model access control. Supports per-model quota overrides.
+//! All state is in-memory using std atomics.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-use crate::config::types::ClientKeyConfig;
+use crate::config::types::{ClientKeyConfig, ClientKeyQuotaConfig};
 
 /// Shared reference to a resolved client key.
 #[derive(Debug, Clone)]
@@ -20,30 +21,100 @@ pub struct ClientKeyRef {
 /// Errors from client key validation.
 #[derive(Debug, Clone)]
 pub enum ClientKeyError {
-    /// Key not found or disabled.
     InvalidKey,
-    /// Model not in allowed_models list.
     ModelNotAllowed { model: String },
-    /// QPM limit exceeded.
     RateLimited { retry_after_secs: u64 },
-    /// Daily token budget exceeded.
     TokenBudgetExhausted,
-    /// Concurrent request limit exceeded.
     ConcurrencyExhausted { current: u32, limit: u32 },
 }
 
-/// Per-key runtime state for quota tracking.
+/// Runtime quota state (one per quota scope: global or per-model).
+struct QuotaState {
+    config: ClientKeyQuotaConfig,
+    request_timestamps: RwLock<Vec<Instant>>,
+    tokens_today: AtomicU64,
+    token_day: AtomicU64,
+    concurrent: AtomicU32,
+}
+
+impl QuotaState {
+    fn new(config: ClientKeyQuotaConfig) -> Self {
+        Self {
+            config,
+            request_timestamps: RwLock::new(Vec::new()),
+            tokens_today: AtomicU64::new(0),
+            token_day: AtomicU64::new(current_day_utc()),
+            concurrent: AtomicU32::new(0),
+        }
+    }
+
+    fn check_qpm(&self) -> Result<(), ClientKeyError> {
+        let limit = self.config.max_requests_per_minute;
+        if limit == 0 { return Ok(()); }
+
+        let now = Instant::now();
+        let window = Duration::from_secs(60);
+        let mut ts = self.request_timestamps.write().unwrap();
+        ts.retain(|&t| now.duration_since(t) < window);
+        if ts.len() as u64 >= limit {
+            let oldest = ts.first().copied().unwrap_or(now);
+            let retry = window.checked_sub(now.duration_since(oldest))
+                .unwrap_or(Duration::from_secs(1));
+            return Err(ClientKeyError::RateLimited { retry_after_secs: retry.as_secs().max(1) });
+        }
+        ts.push(now);
+        Ok(())
+    }
+
+    fn check_daily_tokens(&self) -> Result<(), ClientKeyError> {
+        let limit = self.config.max_tokens_per_day;
+        if limit == 0 { return Ok(()); }
+        maybe_reset_daily(&self.tokens_today, &self.token_day);
+        if self.tokens_today.load(Ordering::Relaxed) >= limit {
+            return Err(ClientKeyError::TokenBudgetExhausted);
+        }
+        Ok(())
+    }
+
+    fn try_increment_concurrent(&self) -> Result<Option<ConcurrencyGuard>, ClientKeyError> {
+        let max = self.config.max_concurrent;
+        if max == 0 { return Ok(None); }
+        let prev = self.concurrent.fetch_add(1, Ordering::Relaxed);
+        if prev >= max {
+            self.concurrent.fetch_sub(1, Ordering::Relaxed);
+            return Err(ClientKeyError::ConcurrencyExhausted { current: prev, limit: max });
+        }
+        Ok(Some(ConcurrencyGuard { concurrent: &self.concurrent as *const AtomicU32 }))
+    }
+
+    fn record_tokens(&self, tokens: u64) {
+        if tokens > 0 {
+            maybe_reset_daily(&self.tokens_today, &self.token_day);
+            self.tokens_today.fetch_add(tokens, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Per-key runtime state.
 struct KeyState {
     config: ClientKeyConfig,
     allowed_models: HashSet<String>,
-    /// Sliding window: timestamps of requests in the current minute.
-    request_timestamps: RwLock<Vec<Instant>>,
-    /// Daily token accumulator.
-    tokens_today: AtomicU64,
-    /// Day marker (days since UNIX epoch, UTC).
-    token_day: AtomicU64,
-    /// Current concurrent requests.
-    concurrent: AtomicU32,
+    /// Global (fallback) quota state.
+    global_quota: QuotaState,
+    /// Per-model quota states. Only models with explicit overrides have entries.
+    model_quotas: HashMap<String, QuotaState>,
+}
+
+impl KeyState {
+    /// Get the appropriate QuotaState for a model (per-model if configured, else global).
+    fn quota_for(&self, model: Option<&str>) -> &QuotaState {
+        if let Some(m) = model {
+            if let Some(mq) = self.model_quotas.get(m) {
+                return mq;
+            }
+        }
+        &self.global_quota
+    }
 }
 
 /// Guard that decrements the concurrent counter on drop.
@@ -51,175 +122,96 @@ pub struct ConcurrencyGuard {
     concurrent: *const AtomicU32,
 }
 
-// SAFETY: AtomicU32 is Send+Sync, and the pointer lifetime is tied to
-// the Arc<ClientKeyManager> which outlives all guards.
 unsafe impl Send for ConcurrencyGuard {}
 unsafe impl Sync for ConcurrencyGuard {}
 
 impl Drop for ConcurrencyGuard {
     fn drop(&mut self) {
-        // SAFETY: The ClientKeyManager (and its KeyState) lives in an Arc
-        // that outlives any request using this guard.
-        unsafe {
-            (*self.concurrent).fetch_sub(1, Ordering::Relaxed);
-        }
+        unsafe { (*self.concurrent).fetch_sub(1, Ordering::Relaxed); }
     }
 }
 
-/// Manages per-client-key quota enforcement.
+/// Manages per-client-key, per-model quota enforcement.
 pub struct ClientKeyManager {
     keys: HashMap<String, KeyState>,
 }
 
 impl ClientKeyManager {
-    /// Build from config. Returns None if client_keys is empty.
     pub fn new(configs: &[ClientKeyConfig]) -> Option<Self> {
-        if configs.is_empty() {
-            return None;
-        }
+        if configs.is_empty() { return None; }
         let mut keys = HashMap::new();
         for cfg in configs {
             let allowed: HashSet<String> = cfg.allowed_models.iter().cloned().collect();
-            keys.insert(
-                cfg.key.clone(),
-                KeyState {
-                    config: cfg.clone(),
-                    allowed_models: allowed,
-                    request_timestamps: RwLock::new(Vec::new()),
-                    tokens_today: AtomicU64::new(0),
-                    token_day: AtomicU64::new(current_day_utc()),
-                    concurrent: AtomicU32::new(0),
-                },
-            );
+            let model_quotas: HashMap<String, QuotaState> = cfg.model_quotas.iter()
+                .map(|(model, q)| (model.clone(), QuotaState::new(q.clone())))
+                .collect();
+            keys.insert(cfg.key.clone(), KeyState {
+                config: cfg.clone(),
+                allowed_models: allowed,
+                global_quota: QuotaState::new(cfg.quota.clone()),
+                model_quotas,
+            });
         }
         Some(Self { keys })
     }
 
     /// Validate a client key for the given model.
-    /// On success, returns a `ClientKeyRef` and a `ConcurrencyGuard`.
-    /// The guard MUST be held for the request lifetime (drop decrements concurrent).
+    /// Quota checks use per-model quota if configured, else global.
     pub fn validate_key(
         &self,
         api_key: &str,
         model: Option<&str>,
     ) -> Result<(ClientKeyRef, Option<ConcurrencyGuard>), ClientKeyError> {
         let state = self.keys.get(api_key).ok_or(ClientKeyError::InvalidKey)?;
-
-        // Enabled check
-        if !state.config.enabled {
-            return Err(ClientKeyError::InvalidKey);
-        }
+        if !state.config.enabled { return Err(ClientKeyError::InvalidKey); }
 
         // Model access control
-        if let Some(model_name) = model {
-            if !state.allowed_models.is_empty() && !state.allowed_models.contains(model_name) {
-                return Err(ClientKeyError::ModelNotAllowed {
-                    model: model_name.to_string(),
-                });
+        if let Some(m) = model {
+            if !state.allowed_models.is_empty() && !state.allowed_models.contains(m) {
+                return Err(ClientKeyError::ModelNotAllowed { model: m.to_string() });
             }
         }
 
-        // QPM sliding window check
-        let qpm_limit = state.config.quota.max_requests_per_minute;
-        if qpm_limit > 0 {
-            let now = Instant::now();
-            let window = Duration::from_secs(60);
-            let mut timestamps = state.request_timestamps.write().unwrap();
-            // Evict entries older than 60s
-            timestamps.retain(|&t| now.duration_since(t) < window);
-            if timestamps.len() as u64 >= qpm_limit {
-                // Estimate retry-after from oldest entry
-                let oldest = timestamps.first().copied().unwrap_or(now);
-                let retry_after = window
-                    .checked_sub(now.duration_since(oldest))
-                    .unwrap_or(Duration::from_secs(1));
-                return Err(ClientKeyError::RateLimited {
-                    retry_after_secs: retry_after.as_secs().max(1),
-                });
-            }
-            timestamps.push(now);
-        }
+        // Resolve quota scope (per-model or global)
+        let quota = state.quota_for(model);
+        quota.check_qpm()?;
+        quota.check_daily_tokens()?;
+        let guard = quota.try_increment_concurrent()?;
 
-        // Daily token budget check
-        let daily_limit = state.config.quota.max_tokens_per_day;
-        if daily_limit > 0 {
-            maybe_reset_daily(&state.tokens_today, &state.token_day);
-            let used = state.tokens_today.load(Ordering::Relaxed);
-            if used >= daily_limit {
-                return Err(ClientKeyError::TokenBudgetExhausted);
-            }
-        }
-
-        // Concurrent request limit
-        let max_concurrent = state.config.quota.max_concurrent;
-        let guard = if max_concurrent > 0 {
-            let prev = state.concurrent.fetch_add(1, Ordering::Relaxed);
-            if prev >= max_concurrent {
-                state.concurrent.fetch_sub(1, Ordering::Relaxed);
-                return Err(ClientKeyError::ConcurrencyExhausted {
-                    current: prev,
-                    limit: max_concurrent,
-                });
-            }
-            Some(ConcurrencyGuard {
-                concurrent: &state.concurrent as *const AtomicU32,
-            })
-        } else {
-            None
-        };
-
-        Ok((
-            ClientKeyRef {
-                name: state.config.name.clone(),
-                key: api_key.to_string(),
-            },
-            guard,
-        ))
+        Ok((ClientKeyRef { name: state.config.name.clone(), key: api_key.to_string() }, guard))
     }
 
-    /// Record token usage after a response completes.
-    pub fn record_usage(&self, api_key: &str, tokens_used: u64) {
-        if tokens_used == 0 {
-            return;
-        }
+    /// Record token usage for the appropriate quota scope.
+    pub fn record_usage(&self, api_key: &str, model: Option<&str>, tokens_used: u64) {
+        if tokens_used == 0 { return; }
         if let Some(state) = self.keys.get(api_key) {
-            maybe_reset_daily(&state.tokens_today, &state.token_day);
-            state.tokens_today.fetch_add(tokens_used, Ordering::Relaxed);
+            state.quota_for(model).record_tokens(tokens_used);
         }
     }
 
     /// Check if a model is allowed for the given key.
-    /// Returns Ok(()) if the model is allowed, Err if not.
     pub fn check_model_access(&self, api_key: &str, model: &str) -> Result<(), ClientKeyError> {
         if let Some(state) = self.keys.get(api_key) {
             if !state.allowed_models.is_empty() && !state.allowed_models.contains(model) {
-                return Err(ClientKeyError::ModelNotAllowed {
-                    model: model.to_string(),
-                });
+                return Err(ClientKeyError::ModelNotAllowed { model: model.to_string() });
             }
         }
         Ok(())
     }
 }
 
-/// Current day as days-since-epoch (UTC).
 fn current_day_utc() -> u64 {
-    let now = std::time::SystemTime::now()
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    now.as_secs() / 86400
+        .unwrap_or_default()
+        .as_secs() / 86400
 }
 
-/// Reset daily counters if the day has rolled over.
 fn maybe_reset_daily(tokens: &AtomicU64, day: &AtomicU64) {
     let today = current_day_utc();
-    let stored_day = day.load(Ordering::Relaxed);
-    if today != stored_day {
-        // CAS to prevent double-reset
-        if day
-            .compare_exchange(stored_day, today, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-        {
+    let stored = day.load(Ordering::Relaxed);
+    if today != stored {
+        if day.compare_exchange(stored, today, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
             tokens.store(0, Ordering::Relaxed);
         }
     }
@@ -235,166 +227,195 @@ mod tests {
             key: key.to_string(),
             name: name.to_string(),
             enabled: true,
-            allowed_models: vec!["gpt-4o".to_string(), "claude-sonnet-4".to_string()],
+            allowed_models: vec!["gpt-4o".into(), "claude-sonnet-4".into()],
             quota: ClientKeyQuotaConfig {
                 max_requests_per_minute: 10,
                 max_tokens_per_day: 100_000,
                 max_concurrent: 2,
             },
+            model_quotas: HashMap::new(),
             metadata: HashMap::new(),
         }
     }
 
     #[test]
-    fn test_valid_key_passes() {
+    fn valid_key_passes() {
         let mgr = ClientKeyManager::new(&[make_config("sk-test", "Test")]).unwrap();
-        let (key_ref, guard) = mgr.validate_key("sk-test", Some("gpt-4o")).unwrap();
-        assert_eq!(key_ref.name, "Test");
-        assert!(guard.is_some());
+        let (r, g) = mgr.validate_key("sk-test", Some("gpt-4o")).unwrap();
+        assert_eq!(r.name, "Test");
+        assert!(g.is_some());
     }
 
     #[test]
-    fn test_unknown_key_rejected() {
+    fn unknown_key_rejected() {
         let mgr = ClientKeyManager::new(&[make_config("sk-test", "Test")]).unwrap();
-        assert!(matches!(
-            mgr.validate_key("sk-unknown", None),
-            Err(ClientKeyError::InvalidKey)
-        ));
+        assert!(matches!(mgr.validate_key("sk-bad", None), Err(ClientKeyError::InvalidKey)));
     }
 
     #[test]
-    fn test_disabled_key_rejected() {
-        let mut cfg = make_config("sk-disabled", "Disabled");
+    fn disabled_key_rejected() {
+        let mut cfg = make_config("sk-d", "D");
         cfg.enabled = false;
         let mgr = ClientKeyManager::new(&[cfg]).unwrap();
-        assert!(matches!(
-            mgr.validate_key("sk-disabled", None),
-            Err(ClientKeyError::InvalidKey)
-        ));
+        assert!(matches!(mgr.validate_key("sk-d", None), Err(ClientKeyError::InvalidKey)));
     }
 
     #[test]
-    fn test_model_not_allowed() {
-        let mgr = ClientKeyManager::new(&[make_config("sk-test", "Test")]).unwrap();
-        assert!(matches!(
-            mgr.validate_key("sk-test", Some("llama-3")),
-            Err(ClientKeyError::ModelNotAllowed { .. })
-        ));
+    fn model_not_allowed() {
+        let mgr = ClientKeyManager::new(&[make_config("sk-t", "T")]).unwrap();
+        assert!(matches!(mgr.validate_key("sk-t", Some("llama")), Err(ClientKeyError::ModelNotAllowed { .. })));
     }
 
     #[test]
-    fn test_empty_allowed_models_allows_all() {
-        let mut cfg = make_config("sk-test", "Test");
+    fn empty_allowed_models_allows_all() {
+        let mut cfg = make_config("sk-t", "T");
         cfg.allowed_models = vec![];
         let mgr = ClientKeyManager::new(&[cfg]).unwrap();
-        assert!(mgr.validate_key("sk-test", Some("any-model")).is_ok());
+        assert!(mgr.validate_key("sk-t", Some("anything")).is_ok());
     }
 
     #[test]
-    fn test_qpm_limit() {
-        let mut cfg = make_config("sk-test", "Test");
+    fn global_qpm_limit() {
+        let mut cfg = make_config("sk-t", "T");
         cfg.quota.max_requests_per_minute = 3;
-        cfg.quota.max_concurrent = 0; // disable concurrency limit for this test
-        let mgr = ClientKeyManager::new(&[cfg]).unwrap();
-
-        // First 3 should pass
-        for _ in 0..3 {
-            assert!(mgr.validate_key("sk-test", None).is_ok());
-        }
-        // 4th should fail with rate limit
-        assert!(matches!(
-            mgr.validate_key("sk-test", None),
-            Err(ClientKeyError::RateLimited { .. })
-        ));
-    }
-
-    #[test]
-    fn test_daily_token_budget() {
-        let mut cfg = make_config("sk-test", "Test");
-        cfg.quota.max_tokens_per_day = 1000;
         cfg.quota.max_concurrent = 0;
         let mgr = ClientKeyManager::new(&[cfg]).unwrap();
-
-        // Record usage up to the limit
-        mgr.record_usage("sk-test", 1000);
-
-        // Should now be rejected
-        assert!(matches!(
-            mgr.validate_key("sk-test", None),
-            Err(ClientKeyError::TokenBudgetExhausted)
-        ));
+        for _ in 0..3 { mgr.validate_key("sk-t", None).unwrap(); }
+        assert!(matches!(mgr.validate_key("sk-t", None), Err(ClientKeyError::RateLimited { .. })));
     }
 
     #[test]
-    fn test_concurrency_limit() {
-        let mut cfg = make_config("sk-test", "Test");
-        cfg.quota.max_concurrent = 2;
+    fn per_model_qpm_independent() {
+        let mut cfg = make_config("sk-t", "T");
+        cfg.allowed_models = vec![];
+        cfg.quota.max_requests_per_minute = 100; // global: high
+        cfg.quota.max_concurrent = 0;
+        cfg.model_quotas.insert("expensive-model".into(), ClientKeyQuotaConfig {
+            max_requests_per_minute: 2,
+            max_tokens_per_day: 0,
+            max_concurrent: 0,
+        });
+        cfg.model_quotas.insert("cheap-model".into(), ClientKeyQuotaConfig {
+            max_requests_per_minute: 5,
+            max_tokens_per_day: 0,
+            max_concurrent: 0,
+        });
         let mgr = ClientKeyManager::new(&[cfg]).unwrap();
 
-        let (_ref1, guard1) = mgr.validate_key("sk-test", None).unwrap();
-        let (_ref2, guard2) = mgr.validate_key("sk-test", None).unwrap();
-
-        // 3rd should be denied
+        // expensive-model: 2 RPM
+        mgr.validate_key("sk-t", Some("expensive-model")).unwrap();
+        mgr.validate_key("sk-t", Some("expensive-model")).unwrap();
         assert!(matches!(
-            mgr.validate_key("sk-test", None),
+            mgr.validate_key("sk-t", Some("expensive-model")),
+            Err(ClientKeyError::RateLimited { .. })
+        ));
+
+        // cheap-model: still fine (independent counter)
+        for _ in 0..5 { mgr.validate_key("sk-t", Some("cheap-model")).unwrap(); }
+        assert!(matches!(
+            mgr.validate_key("sk-t", Some("cheap-model")),
+            Err(ClientKeyError::RateLimited { .. })
+        ));
+
+        // unknown-model falls back to global (100 RPM), still fine
+        mgr.validate_key("sk-t", Some("unknown-model")).unwrap();
+    }
+
+    #[test]
+    fn per_model_daily_tokens() {
+        let mut cfg = make_config("sk-t", "T");
+        cfg.allowed_models = vec![];
+        cfg.quota.max_tokens_per_day = 1_000_000;
+        cfg.quota.max_concurrent = 0;
+        cfg.model_quotas.insert("gpt-4o".into(), ClientKeyQuotaConfig {
+            max_requests_per_minute: 0,
+            max_tokens_per_day: 1000,
+            max_concurrent: 0,
+        });
+        let mgr = ClientKeyManager::new(&[cfg]).unwrap();
+
+        mgr.record_usage("sk-t", Some("gpt-4o"), 1000);
+        assert!(matches!(
+            mgr.validate_key("sk-t", Some("gpt-4o")),
+            Err(ClientKeyError::TokenBudgetExhausted)
+        ));
+
+        // Global still has budget
+        assert!(mgr.validate_key("sk-t", Some("other-model")).is_ok());
+    }
+
+    #[test]
+    fn per_model_concurrency() {
+        let mut cfg = make_config("sk-t", "T");
+        cfg.allowed_models = vec![];
+        cfg.quota.max_concurrent = 100;
+        cfg.model_quotas.insert("limited".into(), ClientKeyQuotaConfig {
+            max_requests_per_minute: 0,
+            max_tokens_per_day: 0,
+            max_concurrent: 1,
+        });
+        let mgr = ClientKeyManager::new(&[cfg]).unwrap();
+
+        let (_r, g1) = mgr.validate_key("sk-t", Some("limited")).unwrap();
+        assert!(matches!(
+            mgr.validate_key("sk-t", Some("limited")),
             Err(ClientKeyError::ConcurrencyExhausted { .. })
         ));
 
-        // Drop one guard, should allow again
-        drop(guard1);
-        assert!(mgr.validate_key("sk-test", None).is_ok());
+        // Other model unaffected
+        assert!(mgr.validate_key("sk-t", Some("other")).is_ok());
 
-        drop(guard2);
+        drop(g1);
+        assert!(mgr.validate_key("sk-t", Some("limited")).is_ok());
     }
 
     #[test]
-    fn test_record_usage_unknown_key_noop() {
-        let mgr = ClientKeyManager::new(&[make_config("sk-test", "Test")]).unwrap();
-        // Should not panic
-        mgr.record_usage("sk-nonexistent", 500);
+    fn concurrency_guard_drop() {
+        let mgr = ClientKeyManager::new(&[make_config("sk-t", "T")]).unwrap();
+        let (_, g1) = mgr.validate_key("sk-t", None).unwrap();
+        let (_, g2) = mgr.validate_key("sk-t", None).unwrap();
+        assert!(matches!(mgr.validate_key("sk-t", None), Err(ClientKeyError::ConcurrencyExhausted { .. })));
+        drop(g1);
+        assert!(mgr.validate_key("sk-t", None).is_ok());
+        drop(g2);
     }
 
     #[test]
-    fn test_empty_config_returns_none() {
+    fn record_usage_unknown_key_noop() {
+        let mgr = ClientKeyManager::new(&[make_config("sk-t", "T")]).unwrap();
+        mgr.record_usage("sk-bad", None, 500);
+    }
+
+    #[test]
+    fn empty_config_returns_none() {
         assert!(ClientKeyManager::new(&[]).is_none());
     }
 
     #[test]
-    fn test_config_deserialization() {
+    fn config_deserialization_with_model_quotas() {
         let yaml = r#"
 client_keys:
-  - key: "sk-team-alpha-xxx"
-    name: "Team Alpha"
-    enabled: true
-    allowed_models: ["gpt-4o", "claude-sonnet-4"]
+  - key: "sk-alpha"
+    name: "Alpha"
     quota:
       max_requests_per_minute: 100
-      max_tokens_per_day: 1000000
-      max_concurrent: 10
-    metadata:
-      team: "alpha"
-      tier: "business"
-  - key: "sk-team-beta-yyy"
-    name: "Team Beta"
+      max_tokens_per_day: 5000000
+    model_quotas:
+      gpt-4o:
+        max_requests_per_minute: 20
+        max_tokens_per_day: 1000000
+        max_concurrent: 5
+      deepseek-r1:
+        max_requests_per_minute: 50
+        max_concurrent: 10
 "#;
         let config: crate::config::types::PrismConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.client_keys.len(), 2);
-
         let alpha = &config.client_keys[0];
-        assert_eq!(alpha.key, "sk-team-alpha-xxx");
-        assert_eq!(alpha.name, "Team Alpha");
-        assert!(alpha.enabled);
-        assert_eq!(alpha.allowed_models, vec!["gpt-4o", "claude-sonnet-4"]);
-        assert_eq!(alpha.quota.max_requests_per_minute, 100);
-        assert_eq!(alpha.quota.max_tokens_per_day, 1_000_000);
-        assert_eq!(alpha.quota.max_concurrent, 10);
-        assert_eq!(alpha.metadata.get("team"), Some(&"alpha".to_string()));
-
-        // Beta has defaults
-        let beta = &config.client_keys[1];
-        assert_eq!(beta.name, "Team Beta");
-        assert!(beta.enabled); // default_true
-        assert!(beta.allowed_models.is_empty());
-        assert_eq!(beta.quota.max_requests_per_minute, 0);
+        assert_eq!(alpha.model_quotas.len(), 2);
+        assert_eq!(alpha.model_quotas["gpt-4o"].max_requests_per_minute, 20);
+        assert_eq!(alpha.model_quotas["gpt-4o"].max_tokens_per_day, 1_000_000);
+        assert_eq!(alpha.model_quotas["gpt-4o"].max_concurrent, 5);
+        assert_eq!(alpha.model_quotas["deepseek-r1"].max_requests_per_minute, 50);
+        assert_eq!(alpha.model_quotas["deepseek-r1"].max_tokens_per_day, 0); // default
     }
 }

@@ -1780,9 +1780,13 @@ pub struct ClientKeyConfig {
     /// Models this key is allowed to use (empty = all models allowed).
     #[serde(default)]
     pub allowed_models: Vec<String>,
-    /// Quota limits for this key.
+    /// Global quota limits for this key (fallback when no model-specific quota).
     #[serde(default)]
     pub quota: ClientKeyQuotaConfig,
+    /// Per-model quota overrides. Key = model name (or alias-resolved name).
+    /// When a request targets a model listed here, these limits apply instead of global quota.
+    #[serde(default)]
+    pub model_quotas: HashMap<String, ClientKeyQuotaConfig>,
     /// Arbitrary metadata (team, tier, etc.).
     #[serde(default)]
     pub metadata: HashMap<String, String>,

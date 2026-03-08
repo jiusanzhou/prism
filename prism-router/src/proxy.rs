@@ -2207,7 +2207,7 @@ impl ProxyHttp for PrismProxy {
                         u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0)
                     })
                     .unwrap_or(0);
-                ckm.record_usage(client_key, total_tokens);
+                ckm.record_usage(client_key, ctx.selected_model.as_deref(), total_tokens);
             }
         }
         // Drop the client key concurrency guard (decrements counter)
