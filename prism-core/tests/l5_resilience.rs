@@ -197,6 +197,7 @@ fn simple_request(content: &str) -> RouteRequest {
         analyze_context: None,
         required_protocol: None,
         requested_model: None,
+        inflight_snapshot: None,
     }
 }
 

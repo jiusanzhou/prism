@@ -635,6 +635,7 @@ mod proxy_tests {
             analyze_context: None,
             required_protocol: None,
             requested_model: None,
+            inflight_snapshot: None,
         });
 
         assert!(result.is_ok());

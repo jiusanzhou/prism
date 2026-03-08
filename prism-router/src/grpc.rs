@@ -73,6 +73,7 @@ impl RouterService for GrpcRouterService {
             metadata,
             analyze_context: None,
             requested_model: None,
+            inflight_snapshot: Some(self.state.inflight.snapshot()),
             required_protocol: None,
         };
 

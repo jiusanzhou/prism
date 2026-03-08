@@ -212,6 +212,8 @@ pub struct PrismProxy {
     pub circuit_breaker: Option<Arc<crate::circuit_breaker::CircuitBreaker>>,
     /// Client-side API key authentication.
     pub auth: Option<crate::config::types::AuthConfig>,
+    /// In-flight request tracker for load-aware scheduling.
+    pub inflight: Arc<prism_core::inflight::InFlightTracker>,
     /// Active health checker for upstream endpoints.
     pub health_checker: Option<Arc<crate::health::HealthChecker>>,
 }
@@ -233,6 +235,7 @@ impl PrismProxy {
             circuit_breaker: None,
             auth: None,
             health_checker: None,
+            inflight: Arc::new(prism_core::inflight::InFlightTracker::new()),
         }
     }
 
@@ -256,6 +259,7 @@ impl PrismProxy {
             circuit_breaker: None,
             auth: None,
             health_checker: None,
+            inflight: Arc::new(prism_core::inflight::InFlightTracker::new()),
         }
     }
 
@@ -308,6 +312,11 @@ impl PrismProxy {
     }
 
     /// Set circuit breaker.
+    pub fn with_inflight(mut self, inflight: Arc<prism_core::inflight::InFlightTracker>) -> Self {
+        self.inflight = inflight;
+        self
+    }
+
     pub fn with_circuit_breaker(mut self, cb: Arc<crate::circuit_breaker::CircuitBreaker>) -> Self {
         self.circuit_breaker = Some(cb);
         self
@@ -790,6 +799,7 @@ impl ProxyHttp for PrismProxy {
             metadata: RouteMetadata::default(),
             analyze_context: None,
             requested_model: ctx.requested_model.clone(),
+            inflight_snapshot: Some(self.inflight.snapshot()),
             required_protocol: if protocol_str != "unknown" {
                 Some(protocol_str.to_string())
             } else {
@@ -887,6 +897,9 @@ impl ProxyHttp for PrismProxy {
                 ctx.selected_variant = Some(chosen_variant.clone());
                 ctx.selected_provider = Some(chosen_provider.clone());
                 ctx.selected_model = Some(decision.selected_model.clone());
+
+                // Track in-flight request for load-aware scheduling
+                self.inflight.increment(&chosen_variant);
 
                 // Store remaining fallback chain (after chosen)
                 let chosen_idx = candidates.iter().position(|c| c == &chosen_variant).unwrap_or(0);
@@ -1835,6 +1848,11 @@ impl ProxyHttp for PrismProxy {
             outbound_protocol = ?ctx.outbound_protocol,
             "Request completed"
         );
+
+        // Decrement in-flight counter (request done — success or failure)
+        if let Some(ref variant_id) = ctx.selected_variant {
+            self.inflight.decrement(variant_id);
+        }
 
         // Record outcome to metrics collector → DataLayer feedback loop
         if let Some(ref variant_id) = ctx.selected_variant {

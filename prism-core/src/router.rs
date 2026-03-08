@@ -12,6 +12,7 @@ use crate::plugins::feedback_scorer::FeedbackScorerPlugin;
 use crate::plugins::geo_proximity::GeoProximityPlugin;
 use crate::plugins::health_filter::HealthFilterPlugin;
 use crate::plugins::inference_load::InferenceLoadPlugin;
+use crate::plugins::inflight_load::InFlightLoadPlugin;
 use crate::plugins::latency_scorer::LatencyScorerPlugin;
 use crate::plugins::pinned_model::PinnedModelPlugin;
 use crate::plugins::prefix_affinity::PrefixAffinityPlugin;
@@ -45,6 +46,8 @@ pub struct RouteRequest {
     /// Requested model id from client (e.g. from request body "model" field).
     /// When set, only candidates matching this model are considered.
     pub requested_model: Option<String>,
+    /// In-flight request counts per variant (for load-aware scheduling).
+    pub inflight_snapshot: Option<std::collections::HashMap<String, u32>>,
 }
 
 /// Extra metadata attached to a routing request.
@@ -122,6 +125,7 @@ pub fn default_plugin_profile(feedback: Arc<FeedbackCollector>) -> PluginRegistr
     // Inference-aware scheduling plugins
     registry.register(Arc::new(PrefixAffinityPlugin::new()), 1);
     registry.register(Arc::new(InferenceLoadPlugin::new()), 1);
+    registry.register(Arc::new(InFlightLoadPlugin::new()), 10);
 
     registry
 }
@@ -449,6 +453,11 @@ impl Router for PrismRouter {
         // Store messages for plugins that need raw content (e.g. PrefixAffinityPlugin)
         state.set("request_messages", request.messages.clone());
 
+        // Inject in-flight snapshot for load-aware routing
+        if let Some(ref snapshot) = request.inflight_snapshot {
+            state.set(crate::plugins::inflight_load::INFLIGHT_SNAPSHOT_KEY, snapshot.clone());
+        }
+
         // Run the plugin framework
         let result = self.framework.run_routing(&mut state, &candidates)?;
 
@@ -622,6 +631,7 @@ mod tests {
             analyze_context: None,
             required_protocol: None,
             requested_model: None,
+            inflight_snapshot: None,
         }
     }
 
@@ -670,6 +680,7 @@ mod tests {
             analyze_context: None,
             required_protocol: None,
             requested_model: None,
+            inflight_snapshot: None,
         };
 
         let decision = router.route(&request).expect("pinned routing should succeed");
@@ -741,6 +752,7 @@ mod tests {
             analyze_context: None,
             required_protocol: None,
             requested_model: None,
+            inflight_snapshot: None,
         };
 
         let decision = router.route(&request).expect("geo routing should succeed");
@@ -872,6 +884,7 @@ mod tests {
             analyze_context: None,
             required_protocol: None,
             requested_model: Some("model-cheap".into()),
+            inflight_snapshot: None,
         };
 
         let decision = router.route(&request).expect("routing should succeed");
@@ -917,6 +930,7 @@ mod tests {
             analyze_context: None,
             required_protocol: None,
             requested_model: Some("model-a".into()),
+            inflight_snapshot: None,
         };
 
         let decision = router.route(&request).expect("routing should succeed");
@@ -956,6 +970,7 @@ mod tests {
             analyze_context: None,
             required_protocol: None,
             requested_model: Some("model-a".into()),
+            inflight_snapshot: None,
         };
 
         let decision = router.route(&request).expect("routing should succeed");

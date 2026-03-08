@@ -131,6 +131,7 @@ fn request_with_session(content: &str, session_id: &str) -> RouteRequest {
         analyze_context: None,
         required_protocol: None,
         requested_model: None,
+        inflight_snapshot: None,
     }
 }
 
@@ -451,6 +452,7 @@ fn test_load_balanced_distribution() {
             analyze_context: None,
             required_protocol: None,
         requested_model: None,
+        inflight_snapshot: None,
         };
         let decision = router.route(&req).unwrap();
         *account_counts
@@ -483,6 +485,7 @@ fn test_cost_isolation_tenant_routing() {
         analyze_context: None,
         required_protocol: None,
         requested_model: None,
+        inflight_snapshot: None,
     };
     let d1 = router.route(&req1).unwrap();
     assert_eq!(
@@ -506,6 +509,7 @@ fn test_cost_isolation_tenant_routing() {
         analyze_context: None,
         required_protocol: None,
         requested_model: None,
+        inflight_snapshot: None,
     };
     let d2 = router.route(&req2).unwrap();
     assert_eq!(
@@ -529,6 +533,7 @@ fn test_cost_isolation_tenant_routing() {
         analyze_context: None,
         required_protocol: None,
         requested_model: None,
+        inflight_snapshot: None,
     };
     let d3 = router.route(&req3).unwrap();
     assert_eq!(
