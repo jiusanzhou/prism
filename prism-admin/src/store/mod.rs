@@ -74,6 +74,12 @@ pub trait Store: Send + Sync {
     async fn upsert_plugin(&self, name: &str, config: PluginConfig) -> StoreResult<()>;
     async fn delete_plugin(&self, name: &str) -> StoreResult<()>;
 
+    // Client Keys
+    async fn list_client_keys(&self) -> StoreResult<Vec<ClientKeyConfig>>;
+    async fn get_client_key(&self, name: &str) -> StoreResult<ClientKeyConfig>;
+    async fn upsert_client_key(&self, name: &str, config: ClientKeyConfig) -> StoreResult<()>;
+    async fn delete_client_key(&self, name: &str) -> StoreResult<()>;
+
     // Auth config (singleton)
     async fn get_auth(&self) -> StoreResult<AuthConfig>;
     async fn set_auth(&self, config: AuthConfig) -> StoreResult<()>;

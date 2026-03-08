@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { BrowserRouter, Routes, Route, NavLink, useLocation } from "react-router-dom"
-import { LayoutDashboard, Box, Brain, GitBranch, Gauge, Layers, Puzzle, Shield, ScrollText, FileCode, Menu, Sun, Moon, Monitor, Server, Activity, Wrench, Shuffle } from "lucide-react"
+import { LayoutDashboard, Box, Brain, GitBranch, Gauge, Layers, Puzzle, Shield, ScrollText, FileCode, Menu, Sun, Moon, Monitor, Server, Activity, Wrench, Shuffle, Key } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useTheme } from "@/hooks/useTheme"
 import { Sheet, SheetTrigger, SheetContent } from "@/components/ui/sheet"
@@ -17,6 +17,7 @@ import ConfigEditor from "./pages/ConfigEditor"
 import Clusters from "./pages/Clusters"
 import Proxies from "./pages/Proxies"
 import Routing from "./pages/Routing"
+import ClientKeys from "./pages/ClientKeys"
 import Tools from "./pages/Tools"
 
 const resourceNav = [
@@ -37,6 +38,7 @@ const infraNav = [
 
 const settingsNav = [
   { to: "/auth", label: "Auth", icon: Shield },
+  { to: "/client-keys", label: "Client Keys", icon: Key },
   { to: "/access-log", label: "Access Log", icon: ScrollText },
   { to: "/config", label: "Config", icon: FileCode },
   { to: "/tools", label: "Tools", icon: Wrench },
@@ -176,6 +178,7 @@ function AppLayout() {
             <Route path="/clusters" element={<Clusters />} />
             <Route path="/proxies" element={<Proxies />} />
             <Route path="/auth" element={<Auth />} />
+            <Route path="/client-keys" element={<ClientKeys />} />
             <Route path="/access-log" element={<AccessLog />} />
             <Route path="/config" element={<ConfigEditor />} />
             <Route path="/tools" element={<Tools />} />

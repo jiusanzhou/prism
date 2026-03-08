@@ -1,6 +1,7 @@
 pub mod access_log;
 pub mod accounts;
 pub mod auth;
+pub mod client_keys;
 pub mod clusters;
 pub mod config;
 pub mod models;

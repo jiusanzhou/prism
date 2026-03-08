@@ -50,6 +50,10 @@ impl PostgresStore {
                 name TEXT PRIMARY KEY,
                 config JSONB NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS prism_client_keys (
+                name TEXT PRIMARY KEY,
+                config JSONB NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS prism_settings (
                 key TEXT PRIMARY KEY,
                 value JSONB NOT NULL
@@ -429,6 +433,58 @@ impl Store for PostgresStore {
         Ok(())
     }
 
+    // Client Keys
+    async fn list_client_keys(&self) -> StoreResult<Vec<ClientKeyConfig>> {
+        let rows: Vec<(serde_json::Value,)> =
+            sqlx::query_as("SELECT config FROM prism_client_keys")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StoreError::Internal(e.to_string()))?;
+        rows.into_iter()
+            .map(|(val,)| {
+                serde_json::from_value(val)
+                    .map_err(|e| StoreError::Internal(format!("deserialize client_key: {}", e)))
+            })
+            .collect()
+    }
+
+    async fn get_client_key(&self, name: &str) -> StoreResult<ClientKeyConfig> {
+        let row: Option<(serde_json::Value,)> =
+            sqlx::query_as("SELECT config FROM prism_client_keys WHERE name = $1")
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| StoreError::Internal(e.to_string()))?;
+        match row {
+            Some((val,)) => serde_json::from_value(val)
+                .map_err(|e| StoreError::Internal(format!("deserialize client_key: {}", e))),
+            None => Err(StoreError::NotFound(format!("client key '{}'", name))),
+        }
+    }
+
+    async fn upsert_client_key(&self, name: &str, config: ClientKeyConfig) -> StoreResult<()> {
+        let val = serde_json::to_value(&config)
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        sqlx::query(
+            "INSERT INTO prism_client_keys (name, config) VALUES ($1, $2) ON CONFLICT (name) DO UPDATE SET config = $2",
+        )
+        .bind(name)
+        .bind(val)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn delete_client_key(&self, name: &str) -> StoreResult<()> {
+        sqlx::query("DELETE FROM prism_client_keys WHERE name = $1")
+            .bind(name)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
     // Auth (singleton)
     async fn get_auth(&self) -> StoreResult<AuthConfig> {
         let row: Option<(serde_json::Value,)> =
@@ -492,6 +548,7 @@ impl Store for PostgresStore {
         let pools = self.list_pools().await?;
         let rate_limits = self.list_rate_limits().await?;
         let plugins = self.list_plugins().await?;
+        let client_keys = self.list_client_keys().await?;
         let auth = self.get_auth().await?;
         let access_log = self.get_access_log().await?;
 
@@ -510,6 +567,7 @@ impl Store for PostgresStore {
             auth,
             concurrency_limits: Vec::new(),
             accounts,
+            client_keys,
         })
     }
 
@@ -522,7 +580,7 @@ impl Store for PostgresStore {
         sqlx::query("DELETE FROM prism_pools").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
         sqlx::query("DELETE FROM prism_rate_limits").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
         sqlx::query("DELETE FROM prism_plugins").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
-
+        sqlx::query("DELETE FROM prism_client_keys").execute(&self.pool).await.map_err(|e| StoreError::Internal(e.to_string()))?;
         for (id, provider) in &config.providers {
             self.upsert_provider(id, provider.clone()).await?;
         }
@@ -543,6 +601,9 @@ impl Store for PostgresStore {
         }
         for plugin in &config.plugins {
             self.upsert_plugin(&plugin.name, plugin.clone()).await?;
+        }
+        for client_key in &config.client_keys {
+            self.upsert_client_key(&client_key.name, client_key.clone()).await?;
         }
         self.set_auth(config.auth).await?;
         self.set_access_log(config.access_log).await?;

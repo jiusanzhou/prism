@@ -417,6 +417,43 @@ impl Store for FileStore {
         .await
     }
 
+    // Client Keys
+    async fn list_client_keys(&self) -> StoreResult<Vec<ClientKeyConfig>> {
+        let _guard = self.lock.read().await;
+        let config = self.load().await?;
+        Ok(config.client_keys)
+    }
+
+    async fn get_client_key(&self, name: &str) -> StoreResult<ClientKeyConfig> {
+        let _guard = self.lock.read().await;
+        let config = self.load().await?;
+        config
+            .client_keys
+            .into_iter()
+            .find(|k| k.name == name)
+            .ok_or_else(|| StoreError::NotFound(format!("client key '{}'", name)))
+    }
+
+    async fn upsert_client_key(&self, name: &str, key: ClientKeyConfig) -> StoreResult<()> {
+        let name = name.to_string();
+        self.modify(|config| {
+            if let Some(pos) = config.client_keys.iter().position(|k| k.name == name) {
+                config.client_keys[pos] = key;
+            } else {
+                config.client_keys.push(key);
+            }
+        })
+        .await
+    }
+
+    async fn delete_client_key(&self, name: &str) -> StoreResult<()> {
+        let name = name.to_string();
+        self.modify(|config| {
+            config.client_keys.retain(|k| k.name != name);
+        })
+        .await
+    }
+
     // Auth config (singleton)
     async fn get_auth(&self) -> StoreResult<AuthConfig> {
         let _guard = self.lock.read().await;

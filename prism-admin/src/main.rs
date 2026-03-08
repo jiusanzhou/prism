@@ -161,6 +161,12 @@ async fn main() {
         .route("/api/plugins/{name}", delete(api::plugins::delete_plugin))
         .route("/api/auth", get(api::auth::get_auth))
         .route("/api/auth", put(api::auth::update_auth))
+        // Client Keys
+        .route("/api/client-keys", get(api::client_keys::list_client_keys))
+        .route("/api/client-keys", post(api::client_keys::create_client_key))
+        .route("/api/client-keys/{name}", get(api::client_keys::get_client_key))
+        .route("/api/client-keys/{name}", put(api::client_keys::update_client_key))
+        .route("/api/client-keys/{name}", delete(api::client_keys::delete_client_key))
         .route("/api/access-log", get(api::access_log::get_access_log))
         .route("/api/access-log", put(api::access_log::update_access_log))
         .route("/api/status", get(api::status::get_status))
