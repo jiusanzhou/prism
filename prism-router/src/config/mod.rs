@@ -261,6 +261,11 @@ fn merge_configs(base: PrismConfig, overlay: PrismConfig) -> PrismConfig {
         } else {
             overlay.accounts
         },
+        model_aliases: {
+            let mut merged = base.model_aliases;
+            merged.extend(overlay.model_aliases);
+            merged
+        },
     }
 }
 

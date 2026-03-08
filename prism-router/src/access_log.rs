@@ -108,6 +108,8 @@ pub enum CommandOperator {
     RequestId,
     /// Downstream TLS version (TLSv1.2, TLSv1.3, etc.)
     DownstreamTlsVersion,
+    /// Original model name before alias resolution (if alias was applied)
+    OriginalModel,
 }
 
 impl CommandOperator {
@@ -159,6 +161,7 @@ impl CommandOperator {
             Self::PoolName => "pool_name".into(),
             Self::RequestId => "request_id".into(),
             Self::DownstreamTlsVersion => "downstream_tls_version".into(),
+            Self::OriginalModel => "original_model".into(),
         }
     }
 
@@ -365,6 +368,7 @@ fn parse_operator(token: &str) -> Option<CommandOperator> {
         "POOL_NAME" => Some(CommandOperator::PoolName),
         "REQUEST_ID" => Some(CommandOperator::RequestId),
         "DOWNSTREAM_TLS_VERSION" => Some(CommandOperator::DownstreamTlsVersion),
+        "ORIGINAL_MODEL" => Some(CommandOperator::OriginalModel),
         _ => None,
     }
 }
@@ -448,6 +452,8 @@ pub struct AccessLogData {
     pub request_id: Option<String>,
     /// Downstream TLS version.
     pub downstream_tls_version: Option<String>,
+    /// Original model name before alias resolution (if alias was applied).
+    pub original_model: Option<String>,
 }
 
 impl Default for AccessLogData {
@@ -497,6 +503,7 @@ impl Default for AccessLogData {
             pool_name: None,
             request_id: None,
             downstream_tls_version: None,
+            original_model: None,
         }
     }
 }
@@ -580,6 +587,7 @@ fn resolve_text(op: &CommandOperator, data: &AccessLogData) -> Option<String> {
         CommandOperator::PoolName => data.pool_name.clone(),
         CommandOperator::RequestId => data.request_id.clone(),
         CommandOperator::DownstreamTlsVersion => data.downstream_tls_version.clone(),
+        CommandOperator::OriginalModel => data.original_model.clone(),
     }
 }
 
@@ -749,6 +757,10 @@ fn resolve_json(op: &CommandOperator, data: &AccessLogData) -> Value {
             None => Value::Null,
         },
         CommandOperator::DownstreamTlsVersion => match &data.downstream_tls_version {
+            Some(v) => Value::String(v.clone()),
+            None => Value::Null,
+        },
+        CommandOperator::OriginalModel => match &data.original_model {
             Some(v) => Value::String(v.clone()),
             None => Value::Null,
         },
@@ -1003,6 +1015,7 @@ mod tests {
             pool_name: Some("default-pool".into()),
             request_id: Some("req-uuid-001".into()),
             downstream_tls_version: Some("TLSv1.3".into()),
+            original_model: None,
         }
     }
 
@@ -1146,6 +1159,7 @@ mod tests {
             "POOL_NAME",
             "REQUEST_ID",
             "DOWNSTREAM_TLS_VERSION",
+            "ORIGINAL_MODEL",
         ];
         for op_name in ops {
             let s = format!("%{}%", op_name);

@@ -118,6 +118,8 @@ pub struct ProxyContext {
     pub original_body_bytes: Option<Vec<u8>>,
     /// Client-requested model name extracted from request body.
     pub requested_model: Option<String>,
+    /// Original model name before alias resolution (set only when alias was applied).
+    pub original_model: Option<String>,
     /// Active concurrency guards — dropped when request completes.
     pub concurrency_guards: Vec<crate::ratelimit::concurrency::ConcurrencyGuard>,
     /// Whether X-Prism-Debug header was set on the request.
@@ -189,6 +191,7 @@ impl Default for ProxyContext {
             request_id: String::new(),
             retry_fallback_chain: Vec::new(),
             requested_model: None,
+            original_model: None,
             concurrency_guards: Vec::new(),
             debug_mode: false,
             route_strategy: None,
@@ -231,6 +234,8 @@ pub struct PrismProxy {
     pub prefix_cache: Arc<dyn prism_core::prefix_cache::PrefixCacheIndex>,
     /// Active health checker for upstream endpoints.
     pub health_checker: Option<Arc<crate::health::HealthChecker>>,
+    /// Model alias mapping for resolving client model names.
+    pub model_aliases: Arc<ArcSwap<std::collections::HashMap<String, String>>>,
 }
 
 impl PrismProxy {
@@ -253,6 +258,7 @@ impl PrismProxy {
             health_checker: None,
             inflight: Arc::new(prism_core::inflight::InFlightTracker::new()),
             prefix_cache: prism_core::prefix_cache::default_prefix_cache(),
+            model_aliases: Arc::new(ArcSwap::new(Arc::new(std::collections::HashMap::new()))),
         }
     }
 
@@ -279,6 +285,26 @@ impl PrismProxy {
             health_checker: None,
             inflight: Arc::new(prism_core::inflight::InFlightTracker::new()),
             prefix_cache: prism_core::prefix_cache::default_prefix_cache(),
+            model_aliases: Arc::new(ArcSwap::new(Arc::new(std::collections::HashMap::new()))),
+        }
+    }
+
+    /// Set model alias mapping (shared with AppState for hot-reload).
+    #[allow(dead_code)]
+    pub fn with_model_aliases(mut self, aliases: Arc<ArcSwap<std::collections::HashMap<String, String>>>) -> Self {
+        self.model_aliases = aliases;
+        self
+    }
+
+    /// Resolve a model name through alias mapping.
+    fn resolve_model_alias(&self, model: &str) -> String {
+        let aliases = self.model_aliases.load();
+        if let Some(resolved) = aliases.get(model) {
+            resolved.clone()
+        } else if let Some(wildcard) = aliases.get("*") {
+            wildcard.clone()
+        } else {
+            model.to_string()
         }
     }
 
@@ -715,8 +741,13 @@ impl ProxyHttp for PrismProxy {
                 ctx.bytes_received = Some(body_bytes.len() as u64);
                 if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
                     if let Some(model) = json.get("model").and_then(|m| m.as_str()) {
-                        ctx.requested_model = Some(model.to_string());
-                        debug!(model = %model, "Extracted model from request body");
+                        // Resolve model alias before storing
+                        let resolved = self.resolve_model_alias(model);
+                        if resolved != model {
+                            ctx.original_model = Some(model.to_string());
+                            debug!(original = %model, resolved = %resolved, "Resolved model alias");
+                        }
+                        ctx.requested_model = Some(resolved);
                     }
                 }
             }
@@ -1667,6 +1698,9 @@ impl ProxyHttp for PrismProxy {
         if ctx.debug_mode {
             let _ = upstream_response.insert_header("X-Prism-Request-Id", &ctx.request_id);
             let _ = upstream_response.insert_header("X-Prism-Model", ctx.requested_model.as_deref().unwrap_or("-"));
+            if let Some(ref original) = ctx.original_model {
+                let _ = upstream_response.insert_header("X-Prism-Original-Model", original);
+            }
             let _ = upstream_response.insert_header("X-Prism-Variant", ctx.selected_variant.as_deref().unwrap_or("-"));
             let _ = upstream_response.insert_header("X-Prism-Provider", ctx.selected_provider.as_deref().unwrap_or("-"));
             let _ = upstream_response.insert_header("X-Prism-Upstream-Model", ctx.upstream_model_name.as_deref().unwrap_or("-"));
@@ -2067,6 +2101,7 @@ impl ProxyHttp for PrismProxy {
                 pool_name: ctx.pool_name.clone(),
                 request_id: Some(ctx.request_id.clone()),
                 downstream_tls_version: None,
+                original_model: ctx.original_model.clone(),
             };
             logger.log(&data);
         }

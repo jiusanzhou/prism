@@ -26,6 +26,7 @@ pub struct RouteRequestBody {
     pub strategy: Option<String>,
     pub metadata: Option<RouteMetadataBody>,
     pub required_protocol: Option<String>,
+    pub model: Option<String>,
 }
 
 /// Simplified message for the API.
@@ -132,12 +133,15 @@ pub async fn route_handler(
         Some(_) => "pinned",
     };
 
+    // Resolve model alias if model is provided
+    let requested_model = body.model.map(|m| state.resolve_model_alias(&m));
+
     let request = RouteRequest {
         messages,
         strategy,
         metadata,
         analyze_context: None,
-        requested_model: None,
+        requested_model,
         inflight_snapshot: Some(state.inflight.snapshot()),
         prefix_cache_index: Some(state.prefix_cache.clone()),
         required_protocol: body.required_protocol,
