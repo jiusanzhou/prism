@@ -1054,11 +1054,10 @@ impl ProxyHttp for PrismProxy {
                     ..
                 }) = decision.pd_decision
                 {
-                    // Fire-and-forget prefill: pick one P from candidates (round-robin)
-                    let p_idx = if prefill_variant_ids.len() > 1 {
-                        (ctx.upstream_request_attempt_count as usize) % prefill_variant_ids.len()
-                    } else { 0 };
-                    let prefill_variant_id = &prefill_variant_ids[p_idx];
+                    // Fire-and-forget prefill: pick least-loaded P variant
+                    let prefill_variant_id = select_least_loaded(
+                        prefill_variant_ids, &self.inflight,
+                    );
                     let prefill_variant = router.registry.variants.get(prefill_variant_id);
                     if let Some(pv) = prefill_variant {
                         if let Some(ref purl) = pv.base_url {
@@ -2484,4 +2483,19 @@ mod tests {
             Some("deepseek-reasoner".to_string())
         );
     }
+}
+
+/// Select the variant with the fewest in-flight requests from a list.
+/// Falls back to first element if tracker has no data.
+fn select_least_loaded<'a>(
+    variant_ids: &'a [String],
+    tracker: &prism_core::inflight::InFlightTracker,
+) -> &'a String {
+    if variant_ids.len() <= 1 {
+        return &variant_ids[0];
+    }
+    variant_ids
+        .iter()
+        .min_by_key(|id| tracker.get(id))
+        .unwrap_or(&variant_ids[0])
 }
