@@ -35,7 +35,7 @@ interface ProviderForm {
   id: string; base_url: string; protocols: string[]; api_key: string; timeout_ms: string
   circuit_breaker_threshold: string; circuit_breaker_recovery_secs: string
   headers: { key: string; value: string }[]
-  provider_type: "api" | "k8s"
+  provider_type: "api" | "sidecar"
   discovery: {
     sidecar_url: string; cluster_name: string; namespace: string
     label_selector: string; enable_pd_filter: boolean; poll_interval_secs: string
@@ -105,15 +105,15 @@ function ProtocolsSelect({ value, onChange }: { value: string[]; onChange: (v: s
 }
 
 // ── Provider Type Selector ──
-function ProviderTypeSelect({ value, onChange }: { value: "api" | "k8s"; onChange: (v: "api" | "k8s") => void }) {
+function ProviderTypeSelect({ value, onChange }: { value: "api" | "sidecar"; onChange: (v: "api" | "sidecar") => void }) {
   return (
     <div>
       <Label>Type</Label>
-      <Select value={value} onValueChange={v => onChange(v as "api" | "k8s")}>
+      <Select value={value} onValueChange={v => onChange(v as "api" | "sidecar")}>
         <SelectTrigger><SelectValue /></SelectTrigger>
         <SelectContent>
           <SelectItem value="api">API Provider</SelectItem>
-          <SelectItem value="k8s">K8s Discovery</SelectItem>
+          <SelectItem value="sidecar">Sidecar Discovery</SelectItem>
         </SelectContent>
       </Select>
     </div>
@@ -262,7 +262,7 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
   if (loading) return <div className="flex items-center justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-[hsl(var(--muted-foreground))]" /></div>
   if (!provider) return <div className="text-center py-12 text-[hsl(var(--muted-foreground))]">Provider not found</div>
 
-  const isK8s = provider.provider_type === "k8s"
+  const isSidecar = provider.provider_type === "sidecar"
 
   return (
     <div>
@@ -272,17 +272,17 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-xl sm:text-2xl font-bold">{provider.id}</h1>
-            {isK8s && <Badge className="bg-purple-600/80 text-purple-100 hover:bg-purple-600/80">K8s</Badge>}
+            {isSidecar && <Badge className="bg-purple-600/80 text-purple-100 hover:bg-purple-600/80">Sidecar</Badge>}
             {provider.protocols.map(p => <Badge key={p} variant="secondary">{p}</Badge>)}
           </div>
-          <p className="text-sm text-[hsl(var(--muted-foreground))] truncate">{isK8s ? provider.discovery?.sidecar_url || "K8s discovery" : provider.base_url}</p>
+          <p className="text-sm text-[hsl(var(--muted-foreground))] truncate">{isSidecar ? provider.discovery?.sidecar_url || "K8s discovery" : provider.base_url}</p>
         </div>
         <Button variant="outline" size="sm" onClick={openProviderEdit}><Pencil className="h-3.5 w-3.5 mr-1.5" /> Edit</Button>
       </div>
 
       {/* Tabs */}
       <div className="flex gap-1 mb-4 border-b border-[hsl(var(--border))]">
-        {(isK8s ? [["overview", "Overview"]] as const : [["overview", "Overview"], ["accounts", `Accounts (${accounts.length})`]] as const).map(([key, label]) => (
+        {(isSidecar ? [["overview", "Overview"]] as const : [["overview", "Overview"], ["accounts", `Accounts (${accounts.length})`]] as const).map(([key, label]) => (
           <button key={key} onClick={() => setActiveTab(key)}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${activeTab === key ? "border-[hsl(var(--foreground))] text-[hsl(var(--foreground))]" : "border-transparent text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"}`}>{label}</button>
         ))}
@@ -292,9 +292,9 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
       {activeTab === "overview" && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <Card>
-            <CardHeader className="pb-3"><CardTitle className="text-sm">{isK8s ? "Discovery Configuration" : "Configuration"}</CardTitle></CardHeader>
+            <CardHeader className="pb-3"><CardTitle className="text-sm">{isSidecar ? "Discovery Configuration" : "Configuration"}</CardTitle></CardHeader>
             <CardContent className="space-y-3 text-sm">
-              {isK8s ? (<>
+              {isSidecar ? (<>
                 <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Sidecar URL</span><span className="font-mono text-xs truncate max-w-[200px]">{provider.discovery?.sidecar_url || "—"}</span></div>
                 <Separator />
                 <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">Cluster</span><span>{provider.discovery?.cluster_name || "—"}</span></div>
@@ -318,9 +318,9 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
               </>)}
             </CardContent>
           </Card>
-          {isK8s ? (
+          {isSidecar ? (
             <Card>
-              <CardHeader className="pb-3"><CardTitle className="text-sm">K8s Discovery</CardTitle></CardHeader>
+              <CardHeader className="pb-3"><CardTitle className="text-sm">Sidecar Discovery</CardTitle></CardHeader>
               <CardContent className="text-sm text-[hsl(var(--muted-foreground))]">
                 <p>Instances are auto-discovered from the Kubernetes cluster via the sidecar. Accounts are not applicable for K8s providers.</p>
                 <Separator className="my-3" />
@@ -345,7 +345,7 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
       )}
 
       {/* Accounts Tab */}
-      {activeTab === "accounts" && !isK8s && (
+      {activeTab === "accounts" && !isSidecar && (
         <div>
           <div className="flex items-center justify-between mb-4">
             <div><h2 className="text-lg font-semibold">Accounts</h2><p className="text-sm text-[hsl(var(--muted-foreground))]">API accounts and credentials for this provider</p></div>
@@ -411,11 +411,11 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
                 {providerForm.headers.map((h, i) => (<div key={i} className="flex gap-2 mb-2"><Input placeholder="Key" value={h.key} onChange={e => updateProviderHeader(i, "key", e.target.value)} className="flex-1" /><Input placeholder="Value" value={h.value} onChange={e => updateProviderHeader(i, "value", e.target.value)} className="flex-1" /><Button variant="ghost" size="icon" onClick={() => removeProviderHeader(i)}><X className="h-4 w-4" /></Button></div>))}
               </div>
             </>)}
-            {providerForm.provider_type === "k8s" && (
+            {providerForm.provider_type === "sidecar" && (
               <DiscoveryFields discovery={providerForm.discovery} onChange={discovery => setProviderForm(f => ({ ...f, discovery }))} />
             )}
           </div>
-          <DialogFooter><Button variant="outline" onClick={() => setProviderDialogOpen(false)}>Cancel</Button><Button onClick={saveProvider} disabled={providerSaving || (providerForm.provider_type === "k8s" && !providerForm.discovery.sidecar_url)}>{providerSaving ? "Saving..." : "Save"}</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => setProviderDialogOpen(false)}>Cancel</Button><Button onClick={saveProvider} disabled={providerSaving || (providerForm.provider_type === "sidecar" && !providerForm.discovery.sidecar_url)}>{providerSaving ? "Saving..." : "Save"}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -445,10 +445,10 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
 
 // ── Build provider JSON body from form ──
 function buildProviderBody(form: ProviderForm) {
-  if (form.provider_type === "k8s") {
+  if (form.provider_type === "sidecar") {
     const d = form.discovery
     return {
-      type: "k8s",
+      type: "sidecar",
       discovery: {
         sidecar_url: d.sidecar_url || undefined,
         cluster_name: d.cluster_name || undefined,
@@ -473,15 +473,15 @@ function buildProviderBody(form: ProviderForm) {
 
 // ── Map Provider to ProviderForm ──
 function providerToForm(p: Provider): ProviderForm {
-  const isK8s = p.provider_type === "k8s"
+  const isSidecar = p.provider_type === "sidecar"
   return {
     id: p.id, base_url: p.base_url || "", protocols: p.protocols || [],
     api_key: p.api_key || "", timeout_ms: p.timeout_ms?.toString() || "",
     circuit_breaker_threshold: (p.circuit_breaker_threshold ?? 5).toString(),
     circuit_breaker_recovery_secs: (p.circuit_breaker_recovery_secs ?? 30).toString(),
     headers: Object.entries(p.headers || {}).map(([key, value]) => ({ key, value })),
-    provider_type: isK8s ? "k8s" : "api",
-    discovery: isK8s && p.discovery ? {
+    provider_type: isSidecar ? "sidecar" : "api",
+    discovery: isSidecar && p.discovery ? {
       sidecar_url: p.discovery.sidecar_url || "",
       cluster_name: p.discovery.cluster_name || "",
       namespace: p.discovery.namespace || "",
@@ -531,7 +531,7 @@ export default function Providers() {
 
   if (selectedProvider) return <ProviderDetail providerId={selectedProvider} onBack={() => { setSelectedProvider(null); load() }} onUpdated={load} />
 
-  const filtered = search ? providers.filter(p => p.id.toLowerCase().includes(search.toLowerCase()) || p.protocols.some(pr => pr.toLowerCase().includes(search.toLowerCase())) || (p.provider_type === "k8s" && "k8s".includes(search.toLowerCase()))) : providers
+  const filtered = search ? providers.filter(p => p.id.toLowerCase().includes(search.toLowerCase()) || p.protocols.some(pr => pr.toLowerCase().includes(search.toLowerCase())) || (p.provider_type === "sidecar" && "sidecar".includes(search.toLowerCase()))) : providers
 
   if (loading) return <div className="flex items-center justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-[hsl(var(--muted-foreground))]" /></div>
 
@@ -561,13 +561,13 @@ export default function Providers() {
                   {filtered.map(p => {
                     const pa = accounts.filter(a => a.provider_id === p.id)
                     const en = pa.filter(a => a.enabled).length
-                    const pIsK8s = p.provider_type === "k8s"
+                    const pIsSidecar = p.provider_type === "sidecar"
                     return (
                       <tr key={p.id} className="border-b border-[hsl(var(--border))] last:border-0 hover:bg-[hsl(var(--accent))]/50 cursor-pointer transition-colors" onClick={() => setSelectedProvider(p.id)}>
-                        <td className="px-4 py-3 font-medium"><div className="flex items-center gap-2">{p.id}{pIsK8s && <Badge className="bg-purple-600/80 text-purple-100 hover:bg-purple-600/80 text-[10px]">K8s</Badge>}</div></td>
-                        <td className="px-4 py-3 hidden sm:table-cell"><span className="text-xs text-[hsl(var(--muted-foreground))] font-mono truncate max-w-[200px] block">{pIsK8s ? (p.discovery?.sidecar_url || "—") : (p.base_url || "—")}</span></td>
-                        <td className="px-4 py-3"><div className="flex gap-1 flex-wrap">{pIsK8s ? <span className="text-xs text-[hsl(var(--muted-foreground))] italic">discovery</span> : p.protocols.map(pr => <Badge key={pr} variant="outline" className="text-[10px]">{pr}</Badge>)}</div></td>
-                        <td className="px-4 py-3">{pIsK8s ? <span className="text-xs text-[hsl(var(--muted-foreground))] italic">n/a</span> : pa.length > 0 ? <span className="font-mono text-xs">{en}/{pa.length}</span> : <span className="text-xs text-[hsl(var(--muted-foreground))] italic">none</span>}</td>
+                        <td className="px-4 py-3 font-medium"><div className="flex items-center gap-2">{p.id}{pIsSidecar && <Badge className="bg-purple-600/80 text-purple-100 hover:bg-purple-600/80 text-[10px]">Sidecar</Badge>}</div></td>
+                        <td className="px-4 py-3 hidden sm:table-cell"><span className="text-xs text-[hsl(var(--muted-foreground))] font-mono truncate max-w-[200px] block">{pIsSidecar ? (p.discovery?.sidecar_url || "—") : (p.base_url || "—")}</span></td>
+                        <td className="px-4 py-3"><div className="flex gap-1 flex-wrap">{pIsSidecar ? <span className="text-xs text-[hsl(var(--muted-foreground))] italic">discovery</span> : p.protocols.map(pr => <Badge key={pr} variant="outline" className="text-[10px]">{pr}</Badge>)}</div></td>
+                        <td className="px-4 py-3">{pIsSidecar ? <span className="text-xs text-[hsl(var(--muted-foreground))] italic">n/a</span> : pa.length > 0 ? <span className="font-mono text-xs">{en}/{pa.length}</span> : <span className="text-xs text-[hsl(var(--muted-foreground))] italic">none</span>}</td>
                         <td className="px-4 py-3 hidden md:table-cell"><span className="text-xs text-[hsl(var(--muted-foreground))]">{p.circuit_breaker_threshold} / {p.circuit_breaker_recovery_secs}s</span></td>
                         <td className="px-4 py-3" onClick={e => e.stopPropagation()}><div className="flex justify-end gap-1">
                           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSelectedProvider(p.id)}><Pencil className="h-3.5 w-3.5" /></Button>
@@ -589,7 +589,7 @@ export default function Providers() {
           <DialogHeader><DialogTitle>New Provider</DialogTitle><DialogDescription>Add a new LLM provider</DialogDescription></DialogHeader>
           <div className="space-y-4">
             <div><Label>ID</Label><Input value={newForm.id} onChange={e => setNewForm(f => ({ ...f, id: e.target.value }))} placeholder="openai" /><p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Cannot be changed later</p></div>
-            <ProviderTypeSelect value={newForm.provider_type} onChange={provider_type => setNewForm(f => ({ ...f, provider_type, ...(provider_type === "k8s" ? { protocols: [], base_url: "", api_key: "" } : {}) }))} />
+            <ProviderTypeSelect value={newForm.provider_type} onChange={provider_type => setNewForm(f => ({ ...f, provider_type, ...(provider_type === "sidecar" ? { protocols: [], base_url: "", api_key: "" } : {}) }))} />
             {newForm.provider_type === "api" && (<>
               <div><Label>Base URL</Label><Input value={newForm.base_url} onChange={e => setNewForm(f => ({ ...f, base_url: e.target.value }))} placeholder="https://api.openai.com/v1" /></div>
               <div><Label>Protocols</Label><ProtocolsSelect value={newForm.protocols} onChange={protocols => setNewForm(f => ({ ...f, protocols }))} /></div>
@@ -597,11 +597,11 @@ export default function Providers() {
               <div className="grid grid-cols-2 gap-3"><div><Label>Timeout (ms)</Label><Input type="number" value={newForm.timeout_ms} onChange={e => setNewForm(f => ({ ...f, timeout_ms: e.target.value }))} placeholder="30000" /></div><div><Label>CB Threshold</Label><Input type="number" value={newForm.circuit_breaker_threshold} onChange={e => setNewForm(f => ({ ...f, circuit_breaker_threshold: e.target.value }))} /></div></div>
               <div><Label>CB Recovery (secs)</Label><Input type="number" value={newForm.circuit_breaker_recovery_secs} onChange={e => setNewForm(f => ({ ...f, circuit_breaker_recovery_secs: e.target.value }))} /></div>
             </>)}
-            {newForm.provider_type === "k8s" && (
+            {newForm.provider_type === "sidecar" && (
               <DiscoveryFields discovery={newForm.discovery} onChange={discovery => setNewForm(f => ({ ...f, discovery }))} />
             )}
           </div>
-          <DialogFooter><Button variant="outline" onClick={() => setNewDialogOpen(false)}>Cancel</Button><Button onClick={handleNewProvider} disabled={newSaving || !newForm.id || (newForm.provider_type === "k8s" && !newForm.discovery.sidecar_url)}>{newSaving ? "Creating..." : "Create"}</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => setNewDialogOpen(false)}>Cancel</Button><Button onClick={handleNewProvider} disabled={newSaving || !newForm.id || (newForm.provider_type === "sidecar" && !newForm.discovery.sidecar_url)}>{newSaving ? "Creating..." : "Create"}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 

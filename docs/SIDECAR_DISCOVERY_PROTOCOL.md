@@ -164,7 +164,7 @@ Prism performs P/D split routing: fire-and-forget to prefill, upstream proxy to 
 ```yaml
 providers:
   my-k8s-cluster:
-    type: k8s
+    type: sidecar
     discovery:
       sidecar_url: "http://localhost:9091"    # Required
       cluster_name: "staging"                  # Optional, for logging
@@ -177,11 +177,11 @@ Multiple providers can point to different sidecars:
 ```yaml
 providers:
   staging:
-    type: k8s
+    type: sidecar
     discovery:
       sidecar_url: "http://sidecar-staging:9091"
   production:
-    type: k8s
+    type: sidecar
     discovery:
       sidecar_url: "http://sidecar-prod:9091"
   cloud-apis:
@@ -192,7 +192,7 @@ providers:
 
 ## Connection Lifecycle
 
-1. Prism starts, scans providers for `type: k8s` with `discovery` config
+1. Prism starts, scans providers for `type: sidecar` with `discovery` config
 2. For each: spawns async task → connects SSE `/events`
 3. On SSE connect: immediately fetches `/prism` for initial state
 4. SSE events update registry in real-time

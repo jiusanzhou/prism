@@ -151,7 +151,7 @@ server:
 
 providers:
   $CONTEXT:
-    type: k8s
+    type: sidecar
     discovery:
       cluster_name: $CONTEXT
       sidecar_url: "http://127.0.0.1:$SIDECAR_PORT"

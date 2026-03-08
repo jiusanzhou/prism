@@ -125,10 +125,10 @@ async fn main() {
         config.server.discovery_interval_secs,
     );
 
-    // Start K8s discovery consumers for providers with type: k8s
+    // Start sidecar discovery consumers for providers with type: sidecar
     let mut _sidecar_handles = Vec::new();
     for (provider_id, provider_config) in &config.providers {
-        if provider_config.provider_type.as_deref() == Some("k8s") {
+        if provider_config.provider_type.as_deref() == Some("sidecar") {
             if let Some(ref disc_config) = provider_config.discovery {
                 let handle = sidecar_discovery::spawn_sidecar_discovery(
                     state.clone(),
