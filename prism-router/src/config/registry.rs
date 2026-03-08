@@ -736,6 +736,7 @@ pools:
             required_protocol: None,
             requested_model: Some("gpt-4o-mini".into()),
             inflight_snapshot: None,
+            prefix_cache_index: None,
         };
 
         let decision = router.route(&request).expect("routing should succeed");
@@ -785,6 +786,7 @@ pools:
             required_protocol: None,
             requested_model: None,
             inflight_snapshot: None,
+            prefix_cache_index: None,
         };
 
         let decision = router.route(&request).expect("routing should succeed");
@@ -840,6 +842,7 @@ pools:
             required_protocol: None,
             requested_model: None,
             inflight_snapshot: None,
+            prefix_cache_index: None,
         };
 
         let decision = router.route(&request).expect("routing should succeed");

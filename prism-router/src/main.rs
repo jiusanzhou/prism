@@ -376,6 +376,7 @@ async fn main() {
                 codec_registry,
             );
             prism_proxy = prism_proxy.with_inflight(Arc::clone(&state.inflight));
+            prism_proxy.prefix_cache = state.prefix_cache.clone();
             if let Some(limiter) = rate_limiter {
                 prism_proxy = prism_proxy.with_rate_limiter(limiter);
             }

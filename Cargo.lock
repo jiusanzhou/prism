@@ -2110,6 +2110,15 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "lru"
+version = "0.12.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "234cf4f4a04dc1f57e24b96cc0cd600cf2af460d4161ac5ecdd0af8e1f3b2a38"
+dependencies = [
+ "hashbrown 0.15.5",
+]
+
+[[package]]
+name = "lru"
 version = "0.16.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1dc47f592c06f33f8e3aea9591776ec7c9f9e4124778ff8a3c3b87159f7e593"
@@ -2698,7 +2707,7 @@ dependencies = [
  "httpdate",
  "indexmap 1.9.3",
  "log",
- "lru",
+ "lru 0.16.3",
  "once_cell",
  "parking_lot",
  "pingora-core",
@@ -2864,7 +2873,7 @@ checksum = "a1a89f8d8d48caadb7f711227e0754bac6495dd2d4ee03137cc2c6d46c3b0a9d"
 dependencies = [
  "crossbeam-queue",
  "log",
- "lru",
+ "lru 0.16.3",
  "parking_lot",
  "pingora-timeout",
  "thread_local",
@@ -3042,6 +3051,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "dashmap 5.5.3",
+ "lru 0.12.5",
  "rand 0.8.5",
  "regex",
  "serde",
@@ -3049,6 +3059,7 @@ dependencies = [
  "tracing",
  "ureq",
  "wasmtime",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -5884,6 +5895,12 @@ dependencies = [
  "unicode-xid",
  "wasmparser 0.244.0",
 ]
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdd20c5420375476fbd4394763288da7eb0cc0b8c11deed431a91562af7335d3"
 
 [[package]]
 name = "zerocopy"

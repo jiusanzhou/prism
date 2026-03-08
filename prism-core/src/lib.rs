@@ -11,3 +11,4 @@ pub mod selector;
 pub mod strategy;
 pub mod types;
 pub mod inflight;
+pub mod prefix_cache;

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
 use prism_core::inflight::InFlightTracker;
+use prism_core::prefix_cache::PrefixCacheIndex;
 use std::sync::{Arc, RwLock};
 
 use arc_swap::ArcSwap;
@@ -24,6 +25,8 @@ pub struct AppState {
     pub config_generation: Arc<AtomicU64>,
     /// In-flight request tracker for load-aware scheduling.
     pub inflight: Arc<InFlightTracker>,
+    /// Prefix cache index for cache-aware routing.
+    pub prefix_cache: Arc<dyn PrefixCacheIndex>,
     /// Per-provider discovery state: provider_id → models→instances.
     /// Written by individual sidecar consumers, read during registry rebuild.
     pub discovery_states: Arc<RwLock<HashMap<String, HashMap<String, Vec<serde_json::Value>>>>>,
@@ -38,6 +41,7 @@ impl AppState {
             config_path: Arc::new(config_path),
             config_generation: Arc::new(AtomicU64::new(0)),
             inflight: Arc::new(InFlightTracker::new()),
+            prefix_cache: prism_core::prefix_cache::default_prefix_cache(),
             discovery_states: Arc::new(RwLock::new(HashMap::new())),
         }
     }

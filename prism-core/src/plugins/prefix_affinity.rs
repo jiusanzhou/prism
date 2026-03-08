@@ -126,31 +126,61 @@ impl RoutingPlugin for PrefixAffinityPlugin {
             );
         }
 
+        // If prefix cache index is available, compute block-level matches
+        if let Some(index) = state.get::<std::sync::Arc<dyn crate::prefix_cache::PrefixCacheIndex>>("prefix_cache_index") {
+            let index = index.clone();
+            // Get model name from first candidate
+            let model = candidates.first().map(|c| c.model.id.as_str()).unwrap_or("");
+            // Collect candidate addresses (base_url)
+            let addrs: Vec<&str> = candidates.iter()
+                .filter_map(|c| c.variant.base_url.as_deref())
+                .collect();
+
+            if !addrs.is_empty() {
+                let prefix_match = index.match_prefix(prefix_text.as_bytes(), model, &addrs);
+                if !prefix_match.matches.is_empty() {
+                    state.set("prefix_match_ratios", prefix_match.matches.clone());
+                }
+                state.set("prefix_hashes_for_record", prefix_match.prefix_hashes);
+            }
+        }
+
         Ok(())
     }
 
     fn score(&self, state: &PluginState, candidate: &ModelCandidate) -> f32 {
-        // Only score when prefix was extracted; otherwise completely neutral
+        // Try prefix cache index match first (block-level, more precise)
+        if let Some(match_ratios) = state.get::<std::collections::HashMap<String, f32>>("prefix_match_ratios") {
+            if let Some(base_url) = &candidate.variant.base_url {
+                if let Some(&ratio) = match_ratios.get(base_url.as_str()) {
+                    let perf = &candidate.variant.performance;
+                    let overloaded = perf.kv_cache_usage > OVERLOAD_KV_THRESHOLD
+                        || perf.waiting_requests > OVERLOAD_WAITING_THRESHOLD;
+
+                    if overloaded {
+                        return ratio * 0.3; // reduce affinity for overloaded targets
+                    }
+                    return ratio; // 0.0–1.0 based on prefix match depth
+                }
+            }
+        }
+
+        // Fallback: jump consistent hash (static mapping)
         let target_variant_id = match state.get::<String>("prefix_target_variant_id") {
             Some(id) => id,
-            None => return 0.0, // no prefix extracted — zero contribution
+            None => return 0.0,
         };
 
         let is_target = candidate.variant.id == *target_variant_id;
         let perf = &candidate.variant.performance;
-
-        // Check if the target is overloaded
         let overloaded = perf.kv_cache_usage > OVERLOAD_KV_THRESHOLD
             || perf.waiting_requests > OVERLOAD_WAITING_THRESHOLD;
 
         if is_target {
-            if overloaded {
-                return 0.3; // reduce affinity for overloaded targets
-            }
+            if overloaded { return 0.3; }
             return 1.0;
         }
 
-        // Not the target — bonus for high prefix cache hit rate
         if perf.prefix_cache_hit_rate > 0.5 {
             return 0.5 + perf.prefix_cache_hit_rate * 0.3;
         }

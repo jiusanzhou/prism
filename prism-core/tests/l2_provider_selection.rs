@@ -229,6 +229,7 @@ fn simple_request(content: &str) -> RouteRequest {
         required_protocol: None,
         requested_model: None,
         inflight_snapshot: None,
+        prefix_cache_index: None,
     }
 }
 
@@ -473,6 +474,7 @@ fn test_geo_proximity_selection() {
         required_protocol: None,
         requested_model: None,
         inflight_snapshot: None,
+        prefix_cache_index: None,
     };
     let decision = router.route(&req).unwrap();
     assert_eq!(decision.selected_variant, "claude@fast");
@@ -492,6 +494,7 @@ fn test_geo_proximity_selection() {
         required_protocol: None,
         requested_model: None,
         inflight_snapshot: None,
+        prefix_cache_index: None,
     };
     let decision_eu = router.route(&req_eu).unwrap();
     assert_eq!(decision_eu.selected_variant, "claude@cheap");

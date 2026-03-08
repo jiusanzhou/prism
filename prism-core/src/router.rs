@@ -33,7 +33,7 @@ pub trait Router: Send + Sync {
 }
 
 /// Input to the router.
-#[derive(Debug, Clone)]
+
 pub struct RouteRequest {
     pub messages: Vec<ChatMessage>,
     pub strategy: Option<ModelSelectionStrategy>,
@@ -48,6 +48,19 @@ pub struct RouteRequest {
     pub requested_model: Option<String>,
     /// In-flight request counts per variant (for load-aware scheduling).
     pub inflight_snapshot: Option<std::collections::HashMap<String, u32>>,
+    /// Shared prefix cache index for cache-aware routing.
+    pub prefix_cache_index: Option<std::sync::Arc<dyn crate::prefix_cache::PrefixCacheIndex>>,
+}
+
+impl std::fmt::Debug for RouteRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RouteRequest")
+            .field("messages", &format!("[{} msgs]", self.messages.len()))
+            .field("requested_model", &self.requested_model)
+            .field("has_inflight", &self.inflight_snapshot.is_some())
+            .field("has_prefix_cache", &self.prefix_cache_index.is_some())
+            .finish()
+    }
 }
 
 /// Extra metadata attached to a routing request.
@@ -68,7 +81,8 @@ pub struct RouteMetadata {
 }
 
 /// Errors returned by the router.
-#[derive(Debug, Clone)]
+
+#[derive(Debug)]
 pub enum RouterError {
     NoCandidates,
     AllFiltered { reason: String },
@@ -458,11 +472,27 @@ impl Router for PrismRouter {
             state.set(crate::plugins::inflight_load::INFLIGHT_SNAPSHOT_KEY, snapshot.clone());
         }
 
+        // Inject prefix cache index for cache-aware routing
+        if let Some(ref index) = request.prefix_cache_index {
+            state.set::<std::sync::Arc<dyn crate::prefix_cache::PrefixCacheIndex>>("prefix_cache_index", index.clone());
+        }
+
         // Run the plugin framework
         let result = self.framework.run_routing(&mut state, &candidates)?;
 
         let winner = &candidates[result.selected_idx];
         let decision_time = start.elapsed();
+
+        // Record routing result in prefix cache index
+        if let Some(ref index) = request.prefix_cache_index {
+            if let Some(ref base_url) = winner.variant.base_url {
+                if let Some(hashes) = state.get::<Vec<u64>>("prefix_hashes_for_record") {
+                    if !hashes.is_empty() {
+                        index.record(hashes.as_slice(), &winner.model.id, base_url);
+                    }
+                }
+            }
+        }
 
         Ok(RoutingDecision {
             selected_variant: winner.variant.id.clone(),
@@ -632,6 +662,7 @@ mod tests {
             required_protocol: None,
             requested_model: None,
             inflight_snapshot: None,
+            prefix_cache_index: None,
         }
     }
 
@@ -681,6 +712,7 @@ mod tests {
             required_protocol: None,
             requested_model: None,
             inflight_snapshot: None,
+            prefix_cache_index: None,
         };
 
         let decision = router.route(&request).expect("pinned routing should succeed");
@@ -753,6 +785,7 @@ mod tests {
             required_protocol: None,
             requested_model: None,
             inflight_snapshot: None,
+            prefix_cache_index: None,
         };
 
         let decision = router.route(&request).expect("geo routing should succeed");
@@ -885,6 +918,7 @@ mod tests {
             required_protocol: None,
             requested_model: Some("model-cheap".into()),
             inflight_snapshot: None,
+            prefix_cache_index: None,
         };
 
         let decision = router.route(&request).expect("routing should succeed");
@@ -931,6 +965,7 @@ mod tests {
             required_protocol: None,
             requested_model: Some("model-a".into()),
             inflight_snapshot: None,
+            prefix_cache_index: None,
         };
 
         let decision = router.route(&request).expect("routing should succeed");
@@ -971,6 +1006,7 @@ mod tests {
             required_protocol: None,
             requested_model: Some("model-a".into()),
             inflight_snapshot: None,
+            prefix_cache_index: None,
         };
 
         let decision = router.route(&request).expect("routing should succeed");

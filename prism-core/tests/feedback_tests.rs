@@ -419,6 +419,7 @@ fn test_feedback_influences_routing() {
         required_protocol: None,
         requested_model: None,
         inflight_snapshot: None,
+        prefix_cache_index: None,
     };
 
     let decision = router.route(&req).expect("routing should succeed");

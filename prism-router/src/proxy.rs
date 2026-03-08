@@ -214,6 +214,8 @@ pub struct PrismProxy {
     pub auth: Option<crate::config::types::AuthConfig>,
     /// In-flight request tracker for load-aware scheduling.
     pub inflight: Arc<prism_core::inflight::InFlightTracker>,
+    /// Prefix cache index.
+    pub prefix_cache: Arc<dyn prism_core::prefix_cache::PrefixCacheIndex>,
     /// Active health checker for upstream endpoints.
     pub health_checker: Option<Arc<crate::health::HealthChecker>>,
 }
@@ -236,6 +238,7 @@ impl PrismProxy {
             auth: None,
             health_checker: None,
             inflight: Arc::new(prism_core::inflight::InFlightTracker::new()),
+            prefix_cache: prism_core::prefix_cache::default_prefix_cache(),
         }
     }
 
@@ -260,6 +263,7 @@ impl PrismProxy {
             auth: None,
             health_checker: None,
             inflight: Arc::new(prism_core::inflight::InFlightTracker::new()),
+            prefix_cache: prism_core::prefix_cache::default_prefix_cache(),
         }
     }
 
@@ -800,6 +804,7 @@ impl ProxyHttp for PrismProxy {
             analyze_context: None,
             requested_model: ctx.requested_model.clone(),
             inflight_snapshot: Some(self.inflight.snapshot()),
+            prefix_cache_index: Some(self.prefix_cache.clone()),
             required_protocol: if protocol_str != "unknown" {
                 Some(protocol_str.to_string())
             } else {

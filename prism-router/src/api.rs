@@ -139,6 +139,7 @@ pub async fn route_handler(
         analyze_context: None,
         requested_model: None,
         inflight_snapshot: Some(state.inflight.snapshot()),
+        prefix_cache_index: Some(state.prefix_cache.clone()),
         required_protocol: body.required_protocol,
     };
 

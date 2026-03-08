@@ -248,6 +248,7 @@ pub unsafe extern "C" fn prism_route(request: *const PrismRouteRequest) -> *mut 
         analyze_context,
         requested_model: None,
         inflight_snapshot: None,
+        prefix_cache_index: None,
         required_protocol,
     };
 
