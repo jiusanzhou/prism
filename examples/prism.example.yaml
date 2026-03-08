@@ -1,154 +1,140 @@
 # ════════════════════════════════════════════════════════════════
-# Prism Configuration Example
+# Prism Configuration — Complete Reference
 # ════════════════════════════════════════════════════════════════
-# 
-# Prism is an AI model router — intelligent routing, load balancing,
-# protocol conversion, and observability for LLM API requests.
 #
-# Default config path: configs/prism.yaml
-# Override with: prism-router --config /path/to/config.yaml
+# AI model router: routing, load balancing, P/D disaggregation,
+# protocol conversion, observability for LLM API requests.
+#
+# Usage: prism-router --config /path/to/config.yaml
+# Env vars: ${VAR_NAME} syntax supported in all string fields.
 # ════════════════════════════════════════════════════════════════
 
-# ── Server ──────────────────────────────────────────────────────
 server:
   listen: "0.0.0.0"
-  http_port: 8080        # REST API (health, metrics, admin)
-  grpc_port: 9090        # gRPC service
-  proxy_port: 8000       # LLM proxy endpoint (clients connect here)
+  http_port: 8080           # REST API + Admin UI
+  grpc_port: 9090           # gRPC routing service
+  proxy_port: 8000          # LLM proxy (clients connect here)
+  request_timeout_secs: 300
+  idle_timeout_secs: 90
+  keepalive_secs: 60
+  shutdown_timeout_secs: 30
+  max_request_body_bytes: 10485760
+  retry_on_5xx: true
+  retry_5xx_codes: [502, 503, 504]
+  # TLS termination (Prism as TLS endpoint)
+  # tls:
+  #   cert_path: /etc/prism/tls/cert.pem
+  #   key_path: /etc/prism/tls/key.pem
 
-# ── Providers ───────────────────────────────────────────────────
-# Each provider is an LLM API endpoint (OpenAI, Anthropic, self-hosted, etc.)
+# Simple auth allowlist (legacy). For multi-tenant, use client_keys.
+auth:
+  enabled: true
+  api_keys:
+    - "${PRISM_API_KEY}"
+
+# Per-key quota: QPM, daily tokens, concurrent, model ACL
+client_keys:
+  - key: "${TEAM_ALPHA_KEY}"
+    name: "Team Alpha"
+    enabled: true
+    allowed_models: []
+    quota:
+      max_requests_per_minute: 200
+      max_tokens_per_day: 5000000
+      max_concurrent: 20
+    metadata:
+      team: "alpha"
+      tier: "enterprise"
+  - key: "${TEAM_BETA_KEY}"
+    name: "Team Beta"
+    enabled: true
+    allowed_models: ["gpt-4o-mini", "qwen3-0.6b"]
+    quota:
+      max_requests_per_minute: 60
+      max_tokens_per_day: 500000
+      max_concurrent: 5
+
+# Client-facing name → internal model ID
+model_aliases:
+  gpt-4: qwen3-72b
+  gpt-4o: qwen3-72b
+  gpt-4o-mini: qwen3-0.6b
+  claude-sonnet: deepseek-r1
+  "*": qwen3-0.6b
+
+# Admin UI
+admin:
+  enabled: true
+  auth_token: "${PRISM_ADMIN_TOKEN}"
+
 providers:
   openai:
     base_url: "https://api.openai.com/v1"
-    api_key: "${OPENAI_API_KEY}"       # env var substitution
     protocols: ["openai"]
-    # timeout_ms: 30000
+    request_timeout_secs: 120
+    idle_timeout_secs: 30
 
   anthropic:
     base_url: "https://api.anthropic.com/v1"
-    api_key: "${ANTHROPIC_API_KEY}"
     protocols: ["anthropic"]
+    request_timeout_secs: 300
 
-  # Custom/self-hosted provider with custom auth headers
-  internal-llm:
-    base_url: "https://llm.internal.example.com/v1"
-    protocols: ["openai"]
-    headers:
-      x-api-key: "${INTERNAL_API_KEY}"
-      x-tenant-id: "team-alpha"
+  # Sidecar discovery (K8s inference cluster)
+  ai-infra-staging:
+    type: sidecar
+    discovery:
+      sidecar_url: "http://k8s-discovery-sidecar:9091"
+      cluster_name: ai-infra-staging
+      enable_pd_filter: true
+      poll_interval_secs: 30
 
-  # Azure OpenAI example
-  # azure-openai:
-  #   base_url: "https://my-resource.openai.azure.com/openai/deployments/gpt-4o"
-  #   api_key: "${AZURE_OPENAI_KEY}"
-  #   protocols: ["openai"]
+accounts:
+  - id: openai-main
+    provider_id: openai
+    api_key: "${OPENAI_API_KEY}"
+    enabled: true
+  - id: anthropic-main
+    provider_id: anthropic
+    api_key: "${ANTHROPIC_API_KEY}"
+    enabled: true
 
-# ── Models ──────────────────────────────────────────────────────
-# Model definitions with quality, capabilities, and pricing metadata.
-# Used by routing plugins to make intelligent decisions.
 models:
   - id: gpt-4o
     display_name: "GPT-4o"
-    quality_tier: premium
+    quality_tier: S
     capabilities:
-      max_tokens: 128000
+      max_context_window: 128000
       supports_streaming: true
-      supports_tools: true
+      supports_function_calling: true
       supports_vision: true
     pricing:
-      input_per_million: 2.50
-      output_per_million: 10.00
-    specialties: [CodeGeneration, Reasoning]
-
+      input_per_1m_tokens: 2.5
+      output_per_1m_tokens: 10.0
   - id: gpt-4o-mini
     display_name: "GPT-4o Mini"
-    quality_tier: standard
+    quality_tier: A
     capabilities:
-      max_tokens: 128000
-      supports_streaming: true
-      supports_tools: true
-    pricing:
-      input_per_million: 0.15
-      output_per_million: 0.60
-    specialties: [SimpleQA, Translation]
-
-  - id: claude-3.5-sonnet
-    display_name: "Claude 3.5 Sonnet"
-    quality_tier: premium
-    capabilities:
-      max_tokens: 200000
-      supports_streaming: true
-      supports_tools: true
-    pricing:
-      input_per_million: 3.00
-      output_per_million: 15.00
-    specialties: [CodeGeneration, Reasoning, Creative]
-
-  - id: deepseek-r1
-    display_name: "DeepSeek R1"
-    quality_tier: standard
-    capabilities:
-      max_tokens: 64000
+      max_context_window: 128000
       supports_streaming: true
     pricing:
-      input_per_million: 0.55
-      output_per_million: 2.19
-    specialties: [Reasoning, Math]
+      input_per_1m_tokens: 0.15
+      output_per_1m_tokens: 0.60
 
-# ── Variants ────────────────────────────────────────────────────
-# A variant binds a model to a provider (and optionally an account).
-# Multiple variants of the same model enable load balancing and failover.
 variants:
-  - id: gpt4o-openai
+  - id: gpt-4o@openai
     model_id: gpt-4o
     provider_id: openai
-    weight: 1.0
-
-  - id: gpt4o-mini-openai
+  - id: gpt-4o-mini@openai
     model_id: gpt-4o-mini
     provider_id: openai
-    weight: 1.0
 
-  - id: claude35-anthropic
-    model_id: claude-3.5-sonnet
-    provider_id: anthropic
-    weight: 1.0
-
-  - id: deepseek-r1-internal
-    model_id: deepseek-r1
-    provider_id: internal-llm
-    weight: 0.8
-    # Map to vendor-specific model name on upstream
-    upstream_model_name: "deepseek-reasoner"
-
-  # Multi-account example: two OpenAI accounts for the same model
-  # - id: gpt4o-openai-acct2
-  #   model_id: gpt-4o
-  #   provider_id: openai
-  #   account_id: "team-b"
-  #   weight: 0.5
-
-# ── Pools ───────────────────────────────────────────────────────
-# Group variants into pools for isolated routing domains.
 pools:
   - id: default
     name: "Default Pool"
     variants:
-      - gpt4o-openai
-      - gpt4o-mini-openai
-      - claude35-anthropic
-      - deepseek-r1-internal
+      - gpt-4o@openai
+      - gpt-4o-mini@openai
 
-  - id: premium-only
-    name: "Premium Models"
-    variants:
-      - gpt4o-openai
-      - claude35-anthropic
-
-# ── Routing ─────────────────────────────────────────────────────
-# Strategy: balanced (default), lowest_cost, highest_quality,
-#           lowest_latency, round_robin, weighted_random
 routing:
   default_strategy: balanced
   balanced:
@@ -156,111 +142,15 @@ routing:
     quality_weight: 0.5
     latency_weight: 0.2
 
-# ── Rate Limiting ───────────────────────────────────────────────
-# Sliding window rate limiter with header-based keys and overrides.
 rate_limits:
-  # Global rate limit (all requests share one counter)
-  - name: global-rate-limit
+  - name: global
     key_headers: []
     window_secs: 60
     max_requests: 1000
     enabled: true
 
-  # Per-API-key rate limit
-  - name: per-key-limit
-    key_headers: ["authorization"]
-    window_secs: 60
-    max_requests: 100
-    overrides:
-      # Premium keys get higher limits
-      - match_headers:
-          x-tier: "premium"
-        max_requests: 500
-      # Internal services are unlimited
-      - match_headers:
-          x-source: "internal"
-        max_requests: 999999
-
-# ── Codec (Protocol Conversion) ────────────────────────────────
-# Plugin chains for protocol conversion and cross-cutting concerns.
-codec:
-  default_inbound_protocol: openai
-
-  # Global chain — runs on ALL requests regardless of protocol.
-  # Use for metering, billing, security audit, token counting.
-  global_chain: []
-  # global_chain:
-  #   - usage-metering
-  #   - security-audit
-
-  # Provider-specific chains (higher priority than protocol pairs).
-  # provider_chains:
-  #   anthropic: [openai-to-anthropic]
-
-  # Protocol-pair chains.
-  # protocol_chains:
-  #   "openai:anthropic": [openai-to-anthropic-converter]
-
-# ── Plugins ─────────────────────────────────────────────────────
-# WASM or builtin plugins for routing, proxy, and analysis phases.
-# plugins:
-#   - name: openai-to-anthropic
-#     source:
-#       wasm: "./plugins/openai-compat.wasm"
-#     phases: ["proxy"]
-#     enabled: true
-#     priority: 100
-#     config:
-#       target_protocol: anthropic
-#
-#   - name: usage-metering
-#     source:
-#       wasm: "./plugins/metering.wasm"
-#     phases: ["proxy"]
-#     enabled: true
-#     config:
-#       billing_endpoint: "https://billing.internal/api/v1/usage"
-#
-#   - name: security-audit
-#     source:
-#       builtin: audit-logger
-#     phases: ["proxy"]
-#     enabled: true
-
-# ── Discovery ──────────────────────────────────────────────────
-# External discovery sources for dynamic provider/variant registration.
-# discoveries:
-#   - name: k8s-discovery
-#     type: wasm
-#     config:
-#       path: "./plugins/k8s-discovery.wasm"
-#       poll_interval_secs: 30
-
-# ── Access Log ──────────────────────────────────────────────────
-# Envoy-style configurable access logging with %COMMAND_OPERATOR% format.
-# 46 operators available — see docs for full list.
 access_log:
   enabled: true
-  output: both                # stdout | file | both
+  output: both
   file_path: /var/log/prism/access.log
-  format: json                # json | text
-
-  # JSON field selection (empty = all default fields).
-  # Uncomment to select specific fields:
-  # fields:
-  #   - "%START_TIME%"
-  #   - "%METHOD%"
-  #   - "%PATH%"
-  #   - "%RESPONSE_CODE%"
-  #   - "%RESPONSE_FLAGS%"
-  #   - "%DURATION_MS%"
-  #   - "%VARIANT%"
-  #   - "%PROVIDER%"
-  #   - "%MODEL%"
-  #   - "%DECISION_TIME_US%"
-  #   - "%DOWNSTREAM_REMOTE_ADDRESS%"
-  #   - "%REQUEST_ID%"
-  #   - "%ERROR%"
-
-  # Text format string (only used when format=text):
-  # text_format: "[%START_TIME%] \"%METHOD% %PATH%\" %RESPONSE_CODE% %RESPONSE_FLAGS% %DURATION_MS%ms variant=%VARIANT% provider=%PROVIDER% model=%MODEL% decision=%DECISION_TIME_US%us client=%DOWNSTREAM_REMOTE_ADDRESS% err=%ERROR%"
+  format: json

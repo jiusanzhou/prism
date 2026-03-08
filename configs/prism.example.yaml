@@ -1,75 +1,125 @@
-# Prism Gateway Configuration
+# ════════════════════════════════════════════════════════════════
+# Prism Configuration — Complete Reference
+# ════════════════════════════════════════════════════════════════
 #
-# Copy this file to prism.yaml and fill in your API keys.
-# Environment variables can be used: ${VAR_NAME}
+# AI model router: routing, load balancing, P/D disaggregation,
+# protocol conversion, observability for LLM API requests.
+#
+# Usage: prism-router --config /path/to/config.yaml
+# Env vars: ${VAR_NAME} syntax supported in all string fields.
+# ════════════════════════════════════════════════════════════════
 
 server:
-  http_port: 8080
+  listen: "0.0.0.0"
+  http_port: 8080           # REST API + Admin UI
+  grpc_port: 9090           # gRPC routing service
+  proxy_port: 8000          # LLM proxy (clients connect here)
+  request_timeout_secs: 300
+  idle_timeout_secs: 90
+  keepalive_secs: 60
+  shutdown_timeout_secs: 30
+  max_request_body_bytes: 10485760
+  retry_on_5xx: true
+  retry_5xx_codes: [502, 503, 504]
+  # TLS termination (Prism as TLS endpoint)
+  # tls:
+  #   cert_path: /etc/prism/tls/cert.pem
+  #   key_path: /etc/prism/tls/key.pem
 
-# ─── Providers ────────────────────────────────────────────
-# Each key is a provider ID used in variants below.
+# Simple auth allowlist (legacy). For multi-tenant, use client_keys.
+auth:
+  enabled: true
+  api_keys:
+    - "${PRISM_API_KEY}"
+
+# Per-key quota: QPM, daily tokens, concurrent, model ACL
+client_keys:
+  - key: "${TEAM_ALPHA_KEY}"
+    name: "Team Alpha"
+    enabled: true
+    allowed_models: []
+    quota:
+      max_requests_per_minute: 200
+      max_tokens_per_day: 5000000
+      max_concurrent: 20
+    metadata:
+      team: "alpha"
+      tier: "enterprise"
+  - key: "${TEAM_BETA_KEY}"
+    name: "Team Beta"
+    enabled: true
+    allowed_models: ["gpt-4o-mini", "qwen3-0.6b"]
+    quota:
+      max_requests_per_minute: 60
+      max_tokens_per_day: 500000
+      max_concurrent: 5
+
+# Client-facing name → internal model ID
+model_aliases:
+  gpt-4: qwen3-72b
+  gpt-4o: qwen3-72b
+  gpt-4o-mini: qwen3-0.6b
+  claude-sonnet: deepseek-r1
+  "*": qwen3-0.6b
+
+# Admin UI
+admin:
+  enabled: true
+  auth_token: "${PRISM_ADMIN_TOKEN}"
+
 providers:
   openai:
-    type: openai
-    api_key: ${OPENAI_API_KEY}           # set this env var
-    base_url: https://api.openai.com/v1
-    timeout_ms: 30000
-  deepseek:
-    type: deepseek
-    api_key: ${DEEPSEEK_API_KEY}         # set this env var
-    base_url: https://api.deepseek.com
-    timeout_ms: 30000
+    base_url: "https://api.openai.com/v1"
+    protocols: ["openai"]
+    request_timeout_secs: 120
+    idle_timeout_secs: 30
 
-# ─── Models ───────────────────────────────────────────────
-# Model definitions for the routing engine.
+  anthropic:
+    base_url: "https://api.anthropic.com/v1"
+    protocols: ["anthropic"]
+    request_timeout_secs: 300
+
+  # Sidecar discovery (K8s inference cluster)
+  ai-infra-staging:
+    type: sidecar
+    discovery:
+      sidecar_url: "http://k8s-discovery-sidecar:9091"
+      cluster_name: ai-infra-staging
+      enable_pd_filter: true
+      poll_interval_secs: 30
+
+accounts:
+  - id: openai-main
+    provider_id: openai
+    api_key: "${OPENAI_API_KEY}"
+    enabled: true
+  - id: anthropic-main
+    provider_id: anthropic
+    api_key: "${ANTHROPIC_API_KEY}"
+    enabled: true
+
 models:
   - id: gpt-4o
-    display_name: GPT-4o
+    display_name: "GPT-4o"
     quality_tier: S
     capabilities:
       max_context_window: 128000
-      max_output_tokens: 16384
       supports_streaming: true
       supports_function_calling: true
       supports_vision: true
-      supports_json_mode: true
     pricing:
       input_per_1m_tokens: 2.5
       output_per_1m_tokens: 10.0
-    specialties: [Reasoning, CodeGeneration]
-
   - id: gpt-4o-mini
-    display_name: GPT-4o Mini
+    display_name: "GPT-4o Mini"
     quality_tier: A
     capabilities:
       max_context_window: 128000
-      max_output_tokens: 16384
       supports_streaming: true
-      supports_function_calling: true
-      supports_vision: true
-      supports_json_mode: true
     pricing:
       input_per_1m_tokens: 0.15
-      output_per_1m_tokens: 0.6
-    specialties: [SimpleQA]
+      output_per_1m_tokens: 0.60
 
-  - id: deepseek-chat
-    display_name: DeepSeek V3
-    quality_tier: A
-    capabilities:
-      max_context_window: 128000
-      max_output_tokens: 8192
-      supports_streaming: true
-      supports_function_calling: true
-      supports_json_mode: true
-    pricing:
-      input_per_1m_tokens: 0.27
-      output_per_1m_tokens: 1.10
-    specialties: [Reasoning, CodeGeneration]
-
-# ─── Variants ─────────────────────────────────────────────
-# A variant ties a model to a specific provider.
-# Format: model_id@provider_id (convention, not enforced)
 variants:
   - id: gpt-4o@openai
     model_id: gpt-4o
@@ -77,24 +127,30 @@ variants:
   - id: gpt-4o-mini@openai
     model_id: gpt-4o-mini
     provider_id: openai
-  - id: deepseek-chat@deepseek
-    model_id: deepseek-chat
-    provider_id: deepseek
 
-# ─── Pools ────────────────────────────────────────────────
-# A pool groups variants that can be selected by the router.
 pools:
   - id: default
-    name: Default Pool
+    name: "Default Pool"
     variants:
       - gpt-4o@openai
       - gpt-4o-mini@openai
-      - deepseek-chat@deepseek
 
-# ─── Routing ──────────────────────────────────────────────
 routing:
   default_strategy: balanced
   balanced:
     cost_weight: 0.3
     quality_weight: 0.5
     latency_weight: 0.2
+
+rate_limits:
+  - name: global
+    key_headers: []
+    window_secs: 60
+    max_requests: 1000
+    enabled: true
+
+access_log:
+  enabled: true
+  output: both
+  file_path: /var/log/prism/access.log
+  format: json
