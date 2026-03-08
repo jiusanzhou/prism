@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Discovery Runner — loads WASM discovery plugins and runs them.
 //!
 //! Two modes:
@@ -31,7 +32,7 @@ enum DiscoveryPlugin {
 
 /// Build discovery plugins from config.
 fn load_discovery_plugins(config: &PrismConfig) -> Vec<(String, DiscoveryPlugin)> {
-    let mut plugins = Vec::new();
+    let plugins = Vec::new();
 
     for dc in config.all_discovery_configs() {
         if !dc.enabled {
@@ -67,8 +68,6 @@ fn load_discovery_plugins(config: &PrismConfig) -> Vec<(String, DiscoveryPlugin)
 
 /// Rebuild router from base config + discovery result, then swap.
 fn rebuild_and_swap(state: &AppState, event: &prism_core::discovery::DiscoveryEvent) {
-    use prism_core::discovery::DiscoveryEvent;
-
     let base_config = match load_config(&state.config_path) {
         Ok(c) => c,
         Err(e) => {

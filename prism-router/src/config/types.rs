@@ -476,7 +476,7 @@ pub struct ModelStrategyOverride {
     pub pool: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ResilienceConfig {
     #[serde(default)]
     pub retry: RetryConfig,
@@ -484,16 +484,6 @@ pub struct ResilienceConfig {
     pub circuit_breaker: CircuitBreakerConfig,
     #[serde(default)]
     pub timeout: TimeoutConfig,
-}
-
-impl Default for ResilienceConfig {
-    fn default() -> Self {
-        Self {
-            retry: RetryConfig::default(),
-            circuit_breaker: CircuitBreakerConfig::default(),
-            timeout: TimeoutConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1795,7 +1785,7 @@ pub struct ClientKeyConfig {
 }
 
 /// Quota limits for a client key.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ClientKeyQuotaConfig {
     /// Maximum requests per minute (0 = unlimited).
     #[serde(default)]
@@ -1809,17 +1799,6 @@ pub struct ClientKeyQuotaConfig {
     /// Maximum concurrent requests (0 = unlimited).
     #[serde(default)]
     pub max_concurrent: u32,
-}
-
-impl Default for ClientKeyQuotaConfig {
-    fn default() -> Self {
-        Self {
-            max_requests_per_minute: 0,
-            max_tokens_per_minute: 0,
-            max_tokens_per_day: 0,
-            max_concurrent: 0,
-        }
-    }
 }
 
 fn default_circuit_breaker_threshold() -> u32 {

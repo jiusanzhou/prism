@@ -176,7 +176,7 @@ mod tests {
         );
         // Score should be a valid value in [0.0, 1.0)
         assert!(
-            score1 >= 0.0 && score1 < 1.0,
+            (0.0..1.0).contains(&score1),
             "score should be in [0, 1), got {}",
             score1
         );

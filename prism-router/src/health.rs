@@ -1,3 +1,4 @@
+#![allow(dead_code, clippy::field_reassign_with_default)]
 //! Active health checking for upstream endpoints.
 //!
 //! Periodically probes endpoints to detect availability. Works alongside

@@ -2073,7 +2073,7 @@ mod tests {
             test_key.hash(&mut hasher);
             use std::hash::Hasher;
             let hash_val = hasher.finish();
-            if (hash_val as usize) % 2 == 0 {
+            if (hash_val as usize).is_multiple_of(2) {
                 key_to_overloaded = Some(test_key);
                 break;
             }

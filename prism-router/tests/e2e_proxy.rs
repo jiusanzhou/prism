@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! End-to-end integration tests for Prism.
 //!
 //! Tests the full routing pipeline:
@@ -1047,7 +1048,7 @@ mod provider_plugin_e2e {
     /// Verify that OpenAI-compat provider plugin sends Bearer auth header.
     #[tokio::test]
     async fn test_provider_plugin_openai_auth_e2e() {
-        let (port, _shutdown, capture) = start_capture_server().await;
+        let (port, _shutdown, _capture) = start_capture_server().await;
 
         // Build registry: openai-type provider → mock server
         let mut registry = InMemoryRegistry::new();
@@ -1121,7 +1122,7 @@ mod provider_plugin_e2e {
         });
 
         // Make a request through the full proxy pipeline
-        let client = reqwest::Client::new();
+        let _client = reqwest::Client::new();
         // Need to start actual proxy server for this — use the HTTP API route as proxy
         let router = PrismRouter::new(registry);
         let app = build_prism_app_with_state(AppState::new(router, PathBuf::from("e2e-test.yaml")));
@@ -1148,9 +1149,9 @@ mod provider_plugin_e2e {
     /// Verify that model name rewrite works end-to-end through mock server.
     #[tokio::test]
     async fn test_provider_plugin_model_rewrite_e2e() {
-        let (port, _shutdown, capture) = start_capture_server().await;
+        let (port, _shutdown, _capture) = start_capture_server().await;
 
-        let mut registry = build_test_registry_with_model_rewrite(port);
+        let registry = build_test_registry_with_model_rewrite(port);
         let router = PrismRouter::new(registry);
         let app = build_prism_app_with_state(AppState::new(router, PathBuf::from("e2e-test.yaml")));
 

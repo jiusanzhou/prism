@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -33,7 +34,6 @@ pub trait Router: Send + Sync {
 }
 
 /// Input to the router.
-
 pub struct RouteRequest {
     pub messages: Vec<ChatMessage>,
     pub strategy: Option<ModelSelectionStrategy>,
@@ -695,7 +695,7 @@ mod tests {
         assert_eq!(decision.selected_account, "account-a");
         assert_eq!(decision.selected_provider, "provider-a");
         assert!(!decision.reason.l1_model.is_empty());
-        assert!(decision.decision_time_us > 0 || decision.decision_time_us == 0);
+        // decision_time_us is u64, always >= 0
     }
 
     #[test]

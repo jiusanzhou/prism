@@ -1,3 +1,4 @@
+#![allow(dead_code, clippy::manual_strip)]
 //! Sidecar Discovery — connects to any discovery sidecar implementing the Prism
 //! Sidecar Discovery Protocol (SSE `/events` + HTTP `/prism`).
 //!
@@ -175,7 +176,7 @@ fn instances_to_discovery_result(
             let pod_name = inst
                 .pod_name
                 .clone()
-                .unwrap_or_else(|| inst.address.replace('.', "-").replace(':', "-"));
+                .unwrap_or_else(|| inst.address.replace(['.', ':'], "-"));
             let vid = format!("{}-{}", model_name, pod_name);
 
             let mut metadata = HashMap::new();

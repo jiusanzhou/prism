@@ -4,10 +4,7 @@
 //! This is the only built-in provider plugin — all other provider types (Azure,
 //! Bedrock, Anthropic, etc.) are implemented as WASM plugins.
 
-use super::{
-    AuthResult, ConfigField, ConfigFieldType, ProviderConfigSchema, ProviderPlugin,
-    ProviderRequestContext, UrlRewriteResult,
-};
+use super::{ConfigField, ConfigFieldType, ProviderConfigSchema, ProviderPlugin};
 use std::collections::HashMap;
 
 /// The built-in OpenAI-compatible provider plugin.
@@ -67,6 +64,7 @@ impl ProviderPlugin for OpenAICompatPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::ProviderRequestContext;
 
     fn make_ctx() -> ProviderRequestContext {
         ProviderRequestContext {

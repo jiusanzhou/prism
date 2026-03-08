@@ -150,6 +150,7 @@ pub struct ProxyContext {
     /// Last SSE data chunk timestamp (for idle timeout enforcement).
     pub last_data_chunk_at: Option<Instant>,
     /// Whether upstream 5xx triggered retry.
+    #[allow(dead_code)]
     pub retry_on_5xx: bool,
     /// Whether response_filter detected a retryable 5xx (used by error_while_proxy).
     pub should_retry_5xx: bool,
@@ -253,6 +254,7 @@ pub struct PrismProxy {
     /// Model alias mapping for resolving client model names.
     pub model_aliases: Arc<ArcSwap<std::collections::HashMap<String, String>>>,
     /// Whether to retry on upstream 5xx responses (from config).
+    #[allow(dead_code)]
     pub retry_on_5xx: bool,
     /// Which 5xx status codes trigger retry (from config).
     pub retry_5xx_codes: Vec<u16>,
@@ -1065,17 +1067,14 @@ impl ProxyHttp for PrismProxy {
                     // Fallback to provider auth
                     if ctx.upstream_auth.is_none() && ctx.upstream_custom_headers.is_empty() {
                         if let Some(p) = provider {
-                            match &p.auth {
-                                prism_core::types::AuthConfig::ApiKey { key, header } => {
-                                    ctx.upstream_auth = Some(key.clone());
-                                    ctx.upstream_auth_header = header.clone();
-                                }
-                                _ => {}
+                            if let prism_core::types::AuthConfig::ApiKey { key, header } = &p.auth {
+                                ctx.upstream_auth = Some(key.clone());
+                                ctx.upstream_auth_header = header.clone();
                             }
                         }
                     }
 
-                    let (host, port, use_tls) = Self::parse_upstream(&base_url)?;
+                    let (host, port, use_tls) = Self::parse_upstream(base_url)?;
                     info!(
                         variant = %variant_id,
                         provider = %provider_id,
@@ -1419,7 +1418,7 @@ impl ProxyHttp for PrismProxy {
                                     .unwrap_or("/v1/chat/completions")
                             );
                             let body = ctx.original_body_bytes.clone();
-                            let headers = ctx.provider_ctx.as_ref().and_then(|p| {
+                            let headers = ctx.provider_ctx.as_ref().map(|p| {
                                 let mut h = reqwest::header::HeaderMap::new();
                                 if let Some(ref key) = p.account_api_key {
                                     if let Ok(v) = reqwest::header::HeaderValue::from_str(&format!(
@@ -1437,7 +1436,7 @@ impl ProxyHttp for PrismProxy {
                                         h.insert(name, val);
                                     }
                                 }
-                                Some(h)
+                                h
                             });
 
                             info!(
@@ -2050,26 +2049,22 @@ impl ProxyHttp for PrismProxy {
                 ctx.outbound_protocol.as_deref().unwrap_or("-"),
             );
             if let Some(dt) = ctx.decision_time_us {
-                let _ =
-                    upstream_response.insert_header("X-Prism-Decision-Time-Us", &dt.to_string());
+                let _ = upstream_response.insert_header("X-Prism-Decision-Time-Us", dt.to_string());
             }
             if let Some(ref ttfb) = ctx.upstream_first_byte_at {
                 let ms = ttfb.duration_since(ctx.request_start).as_millis();
-                let _ =
-                    upstream_response.insert_header("X-Prism-Upstream-Ttfb-Ms", &ms.to_string());
+                let _ = upstream_response.insert_header("X-Prism-Upstream-Ttfb-Ms", ms.to_string());
             }
             let total_ms = ctx.request_start.elapsed().as_millis();
             let _ =
-                upstream_response.insert_header("X-Prism-Total-Latency-Ms", &total_ms.to_string());
+                upstream_response.insert_header("X-Prism-Total-Latency-Ms", total_ms.to_string());
             if !ctx.response_flags.is_empty() {
                 let _ =
-                    upstream_response.insert_header("X-Prism-Flags", &ctx.response_flags.join(","));
+                    upstream_response.insert_header("X-Prism-Flags", ctx.response_flags.join(","));
             }
             if !ctx.retry_fallback_chain.is_empty() {
-                let _ = upstream_response.insert_header(
-                    "X-Prism-Fallback-Chain",
-                    &ctx.retry_fallback_chain.join(","),
-                );
+                let _ = upstream_response
+                    .insert_header("X-Prism-Fallback-Chain", ctx.retry_fallback_chain.join(","));
             }
             let _ = upstream_response.insert_header(
                 "X-Prism-Conversion",
@@ -2081,11 +2076,11 @@ impl ProxyHttp for PrismProxy {
             );
             if let Some(bytes) = ctx.bytes_received {
                 let _ =
-                    upstream_response.insert_header("X-Prism-Bytes-Received", &bytes.to_string());
+                    upstream_response.insert_header("X-Prism-Bytes-Received", bytes.to_string());
             }
             let _ = upstream_response.insert_header(
                 "X-Prism-Attempt-Count",
-                &ctx.upstream_request_attempt_count.to_string(),
+                ctx.upstream_request_attempt_count.to_string(),
             );
         }
 
@@ -2533,6 +2528,22 @@ impl ProxyHttp for PrismProxy {
 }
 
 // ════════════════════════════════════════════════
+
+/// Select the variant with the fewest in-flight requests from a list.
+/// Falls back to first element if tracker has no data.
+fn select_least_loaded<'a>(
+    variant_ids: &'a [String],
+    tracker: &prism_core::inflight::InFlightTracker,
+) -> &'a String {
+    if variant_ids.len() <= 1 {
+        return &variant_ids[0];
+    }
+    variant_ids
+        .iter()
+        .min_by_key(|id| tracker.get(id))
+        .unwrap_or(&variant_ids[0])
+}
+
 // Tests
 // ════════════════════════════════════════════════
 
@@ -3089,7 +3100,7 @@ mod tests {
         // Simulate what response_filter does on 5xx with retryable conditions
         let status_code: u16 = 502;
         let retry_on_5xx = true;
-        let retry_5xx_codes = vec![502, 503, 504];
+        let retry_5xx_codes = [502, 503, 504];
 
         assert!(retry_on_5xx);
         assert!(retry_5xx_codes.contains(&status_code));
@@ -3126,7 +3137,7 @@ mod tests {
 
         let status_code: u16 = 502;
         let retry_on_5xx = true;
-        let retry_5xx_codes = vec![502, 503, 504];
+        let retry_5xx_codes = [502, 503, 504];
 
         let should_retry = retry_on_5xx
             && retry_5xx_codes.contains(&status_code)
@@ -3149,7 +3160,7 @@ mod tests {
 
         let status_code: u16 = 500; // 500 is not in default retry codes
         let retry_on_5xx = true;
-        let retry_5xx_codes = vec![502, 503, 504];
+        let retry_5xx_codes = [502, 503, 504];
 
         let should_retry = retry_on_5xx
             && retry_5xx_codes.contains(&status_code)
@@ -3172,7 +3183,7 @@ mod tests {
 
         let status_code: u16 = 502;
         let retry_on_5xx = false; // disabled!
-        let retry_5xx_codes = vec![502, 503, 504];
+        let retry_5xx_codes = [502, 503, 504];
 
         let should_retry = retry_on_5xx
             && retry_5xx_codes.contains(&status_code)
@@ -3211,19 +3222,4 @@ mod tests {
         // No more retries possible
         assert!(ctx.retry_fallback_chain.is_empty());
     }
-}
-
-/// Select the variant with the fewest in-flight requests from a list.
-/// Falls back to first element if tracker has no data.
-fn select_least_loaded<'a>(
-    variant_ids: &'a [String],
-    tracker: &prism_core::inflight::InFlightTracker,
-) -> &'a String {
-    if variant_ids.len() <= 1 {
-        return &variant_ids[0];
-    }
-    variant_ids
-        .iter()
-        .min_by_key(|id| tracker.get(id))
-        .unwrap_or(&variant_ids[0])
 }

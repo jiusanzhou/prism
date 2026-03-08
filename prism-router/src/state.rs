@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 use prism_core::inflight::InFlightTracker;
 use prism_core::prefix_cache::PrefixCacheIndex;
 use std::collections::HashMap;

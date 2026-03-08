@@ -78,8 +78,10 @@ impl Default for ProviderPluginRegistry {
 }
 
 #[cfg(test)]
+#[allow(clippy::absurd_extreme_comparisons)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
     use crate::provider::{AuthResult, ProviderRequestContext, UrlRewriteResult};
 
     /// A mock provider plugin for testing registration.

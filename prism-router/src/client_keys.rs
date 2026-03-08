@@ -287,6 +287,7 @@ impl ClientKeyManager {
     }
 
     /// Check if a model is allowed for the given key.
+    #[allow(dead_code)]
     pub fn check_model_access(&self, api_key: &str, model: &str) -> Result<(), ClientKeyError> {
         if let Some(state) = self.keys.get(api_key) {
             if !state.allowed_models.is_empty() && !state.allowed_models.contains(model) {
@@ -310,13 +311,12 @@ fn current_day_utc() -> u64 {
 fn maybe_reset_daily(tokens: &AtomicU64, day: &AtomicU64) {
     let today = current_day_utc();
     let stored = day.load(Ordering::Relaxed);
-    if today != stored {
-        if day
+    if today != stored
+        && day
             .compare_exchange(stored, today, Ordering::Relaxed, Ordering::Relaxed)
             .is_ok()
-        {
-            tokens.store(0, Ordering::Relaxed);
-        }
+    {
+        tokens.store(0, Ordering::Relaxed);
     }
 }
 
