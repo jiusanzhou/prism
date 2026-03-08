@@ -1,5 +1,5 @@
 # ─── Stage 1: Build ──────────────────────────────────────
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.88-bookworm AS builder
 
 # Install protoc for gRPC codegen
 RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler && rm -rf /var/lib/apt/lists/*
