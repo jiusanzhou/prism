@@ -386,6 +386,7 @@ async fn main() {
             prism_proxy = prism_proxy.with_timeouts(
                 config.server.request_timeout_secs,
                 config.server.keepalive_secs,
+                config.server.idle_timeout_secs,
             );
             if let Some(concurrency) = concurrency_limiter {
                 prism_proxy = prism_proxy.with_concurrency_limiter(concurrency);

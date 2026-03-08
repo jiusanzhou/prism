@@ -105,6 +105,8 @@ impl ConfigSource for EnvSource {
                                 headers: HashMap::new(),
                                 circuit_breaker_threshold: 5,
                                 circuit_breaker_recovery_secs: 30,
+                                request_timeout_secs: None,
+                                idle_timeout_secs: None,
                             });
 
                     match field {

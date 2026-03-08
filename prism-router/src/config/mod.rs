@@ -433,6 +433,8 @@ mod tests {
                 aws_secret_key: None,
                 circuit_breaker_threshold: 5,
                 circuit_breaker_recovery_secs: 30,
+                request_timeout_secs: None,
+                idle_timeout_secs: None,
                 discovery: None,
             },
         );
@@ -453,6 +455,8 @@ mod tests {
                 aws_secret_key: None,
                 circuit_breaker_threshold: 5,
                 circuit_breaker_recovery_secs: 30,
+                request_timeout_secs: None,
+                idle_timeout_secs: None,
                 discovery: None,
             },
         );

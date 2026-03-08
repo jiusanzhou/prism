@@ -27,6 +27,18 @@ pub fn build_registry(config: &PrismConfig) -> InMemoryRegistry {
     let mut registry = InMemoryRegistry::new();
     registry.apply_discovery(&result);
 
+    // Inject per-provider timeout config into Provider.metadata
+    for (id, pc) in &config.providers {
+        if let Some(provider) = registry.providers.get_mut(id) {
+            if let Some(t) = pc.request_timeout_secs {
+                provider.metadata.insert("request_timeout_secs".into(), t.to_string());
+            }
+            if let Some(t) = pc.idle_timeout_secs {
+                provider.metadata.insert("idle_timeout_secs".into(), t.to_string());
+            }
+        }
+    }
+
     // Inject accounts from config (AccountConfig) into registry.
     // These override the default "{provider_id}-acct" accounts created by
     // static discovery, carrying the real API keys and per-account settings.

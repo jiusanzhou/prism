@@ -112,6 +112,11 @@ pub struct ServerConfig {
     /// Graceful shutdown timeout in seconds (default: 30).
     #[serde(default = "default_shutdown_timeout_secs")]
     pub shutdown_timeout_secs: u64,
+    /// Streaming idle timeout in seconds (default: 90).
+    /// Maximum time between SSE data chunks before considering the upstream dead.
+    /// Applies only to streaming responses.
+    #[serde(default = "default_idle_timeout_secs")]
+    pub idle_timeout_secs: u64,
     /// Maximum request body size in bytes (0 = unlimited, default: 10MB).
     #[serde(default = "default_max_request_body_bytes")]
     pub max_request_body_bytes: u64,
@@ -133,6 +138,7 @@ impl Default for ServerConfig {
             request_timeout_secs: default_request_timeout_secs(),
             keepalive_secs: default_keepalive_secs(),
             shutdown_timeout_secs: default_shutdown_timeout_secs(),
+            idle_timeout_secs: default_idle_timeout_secs(),
             max_request_body_bytes: default_max_request_body_bytes(),
             cors_origins: default_cors_origins(),
             discovery_interval_secs: None,
@@ -158,6 +164,10 @@ fn default_keepalive_secs() -> u64 {
 
 fn default_shutdown_timeout_secs() -> u64 {
     30
+}
+
+fn default_idle_timeout_secs() -> u64 {
+    90
 }
 
 fn default_listen() -> String {
@@ -241,6 +251,14 @@ pub struct ProviderConfig {
     /// Circuit breaker: seconds to wait before half-open probe.
     #[serde(default = "default_circuit_breaker_recovery_secs")]
     pub circuit_breaker_recovery_secs: u64,
+    /// Per-provider upstream request timeout in seconds.
+    /// Overrides the global `server.request_timeout_secs`.
+    #[serde(default)]
+    pub request_timeout_secs: Option<u64>,
+    /// Per-provider streaming idle timeout in seconds.
+    /// Maximum time between SSE data chunks before considering upstream dead.
+    #[serde(default)]
+    pub idle_timeout_secs: Option<u64>,
 }
 
 /// Discovery configuration embedded in a provider.

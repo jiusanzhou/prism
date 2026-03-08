@@ -132,6 +132,14 @@ pub struct ProxyContext {
     pub route_candidates: Option<u32>,
     /// Pool name associated with the selected variant.
     pub pool_name: Option<String>,
+    /// Resolved upstream timeout for this request (per-provider or global).
+    pub resolved_timeout_secs: Option<u64>,
+    /// Resolved idle timeout for this request (per-provider or global).
+    pub resolved_idle_timeout_secs: Option<u64>,
+    /// Last SSE data chunk timestamp (for idle timeout enforcement).
+    pub last_data_chunk_at: Option<Instant>,
+    /// Whether upstream 5xx triggered retry.
+    pub retry_on_5xx: bool,
 }
 
 
@@ -187,6 +195,10 @@ impl Default for ProxyContext {
             route_score: None,
             route_candidates: None,
             pool_name: None,
+            resolved_timeout_secs: None,
+            resolved_idle_timeout_secs: None,
+            last_data_chunk_at: None,
+            retry_on_5xx: false,
         }
     }
 }
@@ -204,6 +216,7 @@ pub struct PrismProxy {
     /// Active concurrency guards for current requests (stored per-request in ctx).
     /// Upstream request timeout in seconds.
     pub request_timeout_secs: u64,
+    pub idle_timeout_secs: u64,
     /// TCP keepalive interval in seconds (0 = disabled).
     pub keepalive_secs: u64,
     /// Maximum request body size in bytes (0 = unlimited).
@@ -232,6 +245,7 @@ impl PrismProxy {
             access_logger: None,
             concurrency_limiter: None,
             request_timeout_secs: 300,
+            idle_timeout_secs: 90,
             keepalive_secs: 60,
             max_request_body_bytes: 0,
             circuit_breaker: None,
@@ -257,6 +271,7 @@ impl PrismProxy {
             access_logger: None,
             concurrency_limiter: None,
             request_timeout_secs: 300,
+            idle_timeout_secs: 90,
             keepalive_secs: 60,
             max_request_body_bytes: 0,
             circuit_breaker: None,
@@ -303,8 +318,9 @@ impl PrismProxy {
     }
 
     /// Set timeout configuration.
-    pub fn with_timeouts(mut self, request_timeout_secs: u64, keepalive_secs: u64) -> Self {
+    pub fn with_timeouts(mut self, request_timeout_secs: u64, keepalive_secs: u64, idle_timeout_secs: u64) -> Self {
         self.request_timeout_secs = request_timeout_secs;
+        self.idle_timeout_secs = idle_timeout_secs;
         self.keepalive_secs = keepalive_secs;
         self
     }
@@ -978,6 +994,15 @@ impl ProxyHttp for PrismProxy {
 
                 ctx.upstream_base_url = Some(base_url.to_string());
 
+                // Resolve per-provider timeouts (provider metadata override > global)
+                if let Some(p) = provider {
+                    ctx.resolved_timeout_secs = p.metadata.get("request_timeout_secs")
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .or(Some(self.request_timeout_secs));
+                    ctx.resolved_idle_timeout_secs = p.metadata.get("idle_timeout_secs")
+                        .and_then(|v| v.parse::<u64>().ok());
+                }
+
                 // ── Build ProviderRequestContext for provider plugin ──
                 {
                     let provider_type = provider
@@ -1183,7 +1208,8 @@ impl ProxyHttp for PrismProxy {
 
                 let mut peer = HttpPeer::new((host, port), use_tls, host.to_string());
                 peer.options.connection_timeout = Some(std::time::Duration::from_secs(5));
-                peer.options.read_timeout = Some(std::time::Duration::from_secs(self.request_timeout_secs));
+                let timeout = ctx.resolved_timeout_secs.unwrap_or(self.request_timeout_secs);
+                peer.options.read_timeout = Some(std::time::Duration::from_secs(timeout));
                 peer.options.write_timeout = Some(std::time::Duration::from_secs(10));
                 // Support HTTP/2 and HTTP/1.1 via ALPN negotiation
                 // Note: some upstream gateways close connection on H2,
@@ -1600,6 +1626,43 @@ impl ProxyHttp for PrismProxy {
             }
         }
 
+        // ── 5xx detection: record health feedback for circuit breaker + health checker ──
+        let status_code = upstream_response.status.as_u16();
+        ctx.response_status = Some(status_code);
+        if status_code >= 500 {
+            ctx.response_flags.push("5xx".to_string());
+
+            if let (Some(ref variant_id), Some(ref provider_id)) =
+                (&ctx.selected_variant, &ctx.selected_provider)
+            {
+                // Record passive health failure → circuit breaker will trip after threshold
+                if let Some(ref cb) = self.circuit_breaker {
+                    cb.record_failure(provider_id);
+                    warn!(
+                        variant = %variant_id,
+                        provider = %provider_id,
+                        status = status_code,
+                        "Upstream 5xx — recorded failure for circuit breaker"
+                    );
+                }
+
+                // Mark variant unhealthy for health checker (passive feedback)
+                if let Some(ref hc) = self.health_checker {
+                    hc.record_failure(variant_id, &format!("upstream {}",  status_code));
+                }
+            }
+
+            // If we have retry candidates left AND response body hasn't started streaming,
+            // attempt failover on the next request to a different variant.
+            // Note: Pingora doesn't support mid-response retry, so we rely on
+            // circuit breaker + health checker to avoid the bad variant on subsequent requests.
+        } else if let Some(ref provider_id) = ctx.selected_provider {
+            // Record success for circuit breaker recovery
+            if let Some(ref cb) = self.circuit_breaker {
+                cb.record_success(provider_id);
+            }
+        }
+
         // ── X-Prism-Debug response headers ──
         if ctx.debug_mode {
             let _ = upstream_response.insert_header("X-Prism-Request-Id", &ctx.request_id);
@@ -1687,8 +1750,30 @@ impl ProxyHttp for PrismProxy {
     where
         Self::CTX: Send + Sync,
     {
+        // Track response body chunks for byte counting + idle timeout
+        if let Some(ref chunk) = body {
+            if !chunk.is_empty() {
+                *ctx.bytes_sent.get_or_insert(0) += chunk.len() as u64;
+                ctx.last_data_chunk_at = Some(Instant::now());
+            }
+        }
+
+        // Determine idle timeout for streaming responses.
+        // Return value tells Pingora: "wait at most this long for the next chunk".
+        let idle_timeout = if !end_of_stream {
+            let idle_secs = ctx.resolved_idle_timeout_secs
+                .unwrap_or(self.idle_timeout_secs);
+            if idle_secs > 0 {
+                Some(std::time::Duration::from_secs(idle_secs))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         if !ctx.needs_conversion {
-            return Ok(None);
+            return Ok(idle_timeout);
         }
 
         let is_streaming = ctx
@@ -1775,7 +1860,7 @@ impl ProxyHttp for PrismProxy {
             }
         }
 
-        Ok(None)
+        Ok(idle_timeout)
     }
 
     /// Connection failure handler — mark retryable if fallback chain has candidates.

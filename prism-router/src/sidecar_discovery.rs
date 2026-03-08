@@ -85,6 +85,7 @@ struct SSEEvent {
     models: HashMap<String, Vec<SidecarInstance>>,
 }
 
+
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 struct SidecarInstance {
     address: String,
