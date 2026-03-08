@@ -155,8 +155,16 @@ impl ClientKeyManager {
         Some(Self { keys })
     }
 
-    /// Validate a client key for the given model.
-    /// Quota checks use per-model quota if configured, else global.
+    /// Lightweight check: key exists and is enabled. No quota enforcement.
+    /// Use this in request_filter before model is known.
+    pub fn validate_key_exists(&self, api_key: &str) -> Result<ClientKeyRef, ClientKeyError> {
+        let state = self.keys.get(api_key).ok_or(ClientKeyError::InvalidKey)?;
+        if !state.config.enabled { return Err(ClientKeyError::InvalidKey); }
+        Ok(ClientKeyRef { name: state.config.name.clone(), key: api_key.to_string() })
+    }
+
+    /// Full validation: key + model ACL + QPM + daily tokens + concurrent.
+    /// Call after model is known (post body-read).
     pub fn validate_key(
         &self,
         api_key: &str,

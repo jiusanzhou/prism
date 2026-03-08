@@ -595,7 +595,8 @@ impl ProxyHttp for PrismProxy {
                 let api_key = {
                     let auth = self.auth.as_ref();
                     let header_name = auth.map(|a| a.header.as_str()).unwrap_or("authorization");
-                    let strip_prefix = auth.and_then(|a| a.strip_prefix.as_deref());
+                    let strip_prefix = auth.and_then(|a| a.strip_prefix.as_deref())
+                        .or(Some("Bearer "));  // Default: strip "Bearer " prefix
                     let header_val = ctx.request_headers_snapshot
                         .iter()
                         .find(|(k, _)| k == header_name)
@@ -608,17 +609,32 @@ impl ProxyHttp for PrismProxy {
                     }
                 };
 
-                // Validate key without model (model checked after body read)
-                match ckm.validate_key(api_key, None) {
-                    Ok((key_ref, guard)) => {
+                // Phase 1: only check key exists + enabled (quota deferred to after body read)
+                match ckm.validate_key_exists(api_key) {
+                    Ok(key_ref) => {
                         ctx.client_key_name = Some(key_ref.name);
                         ctx.client_key = Some(key_ref.key);
-                        ctx.client_key_guard = guard;
-                        debug!(client_key = %api_key, "Client key quota check passed");
+                        debug!(client_key = %api_key, "Client key exists check passed");
                     }
                     Err(crate::client_keys::ClientKeyError::InvalidKey) => {
-                        // Key not in client_keys config — might still be valid
-                        // via plain auth.keys allowlist. Let it through.
+                        // When client_keys are configured, unknown/disabled keys are rejected.
+                        // (Legacy auth.api_keys is checked separately above — if it passed,
+                        //  we already returned Ok. If client_keys is the only auth, reject.)
+                        warn!(path = %path, "Invalid or disabled client key");
+                        ctx.response_flags.push("CA".to_string());
+                        let mut header = pingora::http::ResponseHeader::build(401, None).unwrap();
+                        header.insert_header("Content-Type", "application/json").unwrap();
+                        let body = serde_json::json!({
+                            "error": {
+                                "type": "authentication_error",
+                                "message": "Invalid API key",
+                                "code": "invalid_api_key",
+                            }
+                        });
+                        session.set_keepalive(None);
+                        session.write_response_header(Box::new(header), true).await.ok();
+                        session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                        return Ok(true);
                     }
                     Err(crate::client_keys::ClientKeyError::RateLimited { retry_after_secs }) => {
                         warn!(path = %path, "Client key QPM quota exceeded");
@@ -900,33 +916,63 @@ impl ProxyHttp for PrismProxy {
             ctx.request_body_received_at = Some(Instant::now());
         }
 
-        // ── Client key: model access check (after body read) ──
+        // ── Client key: full quota validation (after body read → model is known) ──
         if let (Some(ref ckm), Some(ref client_key), Some(ref model)) =
             (&self.client_key_manager, &ctx.client_key, &ctx.requested_model)
         {
-            if let Err(crate::client_keys::ClientKeyError::ModelNotAllowed { model: denied_model }) =
-                ckm.check_model_access(client_key, model)
-            {
-                warn!(
-                    client_key_name = ?ctx.client_key_name,
-                    model = %denied_model,
-                    "Client key model access denied"
-                );
-                ctx.response_flags.push("CM".to_string());
-
-                let mut header = pingora::http::ResponseHeader::build(403, None).unwrap();
-                header.insert_header("Content-Type", "application/json").unwrap();
-                let body = serde_json::json!({
-                    "error": {
-                        "type": "model_access_denied",
-                        "message": format!("Model '{}' is not allowed for this API key", denied_model),
-                        "code": "model_not_allowed",
-                    }
-                });
-                session.set_keepalive(None);
-                session.write_response_header(Box::new(header), true).await.ok();
-                session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
-                return Ok(true);
+            match ckm.validate_key(client_key, Some(model.as_str())) {
+                Ok((_key_ref, guard)) => {
+                    ctx.client_key_guard = guard;
+                    debug!(client_key = %client_key, model = %model, "Client key full quota check passed");
+                }
+                Err(crate::client_keys::ClientKeyError::ModelNotAllowed { model: denied_model }) => {
+                    warn!(client_key_name = ?ctx.client_key_name, model = %denied_model, "Client key model access denied");
+                    ctx.response_flags.push("CM".to_string());
+                    let mut header = pingora::http::ResponseHeader::build(403, None).unwrap();
+                    header.insert_header("Content-Type", "application/json").unwrap();
+                    let body = serde_json::json!({"error":{"type":"model_access_denied","message":format!("Model '{}' not allowed for this key", denied_model),"code":"model_not_allowed"}});
+                    session.set_keepalive(None);
+                    session.write_response_header(Box::new(header), true).await.ok();
+                    session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                    return Ok(true);
+                }
+                Err(crate::client_keys::ClientKeyError::RateLimited { retry_after_secs }) => {
+                    warn!(client_key_name = ?ctx.client_key_name, model = %model, "Client key QPM exceeded");
+                    ctx.response_flags.push("CQ".to_string());
+                    let mut header = pingora::http::ResponseHeader::build(429, None).unwrap();
+                    header.insert_header("Retry-After", retry_after_secs.to_string()).unwrap();
+                    header.insert_header("Content-Type", "application/json").unwrap();
+                    let body = serde_json::json!({"error":{"type":"quota_exceeded","message":"QPM quota exceeded","code":"qpm_exceeded","retry_after":retry_after_secs}});
+                    session.set_keepalive(None);
+                    session.write_response_header(Box::new(header), true).await.ok();
+                    session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                    return Ok(true);
+                }
+                Err(crate::client_keys::ClientKeyError::ConcurrencyExhausted { current, limit }) => {
+                    warn!(client_key_name = ?ctx.client_key_name, model = %model, current, limit, "Concurrent limit exceeded");
+                    ctx.response_flags.push("CC".to_string());
+                    let mut header = pingora::http::ResponseHeader::build(429, None).unwrap();
+                    header.insert_header("Content-Type", "application/json").unwrap();
+                    let body = serde_json::json!({"error":{"type":"concurrency_exceeded","message":format!("Concurrent limit ({}/{}) exceeded", current, limit),"code":"concurrency_exceeded"}});
+                    session.set_keepalive(None);
+                    session.write_response_header(Box::new(header), true).await.ok();
+                    session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                    return Ok(true);
+                }
+                Err(crate::client_keys::ClientKeyError::TokenBudgetExhausted) => {
+                    warn!(client_key_name = ?ctx.client_key_name, model = %model, "Daily token budget exhausted");
+                    ctx.response_flags.push("CT".to_string());
+                    let mut header = pingora::http::ResponseHeader::build(429, None).unwrap();
+                    header.insert_header("Content-Type", "application/json").unwrap();
+                    let body = serde_json::json!({"error":{"type":"token_budget_exhausted","message":"Daily token budget exhausted","code":"token_budget_exhausted"}});
+                    session.set_keepalive(None);
+                    session.write_response_header(Box::new(header), true).await.ok();
+                    session.write_response_body(Some(Bytes::from(body.to_string())), true).await.ok();
+                    return Ok(true);
+                }
+                Err(crate::client_keys::ClientKeyError::InvalidKey) => {
+                    // Should not happen (already validated in request_filter)
+                }
             }
         }
 
