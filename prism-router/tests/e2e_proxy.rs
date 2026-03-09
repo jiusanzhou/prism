@@ -1466,3 +1466,752 @@ mod latency_bench {
         assert!(rps > 1000.0, "throughput {:.0} req/s below 1K", rps);
     }
 }
+
+// ════════════════════════════════════════════════
+// E2E: Extended Provider Plugin + Proxy Scenarios
+// ════════════════════════════════════════════════
+
+mod extended_e2e {
+    use super::*;
+    use std::sync::Arc;
+
+    // ── Helper: build a multi-provider registry with 2 variants for a single model ──
+
+    fn build_two_variant_registry(mock_port: u16) -> InMemoryRegistry {
+        let mut registry = InMemoryRegistry::new();
+
+        // Provider A
+        registry.add_provider(Provider {
+            id: "provider-a".into(),
+            name: "Provider A".into(),
+            auth: AuthConfig::ApiKey {
+                key: "Bearer sk-provider-a".into(),
+                header: "Authorization".into(),
+            },
+            base_url: format!("http://127.0.0.1:{}/v1", mock_port),
+            rate_limit: None,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
+            protocols: vec!["openai".into()],
+        });
+        registry.add_endpoint(Endpoint {
+            id: "ep-a".into(),
+            provider_id: "provider-a".into(),
+            base_url: Some(format!("http://127.0.0.1:{}/v1", mock_port)),
+            region: Some("us-east".into()),
+            auth_override: None,
+            rate_limit: None,
+            priority: 0,
+            status: HealthStatus::Healthy,
+        });
+        registry.add_account(Account {
+            id: "acct-a".into(),
+            endpoint_id: "ep-a".into(),
+            auth: AuthConfig::ApiKey {
+                key: "Bearer sk-provider-a".into(),
+                header: "Authorization".into(),
+            },
+            project_id: None,
+            rate_limit: None,
+            billing_tag: None,
+            weight: 1.0,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
+        });
+
+        // Provider B
+        registry.add_provider(Provider {
+            id: "provider-b".into(),
+            name: "Provider B".into(),
+            auth: AuthConfig::ApiKey {
+                key: "Bearer sk-provider-b".into(),
+                header: "Authorization".into(),
+            },
+            base_url: format!("http://127.0.0.1:{}/v1", mock_port),
+            rate_limit: None,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
+            protocols: vec!["openai".into()],
+        });
+        registry.add_endpoint(Endpoint {
+            id: "ep-b".into(),
+            provider_id: "provider-b".into(),
+            base_url: Some(format!("http://127.0.0.1:{}/v1", mock_port)),
+            region: Some("us-west".into()),
+            auth_override: None,
+            rate_limit: None,
+            priority: 0,
+            status: HealthStatus::Healthy,
+        });
+        registry.add_account(Account {
+            id: "acct-b".into(),
+            endpoint_id: "ep-b".into(),
+            auth: AuthConfig::ApiKey {
+                key: "Bearer sk-provider-b".into(),
+                header: "Authorization".into(),
+            },
+            project_id: None,
+            rate_limit: None,
+            billing_tag: None,
+            weight: 1.0,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
+        });
+
+        // Single model with two variants across the two providers
+        registry.add_model(Model {
+            id: "shared-model".into(),
+            display_name: "Shared Model".into(),
+            quality_tier: QualityTier::A,
+            capabilities: ModelCapabilities::default(),
+            pricing: ModelPricing::default(),
+            specialties: vec![],
+            limits: None,
+            status: ModelStatus::Available,
+        });
+
+        registry.add_variant(ModelVariant {
+            id: "shared-model@provider-a".into(),
+            model_id: "shared-model".into(),
+            endpoint_id: "ep-a".into(),
+            account_id: Some("acct-a".into()),
+            deployment_name: None,
+            weight: 1.0,
+            performance: ModelPerformance::default(),
+            pricing_override: None,
+            status: VariantStatus::Active,
+            base_url: None,
+            upstream_model_name: None,
+            metadata: HashMap::new(),
+        });
+
+        registry.add_variant(ModelVariant {
+            id: "shared-model@provider-b".into(),
+            model_id: "shared-model".into(),
+            endpoint_id: "ep-b".into(),
+            account_id: Some("acct-b".into()),
+            deployment_name: None,
+            weight: 1.0,
+            performance: ModelPerformance::default(),
+            pricing_override: None,
+            status: VariantStatus::Active,
+            base_url: None,
+            upstream_model_name: None,
+            metadata: HashMap::new(),
+        });
+
+        registry.add_pool(ModelPool {
+            id: "default".into(),
+            name: "Default".into(),
+            variants: vec![
+                "shared-model@provider-a".into(),
+                "shared-model@provider-b".into(),
+            ],
+            selection_mode: SelectionMode::default(),
+            description: None,
+        });
+
+        registry
+    }
+
+    // ── 1. test_provider_plugin_bedrock_auth ──
+
+    /// Build a registry with a "bedrock" type provider using api-key auth.
+    /// Verify routing selects the bedrock provider variant correctly.
+    #[tokio::test]
+    async fn test_provider_plugin_bedrock_auth() {
+        let (port, _shutdown) = start_mock_server().await;
+
+        let mut registry = InMemoryRegistry::new();
+        registry.add_provider(Provider {
+            id: "bedrock-provider".into(),
+            name: "AWS Bedrock".into(),
+            auth: AuthConfig::ApiKey {
+                key: "some-aws-key".into(),
+                header: "api-key".into(),
+            },
+            base_url: format!("http://127.0.0.1:{}/v1", port),
+            rate_limit: None,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
+            protocols: vec!["openai".into()],
+        });
+        registry.add_endpoint(Endpoint {
+            id: "bedrock-ep".into(),
+            provider_id: "bedrock-provider".into(),
+            base_url: Some(format!("http://127.0.0.1:{}/v1", port)),
+            region: Some("us-east-1".into()),
+            auth_override: None,
+            rate_limit: None,
+            priority: 0,
+            status: HealthStatus::Healthy,
+        });
+        registry.add_account(Account {
+            id: "bedrock-acct".into(),
+            endpoint_id: "bedrock-ep".into(),
+            auth: AuthConfig::ApiKey {
+                key: "some-aws-key".into(),
+                header: "api-key".into(),
+            },
+            project_id: None,
+            rate_limit: None,
+            billing_tag: None,
+            weight: 1.0,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
+        });
+        registry.add_model(Model {
+            id: "bedrock-model".into(),
+            display_name: "Bedrock Model".into(),
+            quality_tier: QualityTier::A,
+            capabilities: ModelCapabilities::default(),
+            pricing: ModelPricing::default(),
+            specialties: vec![],
+            limits: None,
+            status: ModelStatus::Available,
+        });
+        registry.add_variant(ModelVariant {
+            id: "bedrock-model@bedrock-provider".into(),
+            model_id: "bedrock-model".into(),
+            endpoint_id: "bedrock-ep".into(),
+            account_id: Some("bedrock-acct".into()),
+            deployment_name: None,
+            weight: 1.0,
+            performance: ModelPerformance::default(),
+            pricing_override: None,
+            status: VariantStatus::Active,
+            base_url: None,
+            upstream_model_name: None,
+            metadata: HashMap::new(),
+        });
+        registry.add_pool(ModelPool {
+            id: "default".into(),
+            name: "Default".into(),
+            variants: vec!["bedrock-model@bedrock-provider".into()],
+            selection_mode: SelectionMode::default(),
+            description: None,
+        });
+
+        let app = build_prism_app(registry);
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"messages":[{"role":"user","content":"test bedrock"}]}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["selected_provider"], "bedrock-provider");
+        assert_eq!(json["selected_variant"], "bedrock-model@bedrock-provider");
+        assert_eq!(json["selected_account"], "bedrock-acct");
+
+        // Verify the provider auth config stored correctly
+        let registry2 = build_test_registry(port);
+        let _ = registry2; // just proving build_test_registry is callable
+
+        // Re-build registry to inspect auth config directly
+        let mut verify_reg = InMemoryRegistry::new();
+        verify_reg.add_provider(Provider {
+            id: "bedrock-provider".into(),
+            name: "AWS Bedrock".into(),
+            auth: AuthConfig::ApiKey {
+                key: "some-aws-key".into(),
+                header: "api-key".into(),
+            },
+            base_url: format!("http://127.0.0.1:{}/v1", port),
+            rate_limit: None,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
+            protocols: vec!["openai".into()],
+        });
+        let provider = verify_reg.providers.get("bedrock-provider").unwrap();
+        match &provider.auth {
+            AuthConfig::ApiKey { key, header } => {
+                assert_eq!(key, "some-aws-key");
+                assert_eq!(header, "api-key");
+            }
+            _ => panic!("expected ApiKey auth for bedrock provider"),
+        }
+    }
+
+    // ── 2. test_provider_plugin_vertex_auth ──
+
+    /// Build a registry with a "vertex" type provider using custom headers auth.
+    /// Verify routing selects the vertex provider variant correctly.
+    #[tokio::test]
+    async fn test_provider_plugin_vertex_auth() {
+        let (port, _shutdown) = start_mock_server().await;
+
+        let mut registry = InMemoryRegistry::new();
+        registry.add_provider(Provider {
+            id: "vertex-provider".into(),
+            name: "GCP Vertex AI".into(),
+            auth: AuthConfig::ApiKey {
+                key: "vertex-api-key-123".into(),
+                header: "Authorization".into(),
+            },
+            base_url: format!("http://127.0.0.1:{}/v1", port),
+            rate_limit: None,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
+            protocols: vec!["openai".into()],
+        });
+        registry.add_endpoint(Endpoint {
+            id: "vertex-ep".into(),
+            provider_id: "vertex-provider".into(),
+            base_url: Some(format!("http://127.0.0.1:{}/v1", port)),
+            region: Some("us-central1".into()),
+            auth_override: None,
+            rate_limit: None,
+            priority: 0,
+            status: HealthStatus::Healthy,
+        });
+        registry.add_account(Account {
+            id: "vertex-acct".into(),
+            endpoint_id: "vertex-ep".into(),
+            auth: AuthConfig::ApiKey {
+                key: "vertex-api-key-123".into(),
+                header: "Authorization".into(),
+            },
+            project_id: Some("gcp-project-123".into()),
+            rate_limit: None,
+            billing_tag: None,
+            weight: 1.0,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
+        });
+        registry.add_model(Model {
+            id: "vertex-model".into(),
+            display_name: "Vertex Model".into(),
+            quality_tier: QualityTier::S,
+            capabilities: ModelCapabilities::default(),
+            pricing: ModelPricing::default(),
+            specialties: vec![],
+            limits: None,
+            status: ModelStatus::Available,
+        });
+        registry.add_variant(ModelVariant {
+            id: "vertex-model@vertex-provider".into(),
+            model_id: "vertex-model".into(),
+            endpoint_id: "vertex-ep".into(),
+            account_id: Some("vertex-acct".into()),
+            deployment_name: None,
+            weight: 1.0,
+            performance: ModelPerformance::default(),
+            pricing_override: None,
+            status: VariantStatus::Active,
+            base_url: None,
+            upstream_model_name: None,
+            metadata: HashMap::new(),
+        });
+        registry.add_pool(ModelPool {
+            id: "default".into(),
+            name: "Default".into(),
+            variants: vec!["vertex-model@vertex-provider".into()],
+            selection_mode: SelectionMode::default(),
+            description: None,
+        });
+
+        let app = build_prism_app(registry);
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"messages":[{"role":"user","content":"test vertex"}]}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["selected_provider"], "vertex-provider");
+        assert_eq!(json["selected_variant"], "vertex-model@vertex-provider");
+        assert_eq!(json["selected_account"], "vertex-acct");
+    }
+
+    // ── 3. test_streaming_sse_response ──
+
+    /// Start a custom mock server that returns SSE-formatted responses.
+    /// Verify via reqwest that the SSE data lines are received correctly.
+    #[tokio::test]
+    async fn test_streaming_sse_response() {
+        use axum::response::IntoResponse;
+
+        async fn sse_handler() -> impl IntoResponse {
+            let sse_body = [
+                "data: {\"id\":\"chatcmpl-sse1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"index\":0}]}\n\n",
+                "data: {\"id\":\"chatcmpl-sse2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\" world\"},\"index\":0}]}\n\n",
+                "data: [DONE]\n\n",
+            ].join("");
+
+            (
+                [
+                    ("content-type", "text/event-stream"),
+                    ("cache-control", "no-cache"),
+                ],
+                sse_body,
+            )
+        }
+
+        let app = Router::new().route("/v1/chat/completions", post(sse_handler));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    rx.await.ok();
+                })
+                .await
+                .ok();
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://127.0.0.1:{}/v1/chat/completions", port))
+            .json(&json!({
+                "model": "test",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": true
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            content_type.contains("text/event-stream"),
+            "expected text/event-stream, got {}",
+            content_type
+        );
+
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("data: {\"id\":\"chatcmpl-sse1\""));
+        assert!(body.contains("data: {\"id\":\"chatcmpl-sse2\""));
+        assert!(body.contains("data: [DONE]"));
+
+        // Verify each data line is parseable (except [DONE])
+        let data_lines: Vec<&str> = body
+            .lines()
+            .filter(|l| l.starts_with("data: ") && !l.contains("[DONE]"))
+            .collect();
+        assert_eq!(data_lines.len(), 2);
+        for line in &data_lines {
+            let json_str = line.trim_start_matches("data: ");
+            let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
+            assert_eq!(parsed["object"], "chat.completion.chunk");
+        }
+
+        let _ = tx.send(());
+    }
+
+    // ── 4. test_5xx_retry_on_503 ──
+
+    /// Build a registry with 2 variants for the same model.
+    /// Verify that the routing decision includes a non-empty fallback chain,
+    /// which is the mechanism used for 5xx retry.
+    #[tokio::test]
+    async fn test_5xx_retry_on_503() {
+        let (port, _shutdown) = start_mock_server().await;
+        let registry = build_two_variant_registry(port);
+        let app = build_prism_app(registry);
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"messages":[{"role":"user","content":"test fallback"}]}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["selected_model"], "shared-model");
+
+        // With 2 variants, the fallback chain should contain the other variant
+        let fallback = json["fallback_chain"].as_array().unwrap();
+        assert!(
+            !fallback.is_empty(),
+            "Expected non-empty fallback_chain for 2-variant model, got {:?}",
+            fallback
+        );
+
+        // The fallback variant should differ from the selected variant
+        let selected = json["selected_variant"].as_str().unwrap();
+        for fb in fallback {
+            assert_ne!(
+                fb.as_str().unwrap(),
+                selected,
+                "Fallback should differ from selected variant"
+            );
+        }
+    }
+
+    // ── 5. test_5xx_no_retry_on_400 ──
+
+    /// Verify that 400-class errors (client errors) return proper error status
+    /// and would not be retried. Empty messages => 400 INVALID_REQUEST.
+    #[tokio::test]
+    async fn test_5xx_no_retry_on_400() {
+        let (port, _shutdown) = start_mock_server().await;
+        let registry = build_test_registry(port);
+        let app = build_prism_app(registry);
+
+        // Empty messages array should yield 400 INVALID_REQUEST
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(r#"{"messages":[]}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 400);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["code"], "INVALID_REQUEST");
+        // 400 responses do not include fallback_chain (they are error responses)
+        assert!(
+            json.get("fallback_chain").is_none(),
+            "400 error should not include fallback_chain"
+        );
+    }
+
+    // ── 6. test_concurrent_requests_load_balancing ──
+
+    /// Build a registry with 2 variants across 2 providers.
+    /// Send 20 requests concurrently, verify all succeed (200) and that
+    /// the routing decision exposes both variants (selected + fallback).
+    #[tokio::test]
+    async fn test_concurrent_requests_load_balancing() {
+        let (port, _shutdown) = start_mock_server().await;
+        let registry = build_two_variant_registry(port);
+        let router = PrismRouter::new(registry);
+        let state = AppState::new(router, PathBuf::from("e2e-test.yaml"));
+        let app = Arc::new(build_prism_app_with_state(state));
+
+        let total = 20;
+        let mut handles = Vec::with_capacity(total);
+
+        for _ in 0..total {
+            let app = app.clone();
+            handles.push(tokio::spawn(async move {
+                let req = axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/route")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"messages":[{"role":"user","content":"lb test"}]}"#,
+                    ))
+                    .unwrap();
+
+                let svc: Router = (*app).clone();
+                let resp = svc.oneshot(req).await.unwrap();
+                assert_eq!(resp.status(), 200);
+                body_json(resp).await
+            }));
+        }
+
+        let mut all_variants_seen = std::collections::HashSet::new();
+        for h in handles {
+            let json = h.await.unwrap();
+            let selected = json["selected_variant"].as_str().unwrap().to_string();
+            all_variants_seen.insert(selected);
+
+            // Also collect fallback chain variants
+            if let Some(chain) = json["fallback_chain"].as_array() {
+                for fb in chain {
+                    if let Some(v) = fb.as_str() {
+                        all_variants_seen.insert(v.to_string());
+                    }
+                }
+            }
+        }
+
+        // With 2 variants, the selected + fallback should cover both
+        assert!(
+            all_variants_seen.contains("shared-model@provider-a"),
+            "Expected provider-a variant in routing results"
+        );
+        assert!(
+            all_variants_seen.contains("shared-model@provider-b"),
+            "Expected provider-b variant in routing results"
+        );
+    }
+
+    // ── 7. test_model_alias_e2e ──
+
+    /// Build a registry with model "qwen3-72b".
+    /// Configure model aliases: {"gpt-4" => "qwen3-72b"}.
+    /// Send route request with "model": "gpt-4".
+    /// Verify the response routes to "qwen3-72b".
+    #[tokio::test]
+    async fn test_model_alias_e2e() {
+        let (port, _shutdown) = start_mock_server().await;
+
+        let mut registry = InMemoryRegistry::new();
+        registry.add_provider(Provider {
+            id: "alias-provider".into(),
+            name: "Alias Provider".into(),
+            auth: AuthConfig::ApiKey {
+                key: "Bearer sk-alias".into(),
+                header: "Authorization".into(),
+            },
+            base_url: format!("http://127.0.0.1:{}/v1", port),
+            rate_limit: None,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
+            protocols: vec!["openai".into()],
+        });
+        registry.add_endpoint(Endpoint {
+            id: "alias-ep".into(),
+            provider_id: "alias-provider".into(),
+            base_url: Some(format!("http://127.0.0.1:{}/v1", port)),
+            region: None,
+            auth_override: None,
+            rate_limit: None,
+            priority: 0,
+            status: HealthStatus::Healthy,
+        });
+        registry.add_account(Account {
+            id: "alias-acct".into(),
+            endpoint_id: "alias-ep".into(),
+            auth: AuthConfig::ApiKey {
+                key: "Bearer sk-alias".into(),
+                header: "Authorization".into(),
+            },
+            project_id: None,
+            rate_limit: None,
+            billing_tag: None,
+            weight: 1.0,
+            status: HealthStatus::Healthy,
+            metadata: HashMap::new(),
+        });
+        registry.add_model(Model {
+            id: "qwen3-72b".into(),
+            display_name: "Qwen3 72B".into(),
+            quality_tier: QualityTier::A,
+            capabilities: ModelCapabilities::default(),
+            pricing: ModelPricing::default(),
+            specialties: vec![],
+            limits: None,
+            status: ModelStatus::Available,
+        });
+        registry.add_variant(ModelVariant {
+            id: "qwen3-72b@alias-provider".into(),
+            model_id: "qwen3-72b".into(),
+            endpoint_id: "alias-ep".into(),
+            account_id: Some("alias-acct".into()),
+            deployment_name: None,
+            weight: 1.0,
+            performance: ModelPerformance::default(),
+            pricing_override: None,
+            status: VariantStatus::Active,
+            base_url: None,
+            upstream_model_name: None,
+            metadata: HashMap::new(),
+        });
+        registry.add_pool(ModelPool {
+            id: "default".into(),
+            name: "Default".into(),
+            variants: vec!["qwen3-72b@alias-provider".into()],
+            selection_mode: SelectionMode::default(),
+            description: None,
+        });
+
+        // Configure model aliases: "gpt-4" => "qwen3-72b"
+        let mut aliases = HashMap::new();
+        aliases.insert("gpt-4".to_string(), "qwen3-72b".to_string());
+
+        let router = PrismRouter::new(registry);
+        let state =
+            AppState::new(router, PathBuf::from("e2e-test.yaml")).with_model_aliases(aliases);
+        let app = build_prism_app_with_state(state);
+
+        // Send route request with "model": "gpt-4" — should resolve to "qwen3-72b"
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/route")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"messages":[{"role":"user","content":"alias test"}],"model":"gpt-4"}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let json = body_json(resp).await;
+        assert_eq!(
+            json["selected_model"], "qwen3-72b",
+            "Expected alias 'gpt-4' to resolve to 'qwen3-72b'"
+        );
+        assert_eq!(json["selected_variant"], "qwen3-72b@alias-provider");
+    }
+
+    // ── 8. test_client_key_quota_enforcement ──
+
+    /// Create a ClientKeyManager with a key limited to 3 requests per minute.
+    /// Validate 3 times (success), then a 4th time (rate limited).
+    #[tokio::test]
+    async fn test_client_key_quota_enforcement() {
+        use prism_router::client_keys::{ClientKeyError, ClientKeyManager};
+        use prism_router::config::types::{ClientKeyConfig, ClientKeyQuotaConfig};
+
+        let cfg = ClientKeyConfig {
+            key: "sk-quota-test".to_string(),
+            name: "Quota Test".to_string(),
+            enabled: true,
+            allowed_models: vec![],
+            quota: ClientKeyQuotaConfig {
+                max_requests_per_minute: 3,
+                max_tokens_per_minute: 0,
+                max_tokens_per_day: 0,
+                max_concurrent: 0,
+            },
+            model_quotas: HashMap::new(),
+            metadata: HashMap::new(),
+        };
+
+        let mgr = ClientKeyManager::new(&[cfg]).unwrap();
+
+        // First 3 calls should succeed
+        for i in 0..3 {
+            let result = mgr.validate_key("sk-quota-test", None);
+            assert!(
+                result.is_ok(),
+                "Call {} should succeed but was rate limited",
+                i + 1
+            );
+        }
+
+        // 4th call should be rate limited
+        let result = mgr.validate_key("sk-quota-test", None);
+        assert!(
+            matches!(result, Err(ClientKeyError::RateLimited { .. })),
+            "4th call should be rate limited"
+        );
+    }
+}

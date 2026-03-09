@@ -805,3 +805,419 @@ impl RequestAnalyzer for AnalyzerChain {
         last_result.unwrap_or_else(|| RuleBasedAnalyzer::analyze_text(messages))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── helpers ──
+
+    fn msg(role: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: role.into(),
+            content: content.into(),
+        }
+    }
+
+    fn user(content: &str) -> ChatMessage {
+        msg("user", content)
+    }
+
+    // ── RequestProfile creation & field validation ──
+
+    #[test]
+    fn profile_fields_roundtrip() {
+        let profile = RequestProfile {
+            complexity: 0.7,
+            task_type: TaskType::CodeGeneration,
+            estimated_tokens: 500,
+            requires_reasoning: false,
+            requires_vision: false,
+            language: Language::English,
+            is_multi_turn: false,
+            context_window_need: ContextSize::Small,
+        };
+        assert_eq!(profile.complexity, 0.7);
+        assert_eq!(profile.task_type, TaskType::CodeGeneration);
+        assert_eq!(profile.estimated_tokens, 500);
+        assert!(!profile.requires_reasoning);
+        assert!(!profile.requires_vision);
+        assert_eq!(profile.language, Language::English);
+        assert!(!profile.is_multi_turn);
+        assert_eq!(profile.context_window_need, ContextSize::Small);
+    }
+
+    #[test]
+    fn profile_serialization() {
+        let profile = RequestProfile {
+            complexity: 0.5,
+            task_type: TaskType::SimpleQA,
+            estimated_tokens: 100,
+            requires_reasoning: false,
+            requires_vision: false,
+            language: Language::English,
+            is_multi_turn: false,
+            context_window_need: ContextSize::Small,
+        };
+        let json = serde_json::to_string(&profile).unwrap();
+        let deserialized: RequestProfile = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.task_type, TaskType::SimpleQA);
+        assert_eq!(deserialized.complexity, 0.5);
+    }
+
+    // ── ContextSize classification ──
+
+    #[test]
+    fn context_size_small() {
+        // 30 chars → ~10 tokens → Small
+        let p = RuleBasedAnalyzer::analyze_text(&[user("hello world, short message")]);
+        assert_eq!(p.context_window_need, ContextSize::Small);
+    }
+
+    #[test]
+    fn context_size_medium() {
+        // Need > 4000 tokens → > 12000 chars
+        let long_text = "word ".repeat(3000); // 15000 chars → ~5000 tokens
+        let p = RuleBasedAnalyzer::analyze_text(&[user(&long_text)]);
+        assert_eq!(p.context_window_need, ContextSize::Medium);
+    }
+
+    #[test]
+    fn context_size_large() {
+        // Need > 32000 tokens → > 96000 chars
+        let long_text = "word ".repeat(20000); // 100000 chars → ~33333 tokens
+        let p = RuleBasedAnalyzer::analyze_text(&[user(&long_text)]);
+        assert_eq!(p.context_window_need, ContextSize::Large);
+    }
+
+    #[test]
+    fn context_size_xlarge() {
+        // Need > 128000 tokens → > 384000 chars
+        let long_text = "word ".repeat(80000); // 400000 chars → ~133333 tokens
+        let p = RuleBasedAnalyzer::analyze_text(&[user(&long_text)]);
+        assert_eq!(p.context_window_need, ContextSize::XLarge);
+    }
+
+    // ── Language detection ──
+
+    #[test]
+    fn detect_english() {
+        let p = RuleBasedAnalyzer::analyze_text(&[user("What is the capital of France?")]);
+        assert_eq!(p.language, Language::English);
+    }
+
+    #[test]
+    fn detect_chinese() {
+        let p = RuleBasedAnalyzer::analyze_text(&[user("请帮我写一段代码")]);
+        assert_eq!(p.language, Language::Chinese);
+    }
+
+    #[test]
+    fn detect_chinese_mixed() {
+        let p = RuleBasedAnalyzer::analyze_text(&[user("Please translate 你好世界 to English")]);
+        assert_eq!(p.language, Language::Chinese);
+    }
+
+    // ── TaskType detection ──
+
+    #[test]
+    fn detect_code_generation() {
+        let p = RuleBasedAnalyzer::analyze_text(&[user("Write a function to sort an array")]);
+        assert_eq!(p.task_type, TaskType::CodeGeneration);
+        assert_eq!(p.complexity, 0.7);
+    }
+
+    #[test]
+    fn detect_code_via_implement() {
+        let p = RuleBasedAnalyzer::analyze_text(&[user("implement a binary search tree")]);
+        assert_eq!(p.task_type, TaskType::CodeGeneration);
+    }
+
+    #[test]
+    fn detect_code_chinese() {
+        let p = RuleBasedAnalyzer::analyze_text(&[user("帮我写一段程序")]);
+        assert_eq!(p.task_type, TaskType::CodeGeneration);
+        assert_eq!(p.language, Language::Chinese);
+    }
+
+    #[test]
+    fn detect_reasoning() {
+        let p =
+            RuleBasedAnalyzer::analyze_text(&[user("explain step by step why the sky is blue")]);
+        assert_eq!(p.task_type, TaskType::Reasoning);
+        assert!(p.requires_reasoning);
+        assert_eq!(p.complexity, 0.8);
+    }
+
+    #[test]
+    fn detect_reasoning_why() {
+        let p = RuleBasedAnalyzer::analyze_text(&[user("Why does water boil at 100C?")]);
+        assert_eq!(p.task_type, TaskType::Reasoning);
+    }
+
+    #[test]
+    fn detect_translation() {
+        let p = RuleBasedAnalyzer::analyze_text(&[user("translate this to Spanish: hello")]);
+        assert_eq!(p.task_type, TaskType::Translation);
+        assert_eq!(p.complexity, 0.4);
+    }
+
+    #[test]
+    fn detect_translation_chinese() {
+        let p = RuleBasedAnalyzer::analyze_text(&[user("翻译这段话")]);
+        assert_eq!(p.task_type, TaskType::Translation);
+    }
+
+    #[test]
+    fn detect_summarization() {
+        let p = RuleBasedAnalyzer::analyze_text(&[user("summarize this article for me")]);
+        assert_eq!(p.task_type, TaskType::Summarization);
+    }
+
+    #[test]
+    fn detect_creative() {
+        let p = RuleBasedAnalyzer::analyze_text(&[user("write a short poem about the moon")]);
+        assert_eq!(p.task_type, TaskType::Creative);
+        assert_eq!(p.complexity, 0.5);
+    }
+
+    #[test]
+    fn detect_multimodal() {
+        let p = RuleBasedAnalyzer::analyze_text(&[user("describe this image in detail")]);
+        assert_eq!(p.task_type, TaskType::MultiModal);
+        assert!(p.requires_vision);
+        assert_eq!(p.complexity, 0.6);
+    }
+
+    #[test]
+    fn detect_math() {
+        let p = RuleBasedAnalyzer::analyze_text(&[user("calculate the integral of x^2")]);
+        assert_eq!(p.task_type, TaskType::Math);
+        assert!(p.requires_reasoning);
+        assert_eq!(p.complexity, 0.8);
+    }
+
+    #[test]
+    fn detect_simple_qa() {
+        let p = RuleBasedAnalyzer::analyze_text(&[user("What is 2+2?")]);
+        assert_eq!(p.task_type, TaskType::SimpleQA);
+        assert_eq!(p.complexity, 0.2);
+    }
+
+    // ── Token counting heuristic ──
+
+    #[test]
+    fn token_estimate_basic() {
+        // "hello" = 5 chars → 5/3 = 1 token (max(1))
+        let p = RuleBasedAnalyzer::analyze_text(&[user("hello")]);
+        assert_eq!(p.estimated_tokens, 1);
+    }
+
+    #[test]
+    fn token_estimate_longer() {
+        // 120 chars → 40 tokens
+        let text = "a".repeat(120);
+        let p = RuleBasedAnalyzer::analyze_text(&[user(&text)]);
+        assert_eq!(p.estimated_tokens, 40);
+    }
+
+    #[test]
+    fn token_estimate_empty_defaults_to_one() {
+        // Empty user message: 0 chars → max(0/3, 1) = 1
+        let p = RuleBasedAnalyzer::analyze_text(&[user("")]);
+        assert_eq!(p.estimated_tokens, 1);
+    }
+
+    // ── Multi-turn detection ──
+
+    #[test]
+    fn single_turn() {
+        let p = RuleBasedAnalyzer::analyze_text(&[user("hi"), msg("assistant", "hello")]);
+        assert!(!p.is_multi_turn);
+    }
+
+    #[test]
+    fn multi_turn() {
+        let msgs = vec![user("hi"), msg("assistant", "hello"), user("how are you?")];
+        let p = RuleBasedAnalyzer::analyze_text(&msgs);
+        assert!(p.is_multi_turn);
+    }
+
+    // ── Edge cases ──
+
+    #[test]
+    fn empty_messages() {
+        let p = RuleBasedAnalyzer::analyze_text(&[]);
+        assert_eq!(p.task_type, TaskType::SimpleQA);
+        assert_eq!(p.estimated_tokens, 1);
+        assert!(!p.is_multi_turn);
+    }
+
+    #[test]
+    fn system_messages_ignored_for_task_detection() {
+        // Only user messages are scanned for keywords
+        let msgs = vec![
+            msg("system", "You are helpful. Write code for the user."),
+            user("What is the weather today?"),
+        ];
+        let p = RuleBasedAnalyzer::analyze_text(&msgs);
+        // "code" is in system msg but should not trigger CodeGeneration
+        assert_eq!(p.task_type, TaskType::SimpleQA);
+    }
+
+    #[test]
+    fn only_assistant_messages() {
+        let msgs = vec![msg("assistant", "I can help you write code")];
+        let p = RuleBasedAnalyzer::analyze_text(&msgs);
+        assert_eq!(p.task_type, TaskType::SimpleQA);
+    }
+
+    // ── RuleBasedAnalyzer trait impl ──
+
+    #[test]
+    fn rule_based_analyzer_default() {
+        let a = RuleBasedAnalyzer;
+        let p = a.analyze(&[user("test")]);
+        assert_eq!(p.task_type, TaskType::SimpleQA);
+    }
+
+    #[test]
+    fn rule_based_analyze_with_context_delegates() {
+        let a = RuleBasedAnalyzer::new();
+        let ctx = AnalyzeContext::default();
+        let p = a.analyze_with_context(&[user("implement a queue")], &ctx);
+        assert_eq!(p.task_type, TaskType::CodeGeneration);
+    }
+
+    // ── AnalyzeContext ──
+
+    #[test]
+    fn analyze_context_default() {
+        let ctx = AnalyzeContext::default();
+        assert!(ctx.caller_type.is_none());
+        assert!(ctx.source.is_none());
+        assert!(ctx.tenant_id.is_none());
+        assert!(ctx.tags.is_empty());
+    }
+
+    // ── AnalyzerChain ──
+
+    /// Analyzer that always returns a specific task type.
+    struct FixedAnalyzer(TaskType);
+    impl RequestAnalyzer for FixedAnalyzer {
+        fn analyze(&self, _messages: &[ChatMessage]) -> RequestProfile {
+            RequestProfile {
+                complexity: 0.5,
+                task_type: self.0,
+                estimated_tokens: 100,
+                requires_reasoning: false,
+                requires_vision: false,
+                language: Language::English,
+                is_multi_turn: false,
+                context_window_need: ContextSize::Small,
+            }
+        }
+    }
+
+    #[test]
+    fn chain_first_always_mode() {
+        let chain = AnalyzerChain::new(
+            vec![
+                ("a".into(), Box::new(FixedAnalyzer(TaskType::Creative))),
+                ("b".into(), Box::new(FixedAnalyzer(TaskType::Math))),
+            ],
+            false,
+        );
+        let p = chain.analyze(&[user("test")]);
+        assert_eq!(p.task_type, TaskType::Creative);
+    }
+
+    #[test]
+    fn chain_first_definitive_skips_simple_qa() {
+        let chain = AnalyzerChain::new(
+            vec![
+                ("a".into(), Box::new(FixedAnalyzer(TaskType::SimpleQA))),
+                ("b".into(), Box::new(FixedAnalyzer(TaskType::Math))),
+            ],
+            true,
+        );
+        let p = chain.analyze(&[user("test")]);
+        assert_eq!(p.task_type, TaskType::Math);
+    }
+
+    #[test]
+    fn chain_first_definitive_skips_unknown() {
+        let chain = AnalyzerChain::new(
+            vec![
+                ("a".into(), Box::new(FixedAnalyzer(TaskType::Unknown))),
+                ("b".into(), Box::new(FixedAnalyzer(TaskType::Translation))),
+            ],
+            true,
+        );
+        let p = chain.analyze(&[user("test")]);
+        assert_eq!(p.task_type, TaskType::Translation);
+    }
+
+    #[test]
+    fn chain_first_definitive_uses_first_definitive() {
+        let chain = AnalyzerChain::new(
+            vec![
+                ("a".into(), Box::new(FixedAnalyzer(TaskType::Reasoning))),
+                ("b".into(), Box::new(FixedAnalyzer(TaskType::Math))),
+            ],
+            true,
+        );
+        let p = chain.analyze(&[user("test")]);
+        assert_eq!(p.task_type, TaskType::Reasoning);
+    }
+
+    #[test]
+    fn chain_empty_falls_back() {
+        let chain = AnalyzerChain::new(vec![], true);
+        let p = chain.analyze(&[user("implement a function")]);
+        assert_eq!(p.task_type, TaskType::CodeGeneration);
+    }
+
+    #[test]
+    fn chain_all_non_definitive_uses_last() {
+        let chain = AnalyzerChain::new(
+            vec![
+                ("a".into(), Box::new(FixedAnalyzer(TaskType::SimpleQA))),
+                ("b".into(), Box::new(FixedAnalyzer(TaskType::Unknown))),
+            ],
+            true,
+        );
+        let p = chain.analyze(&[user("test")]);
+        // Last result should be used when none are definitive
+        assert_eq!(p.task_type, TaskType::Unknown);
+    }
+
+    // ── is_definitive ──
+
+    #[test]
+    fn is_definitive_check() {
+        let definitive = RequestProfile {
+            complexity: 0.7,
+            task_type: TaskType::CodeGeneration,
+            estimated_tokens: 100,
+            requires_reasoning: false,
+            requires_vision: false,
+            language: Language::English,
+            is_multi_turn: false,
+            context_window_need: ContextSize::Small,
+        };
+        assert!(AnalyzerChain::is_definitive(&definitive));
+
+        let non_definitive = RequestProfile {
+            task_type: TaskType::SimpleQA,
+            ..definitive.clone()
+        };
+        assert!(!AnalyzerChain::is_definitive(&non_definitive));
+
+        let unknown = RequestProfile {
+            task_type: TaskType::Unknown,
+            ..definitive
+        };
+        assert!(!AnalyzerChain::is_definitive(&unknown));
+    }
+}

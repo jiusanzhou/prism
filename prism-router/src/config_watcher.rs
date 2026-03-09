@@ -291,4 +291,133 @@ pools:
             assert_eq!(state.generation(), i);
         }
     }
+
+    #[test]
+    fn test_arc_swap_atomic_replacement() {
+        // Verify that the ArcSwap-based router can be read concurrently with a swap.
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("prism.yaml");
+        std::fs::write(&config_path, minimal_config_yaml()).unwrap();
+
+        let router = PrismRouter::new(InMemoryRegistry::new());
+        let state = AppState::new(router, config_path.clone());
+
+        // Take a snapshot of the old router
+        let old_guard = state.router();
+        assert_eq!(old_guard.registry.models.len(), 0);
+
+        // Swap in a new router via reload
+        reload_config(&state, &config_path).unwrap();
+
+        // Old guard still holds the previous (empty) registry
+        assert_eq!(old_guard.registry.models.len(), 0);
+
+        // New load sees the updated registry
+        let new_guard = state.router();
+        assert_eq!(new_guard.registry.models.len(), 1);
+    }
+
+    #[test]
+    fn test_reload_updates_model_aliases() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("prism.yaml");
+        // Config with model_aliases
+        let yaml = r#"
+providers:
+  openai:
+    base_url: https://api.openai.com/v1
+    protocols: [openai]
+models:
+  - id: gpt-4o
+    display_name: GPT-4o
+    quality_tier: S
+variants:
+  - id: gpt-4o@openai
+    model_id: gpt-4o
+    provider_id: openai
+pools:
+  - id: default
+    name: Default Pool
+    variants: [gpt-4o@openai]
+model_aliases:
+  gpt-4: gpt-4o
+"#;
+        std::fs::write(&config_path, yaml).unwrap();
+
+        let router = PrismRouter::new(InMemoryRegistry::new());
+        let state = AppState::new(router, config_path.clone());
+
+        // Before reload, no aliases
+        assert_eq!(state.resolve_model_alias("gpt-4"), "gpt-4");
+
+        reload_config(&state, &config_path).unwrap();
+
+        // After reload, alias is active
+        assert_eq!(state.resolve_model_alias("gpt-4"), "gpt-4o");
+    }
+
+    #[tokio::test]
+    async fn test_config_file_change_triggers_reload() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("prism.yaml");
+        std::fs::write(&config_path, minimal_config_yaml()).unwrap();
+
+        let router = PrismRouter::new(InMemoryRegistry::new());
+        let state = AppState::new(router, config_path.clone());
+
+        // Load initial config
+        reload_config(&state, &config_path).unwrap();
+        assert_eq!(state.generation(), 1);
+        assert_eq!(state.router().registry.variants.len(), 1);
+
+        // Start watcher
+        let watcher_config = WatcherConfig {
+            config_path: config_path.clone(),
+            debounce: Duration::from_millis(100),
+            reload_on_start: false,
+        };
+        let handle = spawn_config_watcher(state.clone(), watcher_config);
+
+        // Give the watcher time to start
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Modify the config file (add a second variant)
+        let updated_yaml = r#"
+providers:
+  openai:
+    base_url: https://api.openai.com/v1
+    protocols: [openai]
+models:
+  - id: gpt-4o
+    display_name: GPT-4o
+    quality_tier: S
+  - id: gpt-4o-mini
+    display_name: GPT-4o Mini
+    quality_tier: A
+variants:
+  - id: gpt-4o@openai
+    model_id: gpt-4o
+    provider_id: openai
+  - id: gpt-4o-mini@openai
+    model_id: gpt-4o-mini
+    provider_id: openai
+pools:
+  - id: default
+    name: Default Pool
+    variants: [gpt-4o@openai, gpt-4o-mini@openai]
+"#;
+        std::fs::write(&config_path, updated_yaml).unwrap();
+
+        // Wait for debounce + reload
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Verify the watcher picked up the change
+        assert!(
+            state.generation() >= 2,
+            "generation should have incremented from file change"
+        );
+        assert_eq!(state.router().registry.variants.len(), 2);
+
+        handle.abort();
+    }
 }

@@ -551,3 +551,639 @@ fn poll_and_apply(state: &AppState, provider_id: &str, sidecar_url: &str) -> Res
     info!(provider = %provider_id, variants = n, "Poll refresh done");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prism_core::registry::InMemoryRegistry;
+    use prism_core::router::PrismRouter;
+    use std::path::PathBuf;
+
+    /// Helper: create a minimal AppState for tests.
+    fn test_state() -> AppState {
+        let router = PrismRouter::new(InMemoryRegistry::new());
+        AppState::new(router, PathBuf::from("test.yaml"))
+    }
+
+    /// Helper: create a SidecarInstance.
+    fn make_instance(address: &str, pod_name: Option<&str>) -> SidecarInstance {
+        SidecarInstance {
+            address: address.to_string(),
+            pod_name: pod_name.map(|s| s.to_string()),
+            labels: HashMap::new(),
+            dc: None,
+        }
+    }
+
+    /// Helper: create a SidecarInstance with labels.
+    fn make_instance_with_labels(
+        address: &str,
+        pod_name: Option<&str>,
+        labels: Vec<(&str, &str)>,
+        dc: Option<&str>,
+    ) -> SidecarInstance {
+        SidecarInstance {
+            address: address.to_string(),
+            pod_name: pod_name.map(|s| s.to_string()),
+            labels: labels
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            dc: dc.map(|s| s.to_string()),
+        }
+    }
+
+    // ─── payload_to_discovery_result ────────────────────────────────────
+
+    #[test]
+    fn test_payload_empty() {
+        let payload = SidecarPrismPayload {
+            providers: vec![],
+            models: vec![],
+            variants: vec![],
+            pools: vec![],
+        };
+        let result = payload_to_discovery_result(&payload, "test-provider");
+        assert!(result.models.is_empty());
+        assert!(result.variants.is_empty());
+        assert!(result.pools.is_empty());
+    }
+
+    #[test]
+    fn test_payload_with_models_variants_pools() {
+        let payload = SidecarPrismPayload {
+            providers: vec![SidecarProvider {
+                id: "prov1".into(),
+                base_url: "http://localhost:8080".into(),
+            }],
+            models: vec![
+                SidecarModel {
+                    id: "model-a".into(),
+                    display_name: Some("Model A".into()),
+                },
+                SidecarModel {
+                    id: "model-b".into(),
+                    display_name: None,
+                },
+            ],
+            variants: vec![SidecarVariant {
+                id: "var-1".into(),
+                model_id: "model-a".into(),
+                provider_id: "prov1".into(),
+                weight: Some(2.5),
+                base_url: None,
+                metadata: None,
+            }],
+            pools: vec![SidecarPool {
+                id: "pool-1".into(),
+                name: "Primary Pool".into(),
+                variants: vec!["var-1".into()],
+            }],
+        };
+
+        let result = payload_to_discovery_result(&payload, "prov1");
+
+        // Models
+        assert_eq!(result.models.len(), 2);
+        assert_eq!(result.models[0].id, "model-a");
+        assert_eq!(result.models[0].display_name, "Model A");
+        assert_eq!(result.models[1].id, "model-b");
+        assert_eq!(result.models[1].display_name, "model-b"); // fallback to id
+
+        // Variants
+        assert_eq!(result.variants.len(), 1);
+        assert_eq!(result.variants[0].id, "var-1");
+        assert_eq!(result.variants[0].model_id, "model-a");
+        assert_eq!(result.variants[0].endpoint_id, "prov1-ep");
+        assert_eq!(result.variants[0].weight, 2.5);
+        assert!(result.variants[0].base_url.is_none());
+
+        // Pools
+        assert_eq!(result.pools.len(), 1);
+        assert_eq!(result.pools[0].id, "pool-1");
+        assert_eq!(result.pools[0].name, "Primary Pool");
+        assert_eq!(result.pools[0].variants, vec!["var-1"]);
+    }
+
+    #[test]
+    fn test_payload_variant_base_url_preserved() {
+        let payload = SidecarPrismPayload {
+            providers: vec![],
+            models: vec![],
+            variants: vec![SidecarVariant {
+                id: "v1".into(),
+                model_id: "m1".into(),
+                provider_id: "p1".into(),
+                weight: None,
+                base_url: Some("http://custom-endpoint:9090/v1".into()),
+                metadata: Some(HashMap::from([("key".into(), "val".into())])),
+            }],
+            pools: vec![],
+        };
+
+        let result = payload_to_discovery_result(&payload, "p1");
+        assert_eq!(result.variants.len(), 1);
+        assert_eq!(
+            result.variants[0].base_url.as_deref(),
+            Some("http://custom-endpoint:9090/v1")
+        );
+        assert_eq!(result.variants[0].weight, 1.0); // default weight
+        assert_eq!(result.variants[0].metadata.get("key").unwrap(), "val");
+    }
+
+    // ─── instances_to_discovery_result ──────────────────────────────────
+
+    #[test]
+    fn test_instances_empty_map() {
+        let map: InstanceMap = HashMap::new();
+        let result = instances_to_discovery_result("prov", &map);
+        assert!(result.models.is_empty());
+        assert!(result.variants.is_empty());
+        assert!(result.pools.is_empty());
+    }
+
+    #[test]
+    fn test_instances_multiple_models() {
+        let mut map: InstanceMap = HashMap::new();
+        map.insert(
+            "qwen3-72b".into(),
+            vec![
+                make_instance("10.0.0.1:8080", Some("pod-a")),
+                make_instance("10.0.0.2:8080", Some("pod-b")),
+            ],
+        );
+        map.insert(
+            "deepseek-r1".into(),
+            vec![make_instance("10.0.1.1:8080", Some("pod-c"))],
+        );
+
+        let result = instances_to_discovery_result("k8s", &map);
+
+        assert_eq!(result.models.len(), 2);
+        assert_eq!(result.variants.len(), 3);
+        assert_eq!(result.pools.len(), 2);
+
+        // Check variant IDs follow the "{model}-{pod_name}" pattern
+        let variant_ids: Vec<&str> = result.variants.iter().map(|v| v.id.as_str()).collect();
+        assert!(variant_ids.contains(&"qwen3-72b-pod-a"));
+        assert!(variant_ids.contains(&"qwen3-72b-pod-b"));
+        assert!(variant_ids.contains(&"deepseek-r1-pod-c"));
+
+        // Each variant has base_url = "http://{address}"
+        let pod_a_variant = result
+            .variants
+            .iter()
+            .find(|v| v.id == "qwen3-72b-pod-a")
+            .unwrap();
+        assert_eq!(
+            pod_a_variant.base_url.as_deref(),
+            Some("http://10.0.0.1:8080")
+        );
+        assert_eq!(pod_a_variant.endpoint_id, "k8s-ep");
+    }
+
+    #[test]
+    fn test_instances_metadata_labels_propagated() {
+        let inst = make_instance_with_labels(
+            "10.0.0.1:8080",
+            Some("pod-x"),
+            vec![
+                ("wanqing.inference.instance/role", "primary"),
+                ("wanqing.inference.instance.pd/group", "group-1"),
+                ("cluster", "us-east"),
+                ("irrelevant-label", "should-not-propagate"),
+            ],
+            Some("dc-1"),
+        );
+        let mut map: InstanceMap = HashMap::new();
+        map.insert("model-a".into(), vec![inst]);
+
+        let result = instances_to_discovery_result("prov", &map);
+        assert_eq!(result.variants.len(), 1);
+
+        let meta = &result.variants[0].metadata;
+        assert_eq!(
+            meta.get("wanqing.inference.instance/role").unwrap(),
+            "primary"
+        );
+        assert_eq!(
+            meta.get("wanqing.inference.instance.pd/group").unwrap(),
+            "group-1"
+        );
+        assert_eq!(meta.get("cluster").unwrap(), "us-east");
+        assert_eq!(meta.get("dc").unwrap(), "dc-1");
+        assert!(!meta.contains_key("irrelevant-label"));
+    }
+
+    #[test]
+    fn test_instances_without_pod_name_uses_address_fallback() {
+        let mut map: InstanceMap = HashMap::new();
+        map.insert(
+            "model-x".into(),
+            vec![make_instance("192.168.1.100:9090", None)],
+        );
+
+        let result = instances_to_discovery_result("prov", &map);
+        assert_eq!(result.variants.len(), 1);
+        // address "192.168.1.100:9090" → "192-168-1-100-9090"
+        assert_eq!(result.variants[0].id, "model-x-192-168-1-100-9090");
+    }
+
+    // ─── apply_sse_event — full_sync ────────────────────────────────────
+
+    #[test]
+    fn test_apply_full_sync_replaces_state() {
+        let state = test_state();
+        let mut local: InstanceMap = HashMap::new();
+        local.insert(
+            "old-model".into(),
+            vec![make_instance("1.1.1.1:80", Some("old"))],
+        );
+
+        let data = serde_json::json!({
+            "type": "full_sync",
+            "timestamp": 1000,
+            "models": {
+                "new-model": [{"address": "2.2.2.2:80", "pod_name": "new"}]
+            }
+        })
+        .to_string();
+
+        let changed = apply_sse_event(&mut local, &state, "prov", "full_sync", &data);
+        assert!(changed);
+        assert!(!local.contains_key("old-model"));
+        assert!(local.contains_key("new-model"));
+        assert_eq!(local["new-model"].len(), 1);
+        assert_eq!(local["new-model"][0].address, "2.2.2.2:80");
+    }
+
+    #[test]
+    fn test_apply_full_sync_empty_models_returns_false() {
+        let state = test_state();
+        let mut local: InstanceMap = HashMap::new();
+        local.insert(
+            "existing".into(),
+            vec![make_instance("1.1.1.1:80", Some("pod"))],
+        );
+
+        let data = serde_json::json!({
+            "type": "full_sync",
+            "timestamp": 2000,
+            "models": {}
+        })
+        .to_string();
+
+        let changed = apply_sse_event(&mut local, &state, "prov", "full_sync", &data);
+        assert!(!changed);
+        // Local state should be untouched
+        assert!(local.contains_key("existing"));
+    }
+
+    // ─── apply_sse_event — instance_add ─────────────────────────────────
+
+    #[test]
+    fn test_apply_instance_add_new() {
+        let state = test_state();
+        let mut local: InstanceMap = HashMap::new();
+
+        let data = serde_json::json!({
+            "type": "instance_add",
+            "model": "qwen3-72b",
+            "instance": {"address": "10.0.0.5:8080", "pod_name": "pod-5"},
+            "timestamp": 100
+        })
+        .to_string();
+
+        let changed = apply_sse_event(&mut local, &state, "prov", "instance_add", &data);
+        assert!(changed);
+        assert_eq!(local["qwen3-72b"].len(), 1);
+        assert_eq!(local["qwen3-72b"][0].address, "10.0.0.5:8080");
+    }
+
+    #[test]
+    fn test_apply_instance_add_upserts_existing() {
+        let state = test_state();
+        let mut local: InstanceMap = HashMap::new();
+        local.insert(
+            "model-a".into(),
+            vec![make_instance("10.0.0.1:80", Some("old-pod"))],
+        );
+
+        // Same address, different pod_name → upsert
+        let data = serde_json::json!({
+            "type": "instance_add",
+            "model": "model-a",
+            "instance": {"address": "10.0.0.1:80", "pod_name": "new-pod"},
+            "timestamp": 200
+        })
+        .to_string();
+
+        let changed = apply_sse_event(&mut local, &state, "prov", "instance_add", &data);
+        assert!(changed);
+        assert_eq!(local["model-a"].len(), 1); // still 1 — upserted, not appended
+        assert_eq!(local["model-a"][0].pod_name.as_deref(), Some("new-pod"));
+    }
+
+    #[test]
+    fn test_apply_instance_add_missing_model() {
+        let state = test_state();
+        let mut local: InstanceMap = HashMap::new();
+
+        let data = serde_json::json!({
+            "type": "instance_add",
+            "instance": {"address": "10.0.0.1:80"},
+            "timestamp": 300
+        })
+        .to_string();
+
+        let changed = apply_sse_event(&mut local, &state, "prov", "instance_add", &data);
+        assert!(!changed);
+        assert!(local.is_empty());
+    }
+
+    #[test]
+    fn test_apply_instance_add_missing_instance() {
+        let state = test_state();
+        let mut local: InstanceMap = HashMap::new();
+
+        let data = serde_json::json!({
+            "type": "instance_add",
+            "model": "model-a",
+            "timestamp": 400
+        })
+        .to_string();
+
+        let changed = apply_sse_event(&mut local, &state, "prov", "instance_add", &data);
+        assert!(!changed);
+    }
+
+    // ─── apply_sse_event — instance_del ─────────────────────────────────
+
+    #[test]
+    fn test_apply_instance_del_removes_by_address() {
+        let state = test_state();
+        let mut local: InstanceMap = HashMap::new();
+        local.insert(
+            "model-a".into(),
+            vec![
+                make_instance("10.0.0.1:80", Some("pod-1")),
+                make_instance("10.0.0.2:80", Some("pod-2")),
+            ],
+        );
+
+        let data = serde_json::json!({
+            "type": "instance_del",
+            "model": "model-a",
+            "instance": {"address": "10.0.0.1:80"},
+            "timestamp": 500
+        })
+        .to_string();
+
+        let changed = apply_sse_event(&mut local, &state, "prov", "instance_del", &data);
+        assert!(changed);
+        assert_eq!(local["model-a"].len(), 1);
+        assert_eq!(local["model-a"][0].address, "10.0.0.2:80");
+    }
+
+    #[test]
+    fn test_apply_instance_del_removes_model_when_last_instance() {
+        let state = test_state();
+        let mut local: InstanceMap = HashMap::new();
+        local.insert(
+            "model-a".into(),
+            vec![make_instance("10.0.0.1:80", Some("pod-1"))],
+        );
+
+        let data = serde_json::json!({
+            "type": "instance_del",
+            "model": "model-a",
+            "instance": {"address": "10.0.0.1:80"},
+            "timestamp": 600
+        })
+        .to_string();
+
+        let changed = apply_sse_event(&mut local, &state, "prov", "instance_del", &data);
+        assert!(changed);
+        assert!(!local.contains_key("model-a"));
+    }
+
+    #[test]
+    fn test_apply_instance_del_missing_model() {
+        let state = test_state();
+        let mut local: InstanceMap = HashMap::new();
+
+        let data = serde_json::json!({
+            "type": "instance_del",
+            "instance": {"address": "10.0.0.1:80"},
+            "timestamp": 700
+        })
+        .to_string();
+
+        let changed = apply_sse_event(&mut local, &state, "prov", "instance_del", &data);
+        assert!(!changed);
+    }
+
+    #[test]
+    fn test_apply_instance_del_missing_instance() {
+        let state = test_state();
+        let mut local: InstanceMap = HashMap::new();
+
+        let data = serde_json::json!({
+            "type": "instance_del",
+            "model": "model-a",
+            "timestamp": 800
+        })
+        .to_string();
+
+        let changed = apply_sse_event(&mut local, &state, "prov", "instance_del", &data);
+        assert!(!changed);
+    }
+
+    // ─── apply_sse_event — model_remove ─────────────────────────────────
+
+    #[test]
+    fn test_apply_model_remove() {
+        let state = test_state();
+        let mut local: InstanceMap = HashMap::new();
+        local.insert(
+            "model-to-remove".into(),
+            vec![
+                make_instance("10.0.0.1:80", Some("pod-1")),
+                make_instance("10.0.0.2:80", Some("pod-2")),
+            ],
+        );
+        local.insert(
+            "model-keep".into(),
+            vec![make_instance("10.0.1.1:80", Some("pod-3"))],
+        );
+
+        let data = serde_json::json!({
+            "type": "model_remove",
+            "model": "model-to-remove",
+            "timestamp": 900
+        })
+        .to_string();
+
+        let changed = apply_sse_event(&mut local, &state, "prov", "model_remove", &data);
+        assert!(changed);
+        assert!(!local.contains_key("model-to-remove"));
+        assert!(local.contains_key("model-keep"));
+    }
+
+    // ─── apply_sse_event — unknown / malformed ──────────────────────────
+
+    #[test]
+    fn test_apply_unknown_event_type() {
+        let state = test_state();
+        let mut local: InstanceMap = HashMap::new();
+
+        let data = serde_json::json!({
+            "type": "heartbeat",
+            "timestamp": 1000
+        })
+        .to_string();
+
+        let changed = apply_sse_event(&mut local, &state, "prov", "heartbeat", &data);
+        assert!(!changed);
+    }
+
+    #[test]
+    fn test_apply_malformed_json() {
+        let state = test_state();
+        let mut local: InstanceMap = HashMap::new();
+
+        let changed = apply_sse_event(&mut local, &state, "prov", "full_sync", "not valid json{");
+        assert!(!changed);
+    }
+
+    // ─── SSE line parsing (unit-level) ──────────────────────────────────
+
+    #[test]
+    fn test_sse_line_parsing_event_data_dispatch() {
+        // Simulate the SSE line parser from run_sse_loop
+        let lines = vec![
+            "event: instance_add",
+            r#"data: {"type":"instance_add","model":"m1","instance":{"address":"1.2.3.4:80"},"timestamp":1}"#,
+            "", // blank line triggers dispatch
+        ];
+
+        let state = test_state();
+        let mut local: InstanceMap = HashMap::new();
+        let mut event_type = String::new();
+        let mut data_buf = String::new();
+        let mut dispatched = false;
+
+        for line in &lines {
+            if line.starts_with("event:") {
+                event_type = line[6..].trim().to_string();
+            } else if line.starts_with("data:") {
+                data_buf = line[5..].trim().to_string();
+            } else if line.is_empty() && !data_buf.is_empty() {
+                dispatched = apply_sse_event(&mut local, &state, "prov", &event_type, &data_buf);
+                event_type.clear();
+                data_buf.clear();
+            }
+        }
+
+        assert!(dispatched);
+        assert_eq!(local["m1"].len(), 1);
+        assert_eq!(local["m1"][0].address, "1.2.3.4:80");
+    }
+
+    #[test]
+    fn test_sse_line_parsing_ignores_comments_and_empty() {
+        // Per SSE spec, lines starting with ":" are comments and blank lines
+        // without pending data should not trigger dispatch.
+        let lines = vec![
+            ": this is a comment",
+            "",
+            "event: full_sync",
+            r#"data: {"type":"full_sync","timestamp":1,"models":{"m1":[{"address":"a:1"}]}}"#,
+            "",
+        ];
+
+        let state = test_state();
+        let mut local: InstanceMap = HashMap::new();
+        let mut event_type = String::new();
+        let mut data_buf = String::new();
+
+        for line in &lines {
+            if line.starts_with("event:") {
+                event_type = line[6..].trim().to_string();
+            } else if line.starts_with("data:") {
+                data_buf = line[5..].trim().to_string();
+            } else if line.is_empty() && !data_buf.is_empty() {
+                apply_sse_event(&mut local, &state, "prov", &event_type, &data_buf);
+                event_type.clear();
+                data_buf.clear();
+            }
+        }
+
+        assert!(local.contains_key("m1"));
+    }
+
+    // ─── instances_to_discovery_result pool structure ────────────────────
+
+    #[test]
+    fn test_instances_pool_contains_all_variant_ids() {
+        let mut map: InstanceMap = HashMap::new();
+        map.insert(
+            "model-a".into(),
+            vec![
+                make_instance("10.0.0.1:80", Some("pod-1")),
+                make_instance("10.0.0.2:80", Some("pod-2")),
+                make_instance("10.0.0.3:80", Some("pod-3")),
+            ],
+        );
+
+        let result = instances_to_discovery_result("prov", &map);
+        assert_eq!(result.pools.len(), 1);
+        assert_eq!(result.pools[0].id, "pool-model-a");
+        assert_eq!(result.pools[0].variants.len(), 3);
+        assert!(result.pools[0]
+            .variants
+            .contains(&"model-a-pod-1".to_string()));
+        assert!(result.pools[0]
+            .variants
+            .contains(&"model-a-pod-2".to_string()));
+        assert!(result.pools[0]
+            .variants
+            .contains(&"model-a-pod-3".to_string()));
+    }
+
+    #[test]
+    fn test_instances_dc_propagated() {
+        let inst = SidecarInstance {
+            address: "10.0.0.1:80".into(),
+            pod_name: Some("pod-1".into()),
+            labels: HashMap::new(),
+            dc: Some("us-west-2".into()),
+        };
+        let mut map: InstanceMap = HashMap::new();
+        map.insert("model-a".into(), vec![inst]);
+
+        let result = instances_to_discovery_result("prov", &map);
+        assert_eq!(result.variants[0].metadata.get("dc").unwrap(), "us-west-2");
+    }
+
+    #[test]
+    fn test_instances_apps_kwai_label() {
+        let inst = make_instance_with_labels(
+            "10.0.0.1:80",
+            Some("pod-1"),
+            vec![("apps.kwai.io/duplicateset-instance-id", "inst-42")],
+            None,
+        );
+        let mut map: InstanceMap = HashMap::new();
+        map.insert("model-a".into(), vec![inst]);
+
+        let result = instances_to_discovery_result("prov", &map);
+        assert_eq!(
+            result.variants[0]
+                .metadata
+                .get("apps.kwai.io/duplicateset-instance-id")
+                .unwrap(),
+            "inst-42"
+        );
+    }
+}

@@ -9,6 +9,7 @@ pub mod metrics;
 pub mod plugin_loader;
 pub mod plugin_manager;
 pub mod provider;
+pub mod sidecar_discovery;
 pub mod state;
 pub mod unified_plugin;
 
