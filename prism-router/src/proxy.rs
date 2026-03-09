@@ -2147,23 +2147,13 @@ impl ProxyHttp for PrismProxy {
             }
         }
 
-        // Determine idle timeout for streaming responses.
-        // Return value tells Pingora: "wait at most this long for the next chunk".
-        let idle_timeout = if !end_of_stream {
-            let idle_secs = ctx
-                .resolved_idle_timeout_secs
-                .unwrap_or(self.idle_timeout_secs);
-            if idle_secs > 0 {
-                Some(std::time::Duration::from_secs(idle_secs))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        // NOTE: The Option<Duration> return value of response_body_filter tells Pingora
+        // to *sleep* that long before sending the chunk downstream. We must return None
+        // to avoid blocking SSE streaming. Idle timeout for stalled upstream connections
+        // should be handled via Pingora's read_timeout on the upstream peer instead.
 
         if !ctx.needs_conversion {
-            return Ok(idle_timeout);
+            return Ok(None);
         }
 
         let is_streaming = ctx
@@ -2250,7 +2240,7 @@ impl ProxyHttp for PrismProxy {
             }
         }
 
-        Ok(idle_timeout)
+        Ok(None)
     }
 
     /// Connection failure handler — mark retryable if fallback chain has candidates.
