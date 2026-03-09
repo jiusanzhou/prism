@@ -1247,8 +1247,18 @@ mod latency_bench {
         println!("║  max  = {:>8}µs                           ║", max);
         println!("╚══════════════════════════════════════════════╝");
 
-        // Route decision should be < 5ms for a single variant
-        assert!(p99 < 5000, "p99 latency {}µs exceeds 5ms threshold", p99);
+        // Route decision should be < 5ms locally; CI runners are slower, allow 20ms
+        let threshold = if std::env::var("CI").is_ok() {
+            20_000
+        } else {
+            5_000
+        };
+        assert!(
+            p99 < threshold,
+            "p99 latency {}µs exceeds threshold {}µs",
+            p99,
+            threshold
+        );
     }
 
     /// Measure routing + model rewrite decision latency.
@@ -1306,7 +1316,17 @@ mod latency_bench {
         println!("║  p99  = {:>8}µs                           ║", p99);
         println!("╚══════════════════════════════════════════════╝");
 
-        assert!(p99 < 5000, "p99 latency {}µs exceeds 5ms", p99);
+        let threshold = if std::env::var("CI").is_ok() {
+            20_000
+        } else {
+            5_000
+        };
+        assert!(
+            p99 < threshold,
+            "p99 latency {}µs exceeds threshold {}µs",
+            p99,
+            threshold
+        );
     }
 
     /// Measure provider plugin dispatch overhead (build_auth + rewrite_url).
