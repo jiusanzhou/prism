@@ -7,7 +7,7 @@ edition = "2021"
 default = ["grpc", "proxy"]
 grpc = ["tonic", "prost", "prost-types"]
 proxy = ["pingora", "async-trait", "bytes"]
-wasm = ["wasmtime"]
+wasm = ["wasmtime", "prism-core/wasm"]
 redis = ["dep:redis"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 

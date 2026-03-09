@@ -85,7 +85,7 @@ impl WasmProviderPlugin {
             let ptr = id_fn
                 .call(&mut store, ())
                 .map_err(|e| format!("prism_provider_id failed: {}", e))?;
-            if let Some(id) = Self::read_len_prefixed_string(&store, &instance, ptr) {
+            if let Some(id) = Self::read_len_prefixed_string(&mut store, &instance, ptr) {
                 self.cached_id = id;
             }
         }
@@ -96,7 +96,7 @@ impl WasmProviderPlugin {
             let ptr = schema_fn
                 .call(&mut store, ())
                 .map_err(|e| format!("prism_provider_config_schema failed: {}", e))?;
-            if let Some(json) = Self::read_len_prefixed_string(&store, &instance, ptr) {
+            if let Some(json) = Self::read_len_prefixed_string(&mut store, &instance, ptr) {
                 if let Ok(schema) = serde_json::from_str(&json) {
                     self.cached_schema = schema;
                 }
@@ -167,15 +167,15 @@ impl WasmProviderPlugin {
         data: &[u8],
     ) -> Result<i32, String> {
         let alloc = instance
-            .get_typed_func::<i32, i32>(store, "prism_provider_alloc")
+            .get_typed_func::<i32, i32>(&mut *store, "prism_provider_alloc")
             .map_err(|_| "Guest does not export prism_provider_alloc".to_string())?;
         let ptr = alloc
-            .call(store, data.len() as i32)
+            .call(&mut *store, data.len() as i32)
             .map_err(|e| format!("prism_provider_alloc failed: {}", e))?;
         let memory = instance
-            .get_memory(store, "memory")
+            .get_memory(&mut *store, "memory")
             .ok_or("No memory export")?;
-        let dest = memory.data_mut(store);
+        let dest = memory.data_mut(&mut *store);
         let offset = ptr as usize;
         if offset + data.len() > dest.len() {
             return Err("WASM memory overflow".to_string());
@@ -185,7 +185,7 @@ impl WasmProviderPlugin {
     }
 
     fn read_len_prefixed_string(
-        store: &Store<Arc<Mutex<ProviderHostState>>>,
+        store: &mut Store<Arc<Mutex<ProviderHostState>>>,
         instance: &wasmtime::Instance,
         ptr: i32,
     ) -> Option<String> {
@@ -194,12 +194,12 @@ impl WasmProviderPlugin {
     }
 
     fn read_len_prefixed_bytes(
-        store: &Store<Arc<Mutex<ProviderHostState>>>,
+        store: &mut Store<Arc<Mutex<ProviderHostState>>>,
         instance: &wasmtime::Instance,
         ptr: i32,
     ) -> Option<Vec<u8>> {
-        let memory = instance.get_memory(store, "memory")?;
-        let data = memory.data(store);
+        let memory = instance.get_memory(&mut *store, "memory")?;
+        let data = memory.data(&*store);
         let offset = ptr as usize;
         if offset + 4 > data.len() {
             return None;
@@ -235,7 +235,7 @@ impl WasmProviderPlugin {
         let result_ptr = func
             .call(&mut store, (ctx_ptr, ctx_json.len() as i32))
             .map_err(|e| format!("{} failed: {}", func_name, e))?;
-        Self::read_len_prefixed_string(&store, &instance, result_ptr)
+        Self::read_len_prefixed_string(&mut store, &instance, result_ptr)
             .ok_or_else(|| format!("{} returned invalid pointer", func_name))
     }
 
@@ -263,7 +263,7 @@ impl WasmProviderPlugin {
                 (body_ptr, body.len() as i32, ctx_ptr, ctx_json.len() as i32),
             )
             .map_err(|e| format!("{} failed: {}", func_name, e))?;
-        Self::read_len_prefixed_bytes(&store, &instance, result_ptr)
+        Self::read_len_prefixed_bytes(&mut store, &instance, result_ptr)
             .ok_or_else(|| format!("{} returned invalid pointer", func_name))
     }
 }

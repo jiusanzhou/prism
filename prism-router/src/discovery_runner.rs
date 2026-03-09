@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, unused_mut)]
 //! Discovery Runner — loads WASM discovery plugins and runs them.
 //!
 //! Two modes:
@@ -32,7 +32,7 @@ enum DiscoveryPlugin {
 
 /// Build discovery plugins from config.
 fn load_discovery_plugins(config: &PrismConfig) -> Vec<(String, DiscoveryPlugin)> {
-    let plugins = Vec::new();
+    let mut plugins = Vec::new();
 
     for dc in config.all_discovery_configs() {
         if !dc.enabled {

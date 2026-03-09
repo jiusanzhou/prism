@@ -32,7 +32,7 @@ COPY prism-admin/ prism-admin/
 RUN touch prism-core/src/lib.rs prism-router/src/main.rs prism-admin/src/main.rs
 
 # Build the real binary (default features: grpc + proxy)
-RUN cargo build --release -p prism-router
+RUN cargo build --release -p prism-router -p prism-admin
 
 # ─── Stage 2: Runtime ────────────────────────────────────
 FROM debian:bookworm-slim
@@ -42,6 +42,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/prism-router /usr/local/bin/prism-router
+COPY --from=builder /build/target/release/prism-admin /usr/local/bin/prism-admin
 COPY examples/prism.example.yaml /etc/prism/prism.yaml
 
 RUN mkdir -p /var/log/prism

@@ -30,10 +30,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy (default features)
-        run: cargo clippy -p prism-core -p prism-router --all-targets
+        run: cargo clippy -p prism-core -p prism-router -p prism-admin --all-targets
 
       - name: Clippy (with wasm)
-        run: cargo clippy -p prism-core -p prism-router --all-targets --features wasm
+        run: cargo clippy -p prism-core -p prism-router -p prism-admin --all-targets --features wasm
         continue-on-error: true
 
   test:
@@ -48,7 +48,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Unit tests (default)
-        run: cargo test -p prism-core -p prism-router
+        run: cargo test -p prism-core -p prism-router -p prism-admin
 
       - name: E2E tests
         run: cargo test --test e2e_proxy -p prism-router

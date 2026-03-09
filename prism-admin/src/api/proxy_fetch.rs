@@ -58,7 +58,7 @@ pub async fn proxy_fetch(
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("read body error: {}", e)))?;
 
     let body: serde_json::Value =
-        serde_json::from_str(&body_text).unwrap_or_else(|_| serde_json::Value::String(body_text));
+        serde_json::from_str(&body_text).unwrap_or(serde_json::Value::String(body_text));
 
     Ok(Json(ProxyFetchResponse { status, body }))
 }
