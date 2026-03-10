@@ -396,6 +396,9 @@ pub struct VariantConfig {
     /// Variant status: "active" (default) or "inactive".
     #[serde(default = "default_variant_status")]
     pub status: String,
+    /// Rate limit / capacity for this variant (RPM, TPM, concurrent).
+    #[serde(default)]
+    pub rate_limit: Option<AccountRateLimitConfig>,
     /// Arbitrary metadata (e.g. P/D role).
     #[serde(default)]
     pub metadata: std::collections::HashMap<String, String>,

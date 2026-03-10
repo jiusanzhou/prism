@@ -19,6 +19,7 @@ interface Variant {
   upstream_model_name: string | null
   base_url: string | null
   header_match: Record<string, string> | null
+  rate_limit?: { rpm?: number | null; tpm?: number | null; concurrent?: number | null } | null
 }
 
 interface ModelItem { id: string; display_name: string }
@@ -34,11 +35,14 @@ interface FormState {
   upstream_model_name: string
   base_url: string
   header_match: { key: string; value: string }[]
+  rpm: string
+  tpm: string
+  concurrent: string
 }
 
 const emptyForm: FormState = {
   id: "", model_id: "", provider_id: "", weight: "1.0", account_id: "", upstream_model_name: "", base_url: "",
-  header_match: [],
+  header_match: [], rpm: "", tpm: "", concurrent: "",
 }
 
 export default function Variants() {
@@ -84,6 +88,9 @@ export default function Variants() {
       upstream_model_name: v.upstream_model_name || "",
       base_url: v.base_url || "",
       header_match: Object.entries(v.header_match || {}).map(([key, value]) => ({ key, value })),
+      rpm: v.rate_limit?.rpm?.toString() || "",
+      tpm: v.rate_limit?.tpm?.toString() || "",
+      concurrent: v.rate_limit?.concurrent?.toString() || "",
     })
     setEditing(v.id)
     setDialogOpen(true)
@@ -99,6 +106,7 @@ export default function Variants() {
     const autoId = form.model_id && form.provider_id ? `${form.model_id}@${form.provider_id}` : ""
     const headerMatch: Record<string, string> = {}
     form.header_match.forEach(h => { if (h.key) headerMatch[h.key] = h.value })
+    const hasRL = form.rpm || form.tpm || form.concurrent
     const body = {
       id: editing || form.id || autoId,
       model_id: form.model_id,
@@ -108,6 +116,11 @@ export default function Variants() {
       upstream_model_name: form.upstream_model_name || null,
       base_url: form.base_url || null,
       header_match: Object.keys(headerMatch).length > 0 ? headerMatch : null,
+      rate_limit: hasRL ? {
+        rpm: form.rpm ? parseInt(form.rpm) : null,
+        tpm: form.tpm ? parseInt(form.tpm) : null,
+        concurrent: form.concurrent ? parseInt(form.concurrent) : null,
+      } : null,
     }
     const url = editing ? `/api/variants/${editing}` : "/api/variants"
     const method = editing ? "PUT" : "POST"
@@ -148,6 +161,7 @@ export default function Variants() {
                   <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Provider</th>
                   <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden sm:table-cell">Account</th>
                   <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden sm:table-cell">Weight</th>
+                  <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden sm:table-cell">Capacity</th>
                   <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden md:table-cell">Upstream Model</th>
                   <th className="text-right px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Actions</th>
                 </tr></thead>
@@ -159,6 +173,13 @@ export default function Variants() {
                       <td className="px-4 py-3"><span className="text-xs">{v.provider_id}</span></td>
                       <td className="px-4 py-3 hidden sm:table-cell"><span className="text-xs text-[hsl(var(--muted-foreground))]">{v.account_id || "—"}</span></td>
                       <td className="px-4 py-3 hidden sm:table-cell"><span className="font-mono text-xs">{v.weight ?? "—"}</span></td>
+                      <td className="px-4 py-3 hidden sm:table-cell">
+                        <span className="text-xs text-[hsl(var(--muted-foreground))]">
+                          {v.rate_limit?.rpm || v.rate_limit?.tpm || v.rate_limit?.concurrent
+                            ? [v.rate_limit?.rpm && `${v.rate_limit.rpm} RPM`, v.rate_limit?.tpm && `${v.rate_limit.tpm} TPM`, v.rate_limit?.concurrent && `${v.rate_limit.concurrent} C`].filter(Boolean).join(" · ")
+                            : "—"}
+                        </span>
+                      </td>
                       <td className="px-4 py-3 hidden md:table-cell"><span className="text-xs text-[hsl(var(--muted-foreground))]">{v.upstream_model_name || "—"}</span></td>
                       <td className="px-4 py-3"><div className="flex justify-end gap-1">
                         <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleEdit(v)}><Pencil className="h-3.5 w-3.5" /></Button>
@@ -229,6 +250,14 @@ export default function Variants() {
             <div>
               <Label>Base URL Override</Label>
               <Input value={form.base_url} onChange={e => setForm(f => ({ ...f, base_url: e.target.value }))} placeholder="Optional URL override" />
+            </div>
+            <div>
+              <Label className="mb-2 block">Capacity (Rate Limits)</Label>
+              <div className="grid grid-cols-3 gap-3">
+                <div><Label className="text-xs text-[hsl(var(--muted-foreground))]">RPM</Label><Input type="number" value={form.rpm} onChange={e => setForm(f => ({ ...f, rpm: e.target.value }))} placeholder="e.g. 60" /></div>
+                <div><Label className="text-xs text-[hsl(var(--muted-foreground))]">TPM</Label><Input type="number" value={form.tpm} onChange={e => setForm(f => ({ ...f, tpm: e.target.value }))} placeholder="e.g. 100000" /></div>
+                <div><Label className="text-xs text-[hsl(var(--muted-foreground))]">Concurrent</Label><Input type="number" value={form.concurrent} onChange={e => setForm(f => ({ ...f, concurrent: e.target.value }))} placeholder="e.g. 10" /></div>
+              </div>
             </div>
             <div>
               <div className="flex items-center justify-between mb-2">

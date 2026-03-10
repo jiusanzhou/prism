@@ -150,15 +150,25 @@ interface ModelVariantInfo {
   model_id: string
   display_name: string
   variant_count: number
-  variants: { id: string; weight: number | null; upstream_model_name: string | null }[]
+  variants: { id: string; weight: number | null; upstream_model_name: string | null; rate_limit?: { rpm?: number | null; tpm?: number | null; concurrent?: number | null } | null }[]
 }
 
 function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string; onBack: () => void; onUpdated: () => void }) {
   const [provider, setProvider] = useState<Provider | null>(null)
   const [accounts, setAccounts] = useState<Account[]>([])
   const [modelVariants, setModelVariants] = useState<ModelVariantInfo[]>([])
+  const [allModels, setAllModels] = useState<{ id: string; display_name: string }[]>([])
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<"overview" | "accounts" | "models">("overview")
+
+  // Add model dialog
+  const [addModelDialogOpen, setAddModelDialogOpen] = useState(false)
+  const [addModelMode, setAddModelMode] = useState<"existing" | "new">("existing")
+  const [selectedModelId, setSelectedModelId] = useState("")
+  const [newModelForm, setNewModelForm] = useState({
+    id: "", display_name: "", upstream_model_name: "", weight: "1.0",
+  })
+  const [addModelSaving, setAddModelSaving] = useState(false)
 
   const [providerDialogOpen, setProviderDialogOpen] = useState(false)
   const [providerForm, setProviderForm] = useState<ProviderForm>(emptyProviderForm)
@@ -172,6 +182,12 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
 
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [togglingId, setTogglingId] = useState<string | null>(null)
+
+  // Rate limit edit dialog
+  const [rateLimitDialogOpen, setRateLimitDialogOpen] = useState(false)
+  const [rateLimitVariantId, setRateLimitVariantId] = useState("")
+  const [rateLimitForm, setRateLimitForm] = useState({ rpm: "", tpm: "", concurrent: "" })
+  const [rateLimitSaving, setRateLimitSaving] = useState(false)
 
   const loadDetail = useCallback(async () => {
     setLoading(true)
@@ -199,9 +215,11 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
         }
         const info = modelsMap.get(v.model_id)!
         info.variant_count++
-        info.variants.push({ id: v.id, weight: v.weight, upstream_model_name: v.upstream_model_name })
+        info.variants.push({ id: v.id, weight: v.weight, upstream_model_name: v.upstream_model_name, rate_limit: v.rate_limit })
       }
       setModelVariants(Array.from(modelsMap.values()))
+      // Store all models for the "add existing" dropdown
+      setAllModels((mRes.models || []).map((m: { id: string; display_name?: string }) => ({ id: m.id, display_name: m.display_name || m.id })))
     } catch { /* */ }
     setLoading(false)
   }, [providerId])
@@ -225,6 +243,41 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
       body: JSON.stringify(body),
     })
     setProviderSaving(false); setProviderDialogOpen(false); loadDetail(); onUpdated()
+  }
+
+  // Variant rate limit edit
+  const openRateLimitEdit = (variantId: string, rateLimit?: { rpm?: number | null; tpm?: number | null; concurrent?: number | null } | null) => {
+    setRateLimitVariantId(variantId)
+    setRateLimitForm({
+      rpm: rateLimit?.rpm?.toString() || "",
+      tpm: rateLimit?.tpm?.toString() || "",
+      concurrent: rateLimit?.concurrent?.toString() || "",
+    })
+    setRateLimitDialogOpen(true)
+  }
+
+  const saveRateLimit = async () => {
+    setRateLimitSaving(true)
+    try {
+      // Fetch full variant config, update rate_limit, PUT it back
+      const variant = await api(`/api/variants/${rateLimitVariantId}`).then(r => r.json())
+      const hasRL = rateLimitForm.rpm || rateLimitForm.tpm || rateLimitForm.concurrent
+      const body = {
+        ...variant,
+        rate_limit: hasRL ? {
+          rpm: rateLimitForm.rpm ? parseInt(rateLimitForm.rpm) : null,
+          tpm: rateLimitForm.tpm ? parseInt(rateLimitForm.tpm) : null,
+          concurrent: rateLimitForm.concurrent ? parseInt(rateLimitForm.concurrent) : null,
+        } : null,
+      }
+      await api(`/api/variants/${rateLimitVariantId}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+      setRateLimitDialogOpen(false)
+      loadDetail()
+    } catch { /* */ }
+    setRateLimitSaving(false)
   }
 
   // Account toggle
@@ -277,6 +330,50 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
   }
 
   const deleteAccount = async (id: string) => { await api(`/api/accounts/${id}`, { method: "DELETE" }); loadDetail(); onUpdated() }
+
+  // Add model to this provider (creates variant)
+  const handleAddModel = async () => {
+    setAddModelSaving(true)
+    try {
+      let modelId = selectedModelId
+      if (addModelMode === "new") {
+        // Create the model first
+        modelId = newModelForm.id
+        await api(`/api/models/${modelId}`, {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: modelId,
+            display_name: newModelForm.display_name || modelId,
+            quality_tier: "A",
+            capabilities: {
+              max_context_window: 128000, max_output_tokens: 4096,
+              supports_streaming: true, supports_function_calling: false,
+              supports_vision: false, supports_json_mode: false, supports_reasoning: false,
+            },
+            pricing: { input_per_1m_tokens: 0, output_per_1m_tokens: 0 },
+            specialties: [],
+          }),
+        })
+      }
+      // Create variant linking model to this provider
+      const variantId = `${modelId}@${providerId}`
+      await api("/api/variants", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: variantId,
+          model_id: modelId,
+          provider_id: providerId,
+          weight: parseFloat(newModelForm.weight) || null,
+          upstream_model_name: newModelForm.upstream_model_name || null,
+        }),
+      })
+      setAddModelDialogOpen(false)
+      setSelectedModelId("")
+      setNewModelForm({ id: "", display_name: "", upstream_model_name: "", weight: "1.0" })
+      loadDetail(); onUpdated()
+    } catch { /* */ }
+    setAddModelSaving(false)
+  }
 
   // Form helpers
   const addHeader = () => setAccountForm(f => ({ ...f, headers: [...f.headers, { key: "", value: "" }] }))
@@ -429,6 +526,7 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
         <div>
           <div className="flex items-center justify-between mb-4">
             <div><h2 className="text-lg font-semibold">Models</h2><p className="text-sm text-[hsl(var(--muted-foreground))]">Models routed through this provider</p></div>
+            <Button size="sm" onClick={() => { setAddModelMode("existing"); setSelectedModelId(""); setNewModelForm({ id: "", display_name: "", upstream_model_name: "", weight: "1.0" }); setAddModelDialogOpen(true) }}><Plus className="h-4 w-4 mr-1" /> Add Model</Button>
           </div>
           <Card>
             <CardContent className="p-0">
@@ -440,6 +538,7 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
                     <thead><tr className="border-b border-[hsl(var(--border))]">
                       <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Model</th>
                       <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Variants</th>
+                      <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Capacity</th>
                       <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden sm:table-cell">Weights</th>
                       <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden md:table-cell">Upstream Names</th>
                     </tr></thead>
@@ -451,6 +550,30 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
                             <div className="text-xs text-[hsl(var(--muted-foreground))]">{mv.model_id}</div>
                           </td>
                           <td className="px-4 py-3"><span className="font-mono text-xs">{mv.variant_count}</span></td>
+                          <td className="px-4 py-3">
+                            <div className="flex flex-wrap gap-1">
+                              {mv.variants.map(v => {
+                                const rl = v.rate_limit
+                                const hasLimit = rl?.rpm || rl?.tpm || rl?.concurrent
+                                return (
+                                  <button key={v.id} type="button" onClick={() => openRateLimitEdit(v.id, v.rate_limit)}
+                                    className="inline-flex items-center gap-1 text-[10px] rounded border px-1.5 py-0.5 cursor-pointer transition-colors hover:bg-[hsl(var(--accent))]"
+                                    style={{ borderColor: hasLimit ? "hsl(var(--primary) / 0.3)" : "hsl(var(--border))" }}
+                                    title={`Edit rate limit for ${v.id}`}
+                                  >
+                                    <span className="font-medium">{v.id}</span>
+                                    {hasLimit ? (
+                                      <span className="text-[hsl(var(--muted-foreground))]">
+                                        {[rl?.rpm && `${rl.rpm} RPM`, rl?.tpm && `${rl.tpm} TPM`, rl?.concurrent && `${rl.concurrent} C`].filter(Boolean).join(" · ")}
+                                      </span>
+                                    ) : (
+                                      <Pencil className="h-2.5 w-2.5 text-[hsl(var(--muted-foreground))]" />
+                                    )}
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          </td>
                           <td className="px-4 py-3 hidden sm:table-cell">
                             <div className="flex flex-wrap gap-1">
                               {mv.variants.map(v => (
@@ -522,9 +645,74 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
         </DialogContent>
       </Dialog>
 
+      {/* Add Model Dialog */}
+      <Dialog open={addModelDialogOpen} onOpenChange={setAddModelDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add Model</DialogTitle>
+            <DialogDescription>Add a model to {providerId} by creating a variant</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {/* Mode toggle */}
+            <div className="flex gap-1 p-1 bg-[hsl(var(--muted))] rounded-md">
+              <button type="button" className={`flex-1 px-3 py-1.5 text-sm rounded transition-colors ${addModelMode === "existing" ? "bg-[hsl(var(--background))] shadow-sm font-medium" : "text-[hsl(var(--muted-foreground))]"}`} onClick={() => setAddModelMode("existing")}>Existing Model</button>
+              <button type="button" className={`flex-1 px-3 py-1.5 text-sm rounded transition-colors ${addModelMode === "new" ? "bg-[hsl(var(--background))] shadow-sm font-medium" : "text-[hsl(var(--muted-foreground))]"}`} onClick={() => setAddModelMode("new")}>New Model</button>
+            </div>
+
+            {addModelMode === "existing" ? (
+              <div>
+                <Label>Model</Label>
+                <Select value={selectedModelId} onValueChange={setSelectedModelId}>
+                  <SelectTrigger><SelectValue placeholder="Select a model..." /></SelectTrigger>
+                  <SelectContent>
+                    {allModels
+                      .filter(m => !modelVariants.some(mv => mv.model_id === m.id))
+                      .map(m => <SelectItem key={m.id} value={m.id}>{m.display_name} ({m.id})</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : (
+              <>
+                <div><Label>Model ID <span className="text-red-400">*</span></Label><Input value={newModelForm.id} onChange={e => setNewModelForm(f => ({ ...f, id: e.target.value }))} placeholder="gpt-4o" /><p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Unique identifier, cannot be changed later</p></div>
+                <div><Label>Display Name</Label><Input value={newModelForm.display_name} onChange={e => setNewModelForm(f => ({ ...f, display_name: e.target.value }))} placeholder="GPT-4o" /></div>
+              </>
+            )}
+
+            <Separator />
+            <p className="text-xs font-medium text-[hsl(var(--muted-foreground))] uppercase tracking-wider">Variant Settings</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div><Label>Upstream Model Name</Label><Input value={newModelForm.upstream_model_name} onChange={e => setNewModelForm(f => ({ ...f, upstream_model_name: e.target.value }))} placeholder="Same as model ID" /><p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Model name sent to upstream provider</p></div>
+              <div><Label>Weight</Label><Input type="number" step="0.1" value={newModelForm.weight} onChange={e => setNewModelForm(f => ({ ...f, weight: e.target.value }))} placeholder="1.0" /></div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddModelDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handleAddModel} disabled={addModelSaving || (addModelMode === "existing" ? !selectedModelId : !newModelForm.id)}>
+              {addModelSaving ? "Adding..." : "Add Model"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <ConfirmDialog open={!!deleteTarget} onOpenChange={open => { if (!open) setDeleteTarget(null) }}
         title="Delete Account" description={`Delete account "${deleteTarget}"? This cannot be undone.`}
         onConfirm={() => { if (deleteTarget) deleteAccount(deleteTarget) }} />
+
+      {/* Variant Rate Limit Dialog */}
+      <Dialog open={rateLimitDialogOpen} onOpenChange={setRateLimitDialogOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Set Capacity: {rateLimitVariantId}</DialogTitle><DialogDescription>Configure rate limits for this model variant</DialogDescription></DialogHeader>
+          <div className="space-y-4">
+            <div><Label>RPM (Requests per Minute)</Label><Input type="number" value={rateLimitForm.rpm} onChange={e => setRateLimitForm(f => ({ ...f, rpm: e.target.value }))} placeholder="e.g. 60" /></div>
+            <div><Label>TPM (Tokens per Minute)</Label><Input type="number" value={rateLimitForm.tpm} onChange={e => setRateLimitForm(f => ({ ...f, tpm: e.target.value }))} placeholder="e.g. 100000" /></div>
+            <div><Label>Concurrent Requests</Label><Input type="number" value={rateLimitForm.concurrent} onChange={e => setRateLimitForm(f => ({ ...f, concurrent: e.target.value }))} placeholder="e.g. 10" /></div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRateLimitDialogOpen(false)}>Cancel</Button>
+            <Button onClick={saveRateLimit} disabled={rateLimitSaving}>{rateLimitSaving ? <><Loader2 className="h-4 w-4 animate-spin mr-2" />Saving...</> : "Save"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

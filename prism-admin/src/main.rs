@@ -151,6 +151,7 @@ async fn main() {
         .route("/api/models/{id}", delete(api::models::delete_model))
         .route("/api/variants", get(api::variants::list_variants))
         .route("/api/variants", post(api::variants::create_variant))
+        .route("/api/variants/{id}", get(api::variants::get_variant))
         .route("/api/variants/{id}", put(api::variants::update_variant))
         .route("/api/variants/{id}", delete(api::variants::delete_variant))
         .route("/api/rate-limits", get(api::rate_limits::list_rate_limits))

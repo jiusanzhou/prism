@@ -21,6 +21,7 @@ pub async fn list_variants(State(state): State<AppState>) -> impl IntoResponse {
                         "account_id": v.account_id,
                         "upstream_model_name": v.upstream_model_name,
                         "base_url": v.base_url,
+                        "rate_limit": v.rate_limit,
                     })
                 })
                 .collect();
@@ -30,6 +31,17 @@ pub async fn list_variants(State(state): State<AppState>) -> impl IntoResponse {
             )
                 .into_response()
         }
+        Err(e) => error_response(e.to_string()),
+    }
+}
+
+/// GET /api/variants/:id
+pub async fn get_variant(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.store.get_variant(&id).await {
+        Ok(variant) => (StatusCode::OK, Json(serde_json::json!(variant))).into_response(),
         Err(e) => error_response(e.to_string()),
     }
 }
