@@ -1,4 +1,6 @@
 import { useEffect, useState, useCallback } from "react"
+import { api } from "@/lib/api"
+import { usePageTitle } from "@/hooks/usePageTitle"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog"
@@ -8,7 +10,7 @@ import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
-import { Plus, Trash2, Pencil, ArrowLeft, Loader2, Layers } from "lucide-react"
+import { Plus, Trash2, Pencil, ArrowLeft, Loader2, Layers, X } from "lucide-react"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 
 interface Capabilities {
@@ -44,9 +46,10 @@ interface Variant {
   account_id: string | null
   upstream_model_name: string | null
   base_url: string | null
+  header_match: Record<string, string> | null
 }
 
-interface ProviderItem { id: string }
+interface ProviderItem { id: string; provider_type?: string }
 interface AccountItem { id: string; provider_id: string }
 
 const QUALITY_TIERS = ["S", "A", "B", "C"]
@@ -83,10 +86,12 @@ interface VariantFormState {
   weight: string
   account_id: string
   upstream_model_name: string
+  header_match: { key: string; value: string }[]
 }
 
 const emptyVariantForm: VariantFormState = {
   id: "", provider_id: "", weight: "1.0", account_id: "", upstream_model_name: "",
+  header_match: [],
 }
 
 // ════════════════════════════════════════
@@ -115,10 +120,10 @@ function ModelDetail({ modelId, onBack, onUpdated }: { modelId: string; onBack: 
     setLoading(true)
     try {
       const [mRes, vRes, pRes, aRes] = await Promise.all([
-        fetch("/api/models").then(r => r.json()),
-        fetch("/api/variants").then(r => r.json()),
-        fetch("/api/providers").then(r => r.json()),
-        fetch("/api/accounts").then(r => r.json()),
+        api("/api/models").then(r => r.json()),
+        api("/api/variants").then(r => r.json()),
+        api("/api/providers").then(r => r.json()),
+        api("/api/accounts").then(r => r.json()),
       ])
       const foundModel = (mRes.models || []).find((m: Model) => m.id === modelId)
       setModel(foundModel || null)
@@ -152,7 +157,7 @@ function ModelDetail({ modelId, onBack, onUpdated }: { modelId: string; onBack: 
 
   const saveModel = async () => {
     setModelSaving(true)
-    await fetch(`/api/models/${modelId}`, {
+    await api(`/api/models/${modelId}`, {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         id: modelId,
@@ -193,6 +198,7 @@ function ModelDetail({ modelId, onBack, onUpdated }: { modelId: string; onBack: 
       weight: (v.weight ?? 1.0).toString(),
       account_id: v.account_id || "",
       upstream_model_name: v.upstream_model_name || "",
+      header_match: Object.entries(v.header_match || {}).map(([key, value]) => ({ key, value })),
     })
     setEditingVariant(v.id)
     setVariantDialogOpen(true)
@@ -200,22 +206,30 @@ function ModelDetail({ modelId, onBack, onUpdated }: { modelId: string; onBack: 
 
   const saveVariant = async () => {
     setVariantSaving(true)
+    const autoId = variantForm.provider_id ? `${modelId}@${variantForm.provider_id}` : ""
+    const headerMatch: Record<string, string> = {}
+    variantForm.header_match.forEach(h => { if (h.key) headerMatch[h.key] = h.value })
     const body = {
-      id: editingVariant || variantForm.id,
+      id: editingVariant || variantForm.id || autoId,
       model_id: modelId,
       provider_id: variantForm.provider_id,
       weight: parseFloat(variantForm.weight) || null,
       account_id: variantForm.account_id || null,
       upstream_model_name: variantForm.upstream_model_name || null,
-
+      header_match: Object.keys(headerMatch).length > 0 ? headerMatch : null,
     }
     const url = editingVariant ? `/api/variants/${editingVariant}` : "/api/variants"
     const method = editingVariant ? "PUT" : "POST"
-    await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+    await api(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
     setVariantSaving(false); setVariantDialogOpen(false); loadDetail(); onUpdated()
   }
 
-  const deleteVariant = async (id: string) => { await fetch(`/api/variants/${id}`, { method: "DELETE" }); loadDetail(); onUpdated() }
+  const addHeaderMatch = () => setVariantForm(f => ({ ...f, header_match: [...f.header_match, { key: "", value: "" }] }))
+  const removeHeaderMatch = (i: number) => setVariantForm(f => ({ ...f, header_match: f.header_match.filter((_, idx) => idx !== i) }))
+  const updateHeaderMatch = (i: number, field: "key" | "value", val: string) =>
+    setVariantForm(f => ({ ...f, header_match: f.header_match.map((h, idx) => idx === i ? { ...h, [field]: val } : h) }))
+
+  const deleteVariant = async (id: string) => { await api(`/api/variants/${id}`, { method: "DELETE" }); loadDetail(); onUpdated() }
 
   // Filter accounts by selected provider
   const filteredAccounts = variantForm.provider_id
@@ -284,7 +298,23 @@ function ModelDetail({ modelId, onBack, onUpdated }: { modelId: string; onBack: 
       )}
 
       {/* Variants Tab */}
-      {activeTab === "variants" && (
+      {activeTab === "variants" && (() => {
+        // Group sidecar provider variants: show one row per provider_id for non-API providers
+        const sidecarProviderIds = new Set(providers.filter(p => p.provider_type === "sidecar").map(p => p.id))
+        const displayRows: { variant: Variant; grouped: boolean; groupCount: number }[] = []
+        const seenSidecarProviders = new Set<string>()
+        for (const v of variants) {
+          if (sidecarProviderIds.has(v.provider_id)) {
+            if (!seenSidecarProviders.has(v.provider_id)) {
+              seenSidecarProviders.add(v.provider_id)
+              const count = variants.filter(x => x.provider_id === v.provider_id).length
+              displayRows.push({ variant: v, grouped: true, groupCount: count })
+            }
+          } else {
+            displayRows.push({ variant: v, grouped: false, groupCount: 1 })
+          }
+        }
+        return (
         <div>
           <div className="flex items-center justify-between mb-4">
             <div><h2 className="text-lg font-semibold">Variants</h2><p className="text-sm text-[hsl(var(--muted-foreground))]">Provider routing variants for this model</p></div>
@@ -303,17 +333,36 @@ function ModelDetail({ modelId, onBack, onUpdated }: { modelId: string; onBack: 
                       <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden sm:table-cell">Account</th>
                       <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden sm:table-cell">Weight</th>
                       <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden md:table-cell">Upstream Model</th>
-                      <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden md:table-cell">Base URL</th>
+                      <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden md:table-cell">Header Match</th>
                       <th className="text-right px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Actions</th>
                     </tr></thead>
                     <tbody>
-                      {variants.map(v => (
+                      {displayRows.map(({ variant: v, grouped, groupCount }) => (
                         <tr key={v.id} className="border-b border-[hsl(var(--border))] last:border-0 hover:bg-[hsl(var(--accent))]/50 transition-colors">
-                          <td className="px-4 py-3 font-medium">{v.id}</td>
-                          <td className="px-4 py-3"><span className="text-xs">{v.provider_id}</span></td>
+                          <td className="px-4 py-3 font-medium">
+                            {grouped ? (
+                              <div>
+                                <span>{v.id}</span>
+                                <Badge variant="secondary" className="ml-2 text-[10px]">{groupCount} instances</Badge>
+                              </div>
+                            ) : v.id}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className="text-xs">{v.provider_id}</span>
+                            {grouped && <Badge className="ml-1 bg-purple-600/80 text-purple-100 hover:bg-purple-600/80 text-[10px]">Sidecar</Badge>}
+                          </td>
                           <td className="px-4 py-3 hidden sm:table-cell"><span className="text-xs text-[hsl(var(--muted-foreground))]">{v.account_id || "default"}</span></td>
                           <td className="px-4 py-3 hidden sm:table-cell"><span className="font-mono text-xs">{v.weight ?? "—"}</span></td>
                           <td className="px-4 py-3 hidden md:table-cell"><span className="text-xs text-[hsl(var(--muted-foreground))]">{v.upstream_model_name || "—"}</span></td>
+                          <td className="px-4 py-3 hidden md:table-cell">
+                            {v.header_match && Object.keys(v.header_match).length > 0 ? (
+                              <div className="flex flex-wrap gap-1">
+                                {Object.entries(v.header_match).map(([k, val]) => (
+                                  <Badge key={k} variant="outline" className="text-[10px]">{k}: {val}</Badge>
+                                ))}
+                              </div>
+                            ) : <span className="text-xs text-[hsl(var(--muted-foreground))]">—</span>}
+                          </td>
                           <td className="px-4 py-3"><div className="flex justify-end gap-1">
                             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditVariant(v)}><Pencil className="h-3.5 w-3.5" /></Button>
                             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDeleteTarget(v.id)}><Trash2 className="h-3.5 w-3.5 text-red-400" /></Button>
@@ -327,7 +376,8 @@ function ModelDetail({ modelId, onBack, onUpdated }: { modelId: string; onBack: 
             </CardContent>
           </Card>
         </div>
-      )}
+        )
+      })()}
 
       {/* Model Edit Dialog */}
       <Dialog open={modelDialogOpen} onOpenChange={setModelDialogOpen}>
@@ -404,18 +454,23 @@ function ModelDetail({ modelId, onBack, onUpdated }: { modelId: string; onBack: 
 
       {/* Variant Edit Dialog */}
       <Dialog open={variantDialogOpen} onOpenChange={setVariantDialogOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[85vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{editingVariant ? `Edit Variant: ${editingVariant}` : "New Variant"}</DialogTitle><DialogDescription>{editingVariant ? "Update variant" : `Add variant for ${modelId}`}</DialogDescription></DialogHeader>
           <div className="space-y-4">
             {!editingVariant && (
               <div>
                 <Label>ID</Label>
-                <Input value={variantForm.id} onChange={e => setVariantForm(f => ({ ...f, id: e.target.value }))} placeholder={`${modelId}@provider`} />
+                <Input
+                  value={variantForm.id || (variantForm.provider_id ? `${modelId}@${variantForm.provider_id}` : "")}
+                  onChange={e => setVariantForm(f => ({ ...f, id: e.target.value }))}
+                  placeholder="Auto-generated from model@provider"
+                />
+                <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Auto-generated. Override if needed.</p>
               </div>
             )}
             <div>
               <Label>Provider</Label>
-              <Select value={variantForm.provider_id} onValueChange={v => setVariantForm(f => ({ ...f, provider_id: v, account_id: "" }))}>
+              <Select value={variantForm.provider_id} onValueChange={v => setVariantForm(f => ({ ...f, provider_id: v, account_id: "", id: f.id || "" }))}>
                 <SelectTrigger><SelectValue placeholder="Select provider" /></SelectTrigger>
                 <SelectContent>
                   {providers.map(p => <SelectItem key={p.id} value={p.id}>{p.id}</SelectItem>)}
@@ -440,7 +495,20 @@ function ModelDetail({ modelId, onBack, onUpdated }: { modelId: string; onBack: 
               <Label>Upstream Model Name</Label>
               <Input value={variantForm.upstream_model_name} onChange={e => setVariantForm(f => ({ ...f, upstream_model_name: e.target.value }))} placeholder="Same as model id" />
             </div>
-
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <Label>Header Match Rules</Label>
+                <Button variant="ghost" size="sm" onClick={addHeaderMatch}><Plus className="h-3 w-3 mr-1" /> Add</Button>
+              </div>
+              <p className="text-xs text-[hsl(var(--muted-foreground))] mb-2">Only route requests with matching headers to this variant</p>
+              {variantForm.header_match.map((h, i) => (
+                <div key={i} className="flex gap-2 mb-2">
+                  <Input placeholder="Header name" value={h.key} onChange={e => updateHeaderMatch(i, "key", e.target.value)} className="flex-1" />
+                  <Input placeholder="Header value" value={h.value} onChange={e => updateHeaderMatch(i, "value", e.target.value)} className="flex-1" />
+                  <Button variant="ghost" size="icon" onClick={() => removeHeaderMatch(i)}><X className="h-4 w-4" /></Button>
+                </div>
+              ))}
+            </div>
           </div>
           <DialogFooter><Button variant="outline" onClick={() => setVariantDialogOpen(false)}>Cancel</Button><Button onClick={saveVariant} disabled={variantSaving}>{variantSaving ? "Saving..." : "Save"}</Button></DialogFooter>
         </DialogContent>
@@ -458,6 +526,7 @@ function ModelDetail({ modelId, onBack, onUpdated }: { modelId: string; onBack: 
 // ════════════════════════════════════════
 
 export default function Models() {
+  usePageTitle("Models")
   const [models, setModels] = useState<Model[]>([])
   const [variants, setVariants] = useState<{ id: string; model_id: string }[]>([])
   const [loading, setLoading] = useState(true)
@@ -472,8 +541,8 @@ export default function Models() {
     setLoading(true)
     try {
       const [md, vd] = await Promise.all([
-        fetch("/api/models").then(r => r.json()),
-        fetch("/api/variants").then(r => r.json()),
+        api("/api/models").then(r => r.json()),
+        api("/api/variants").then(r => r.json()),
       ])
       setModels(md.models || [])
       setVariants(vd.variants || [])
@@ -502,7 +571,7 @@ export default function Models() {
   }
 
   const handleDelete = async (id: string) => {
-    await fetch(`/api/models/${id}`, { method: "DELETE" })
+    await api(`/api/models/${id}`, { method: "DELETE" })
     load()
   }
 
@@ -522,7 +591,7 @@ export default function Models() {
     const isEdit = models.some(m => m.id === form.id)
     const url = isEdit ? `/api/models/${form.id}` : "/api/models"
     const method = isEdit ? "PUT" : "POST"
-    await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+    await api(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
     setSaving(false)
     setDialogOpen(false)
     load()

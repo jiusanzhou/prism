@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react"
+import { api } from "@/lib/api"
+import { usePageTitle } from "@/hooks/usePageTitle"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
@@ -15,6 +17,7 @@ interface ValidationResult {
 }
 
 export default function ConfigEditor() {
+  usePageTitle("Config")
   const [content, setContent] = useState("")
   const [loading, setLoading] = useState(true)
   const [validation, setValidation] = useState<ValidationResult | null>(null)
@@ -23,7 +26,7 @@ export default function ConfigEditor() {
 
   const loadConfig = () => {
     setLoading(true)
-    fetch("/api/config")
+    api("/api/config")
       .then(r => r.json())
       .then(data => {
         setContent(JSON.stringify(data, null, 2))
@@ -35,7 +38,7 @@ export default function ConfigEditor() {
   useEffect(loadConfig, [])
 
   const handleValidate = async () => {
-    const res = await fetch("/api/config/validate", {
+    const res = await api("/api/config/validate", {
       method: "POST",
       headers: { "Content-Type": "text/plain" },
       body: content,
@@ -46,7 +49,7 @@ export default function ConfigEditor() {
 
   const handleSave = async () => {
     setSaving(true)
-    await fetch("/api/config", {
+    await api("/api/config", {
       method: "PUT",
       headers: { "Content-Type": "text/plain" },
       body: content,

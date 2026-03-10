@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react"
+import { api } from "@/lib/api"
+import { usePageTitle } from "@/hooks/usePageTitle"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Activity, Box, GitBranch, Shield, Gauge, ScrollText, Users, Server } from "lucide-react"
 
@@ -17,11 +19,12 @@ interface Status {
 }
 
 export default function Dashboard() {
+  usePageTitle("Dashboard")
   const [status, setStatus] = useState<Status | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    fetch("/api/status")
+    api("/api/status")
       .then(r => r.json())
       .then(setStatus)
       .catch(e => setError(e.message))

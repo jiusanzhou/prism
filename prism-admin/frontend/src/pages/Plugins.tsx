@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react"
+import { api } from "@/lib/api"
+import { usePageTitle } from "@/hooks/usePageTitle"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
@@ -98,6 +100,7 @@ function SortableRow({ plugin, phase, onEdit, onDelete }: {
 }
 
 export default function Plugins() {
+  usePageTitle("Plugins")
   const [plugins, setPlugins] = useState<Plugin[]>([])
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<Phase | "all">("all")
@@ -114,7 +117,7 @@ export default function Plugins() {
 
   const load = () => {
     setLoading(true)
-    fetch("/api/plugins").then(r => r.json()).then(d => { setPlugins(d.plugins || []); setLoading(false) }).catch(() => setLoading(false))
+    api("/api/plugins").then(r => r.json()).then(d => { setPlugins(d.plugins || []); setLoading(false) }).catch(() => setLoading(false))
   }
   useEffect(load, [])
 
@@ -150,7 +153,7 @@ export default function Plugins() {
         case "url": source = { url: orig.source.url, ...(orig.source.sha256 ? { sha256: orig.source.sha256 } : {}) }; break
         case "oci": source = { oci: orig.source.oci, ...(orig.source.digest ? { digest: orig.source.digest } : {}) }; break
       }
-      return fetch(`/api/plugins/${u.name}`, {
+      return api(`/api/plugins/${u.name}`, {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: u.name, source, phases: [], config: orig.config || {}, enabled: orig.enabled, priority: u.newPri }),
       })
@@ -169,7 +172,7 @@ export default function Plugins() {
     })
     setEditing(p.name); setDialogOpen(true)
   }
-  const handleDelete = async (name: string) => { await fetch(`/api/plugins/${name}`, { method: "DELETE" }); load() }
+  const handleDelete = async (name: string) => { await api(`/api/plugins/${name}`, { method: "DELETE" }); load() }
   const handleSave = async () => {
     setSaving(true)
     let source: Record<string, unknown> = {}
@@ -183,7 +186,7 @@ export default function Plugins() {
     try { configParsed = JSON.parse(form.config_json) } catch { /* keep empty */ }
     const body = { name: editing || form.name, source, phases: [], config: configParsed, enabled: form.enabled, priority: parseInt(form.priority) || 100 }
     const url = editing ? `/api/plugins/${editing}` : "/api/plugins"
-    await fetch(url, { method: editing ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+    await api(url, { method: editing ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
     setSaving(false); setDialogOpen(false); load()
   }
 

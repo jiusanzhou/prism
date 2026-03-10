@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react"
+import { api } from "@/lib/api"
+import { usePageTitle } from "@/hooks/usePageTitle"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select"
-import { Plus, Trash2, Pencil, Loader2 } from "lucide-react"
+import { Plus, Trash2, Pencil, Loader2, X } from "lucide-react"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 
 interface Variant {
@@ -16,6 +18,7 @@ interface Variant {
   account_id: string | null
   upstream_model_name: string | null
   base_url: string | null
+  header_match: Record<string, string> | null
 }
 
 interface ModelItem { id: string; display_name: string }
@@ -30,13 +33,16 @@ interface FormState {
   account_id: string
   upstream_model_name: string
   base_url: string
+  header_match: { key: string; value: string }[]
 }
 
 const emptyForm: FormState = {
   id: "", model_id: "", provider_id: "", weight: "1.0", account_id: "", upstream_model_name: "", base_url: "",
+  header_match: [],
 }
 
 export default function Variants() {
+  usePageTitle("Variants")
   const [variants, setVariants] = useState<Variant[]>([])
   const [models, setModels] = useState<ModelItem[]>([])
   const [providers, setProviders] = useState<ProviderItem[]>([])
@@ -52,10 +58,10 @@ export default function Variants() {
   const load = () => {
     setLoading(true)
     Promise.all([
-      fetch("/api/variants").then(r => r.json()),
-      fetch("/api/models").then(r => r.json()),
-      fetch("/api/providers").then(r => r.json()),
-      fetch("/api/accounts").then(r => r.json()),
+      api("/api/variants").then(r => r.json()),
+      api("/api/models").then(r => r.json()),
+      api("/api/providers").then(r => r.json()),
+      api("/api/accounts").then(r => r.json()),
     ]).then(([vd, md, pd, ad]) => {
       setVariants(vd.variants || [])
       setModels(md.models || [])
@@ -77,34 +83,44 @@ export default function Variants() {
       account_id: v.account_id || "",
       upstream_model_name: v.upstream_model_name || "",
       base_url: v.base_url || "",
+      header_match: Object.entries(v.header_match || {}).map(([key, value]) => ({ key, value })),
     })
     setEditing(v.id)
     setDialogOpen(true)
   }
 
   const handleDelete = async (id: string) => {
-    await fetch(`/api/variants/${id}`, { method: "DELETE" })
+    await api(`/api/variants/${id}`, { method: "DELETE" })
     load()
   }
 
   const handleSave = async () => {
     setSaving(true)
+    const autoId = form.model_id && form.provider_id ? `${form.model_id}@${form.provider_id}` : ""
+    const headerMatch: Record<string, string> = {}
+    form.header_match.forEach(h => { if (h.key) headerMatch[h.key] = h.value })
     const body = {
-      id: editing || form.id,
+      id: editing || form.id || autoId,
       model_id: form.model_id,
       provider_id: form.provider_id,
       weight: parseFloat(form.weight) || null,
       account_id: form.account_id || null,
       upstream_model_name: form.upstream_model_name || null,
       base_url: form.base_url || null,
+      header_match: Object.keys(headerMatch).length > 0 ? headerMatch : null,
     }
     const url = editing ? `/api/variants/${editing}` : "/api/variants"
     const method = editing ? "PUT" : "POST"
-    await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+    await api(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
     setSaving(false)
     setDialogOpen(false)
     load()
   }
+
+  const addHeaderMatch = () => setForm(f => ({ ...f, header_match: [...f.header_match, { key: "", value: "" }] }))
+  const removeHeaderMatch = (i: number) => setForm(f => ({ ...f, header_match: f.header_match.filter((_, idx) => idx !== i) }))
+  const updateHeaderMatch = (i: number, field: "key" | "value", val: string) =>
+    setForm(f => ({ ...f, header_match: f.header_match.map((h, idx) => idx === i ? { ...h, [field]: val } : h) }))
 
   const modelName = (id: string) => models.find(m => m.id === id)?.display_name || id
 
@@ -166,12 +182,17 @@ export default function Variants() {
             {!editing && (
               <div>
                 <Label>ID</Label>
-                <Input value={form.id} onChange={e => setForm(f => ({ ...f, id: e.target.value }))} placeholder="gpt-4o@openai" />
+                <Input
+                  value={form.id || (form.model_id && form.provider_id ? `${form.model_id}@${form.provider_id}` : "")}
+                  onChange={e => setForm(f => ({ ...f, id: e.target.value }))}
+                  placeholder="Auto-generated from model@provider"
+                />
+                <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Auto-generated from model and provider selection. Override if needed.</p>
               </div>
             )}
             <div>
               <Label>Model</Label>
-              <Select value={form.model_id} onValueChange={v => setForm(f => ({ ...f, model_id: v }))}>
+              <Select value={form.model_id} onValueChange={v => setForm(f => ({ ...f, model_id: v, id: f.id || "" }))}>
                 <SelectTrigger><SelectValue placeholder="Select model" /></SelectTrigger>
                 <SelectContent>
                   {models.map(m => <SelectItem key={m.id} value={m.id}>{m.id}</SelectItem>)}
@@ -180,7 +201,7 @@ export default function Variants() {
             </div>
             <div>
               <Label>Provider</Label>
-              <Select value={form.provider_id} onValueChange={v => setForm(f => ({ ...f, provider_id: v }))}>
+              <Select value={form.provider_id} onValueChange={v => setForm(f => ({ ...f, provider_id: v, id: f.id || "" }))}>
                 <SelectTrigger><SelectValue placeholder="Select provider" /></SelectTrigger>
                 <SelectContent>
                   {providers.map(p => <SelectItem key={p.id} value={p.id}>{p.id}</SelectItem>)}
@@ -208,6 +229,20 @@ export default function Variants() {
             <div>
               <Label>Base URL Override</Label>
               <Input value={form.base_url} onChange={e => setForm(f => ({ ...f, base_url: e.target.value }))} placeholder="Optional URL override" />
+            </div>
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <Label>Header Match Rules</Label>
+                <Button variant="ghost" size="sm" onClick={addHeaderMatch}><Plus className="h-3 w-3 mr-1" /> Add</Button>
+              </div>
+              <p className="text-xs text-[hsl(var(--muted-foreground))] mb-2">Only route requests with matching headers to this variant</p>
+              {form.header_match.map((h, i) => (
+                <div key={i} className="flex gap-2 mb-2">
+                  <Input placeholder="Header name" value={h.key} onChange={e => updateHeaderMatch(i, "key", e.target.value)} className="flex-1" />
+                  <Input placeholder="Header value" value={h.value} onChange={e => updateHeaderMatch(i, "value", e.target.value)} className="flex-1" />
+                  <Button variant="ghost" size="icon" onClick={() => removeHeaderMatch(i)}><X className="h-4 w-4" /></Button>
+                </div>
+              ))}
             </div>
           </div>
           <DialogFooter>

@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react"
+import { api } from "@/lib/api"
+import { usePageTitle } from "@/hooks/usePageTitle"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -20,6 +22,7 @@ interface AccessLogConfig {
 }
 
 export default function AccessLog() {
+  usePageTitle("Access Log")
   const [form, setForm] = useState<AccessLogConfig>({
     enabled: false, output: "stdout", file_path: null, format: "json",
     text_format: "", fields: [], max_file_size_mb: 100, max_files: 5,
@@ -29,7 +32,7 @@ export default function AccessLog() {
   const [saved, setSaved] = useState(false)
 
   useEffect(() => {
-    fetch("/api/access-log").then(r => r.json()).then(d => {
+    api("/api/access-log").then(r => r.json()).then(d => {
       setForm({
         enabled: d.enabled ?? false,
         output: d.output || "stdout",
@@ -46,7 +49,7 @@ export default function AccessLog() {
 
   const handleSave = async () => {
     setSaving(true)
-    await fetch("/api/access-log", {
+    await api("/api/access-log", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(form),

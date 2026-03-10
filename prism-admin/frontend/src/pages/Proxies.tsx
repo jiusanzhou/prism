@@ -1,4 +1,6 @@
 import { useEffect, useState, useCallback } from "react"
+import { api } from "@/lib/api"
+import { usePageTitle } from "@/hooks/usePageTitle"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -38,12 +40,13 @@ function statusColor(status: string) {
 }
 
 export default function Proxies() {
+  usePageTitle("Proxies")
   const [proxies, setProxies] = useState<Proxy[]>([])
   const [loading, setLoading] = useState(true)
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
 
   const load = useCallback(() => {
-    fetch("/api/proxies")
+    api("/api/proxies")
       .then(r => r.json())
       .then(d => { setProxies(d || []); setLoading(false) })
       .catch(() => setLoading(false))
@@ -56,7 +59,7 @@ export default function Proxies() {
   }, [load])
 
   const remove = async (instanceId: string) => {
-    await fetch(`/api/proxies/${instanceId}`, { method: "DELETE" })
+    await api(`/api/proxies/${instanceId}`, { method: "DELETE" })
     load()
   }
 

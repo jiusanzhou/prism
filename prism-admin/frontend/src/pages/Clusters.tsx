@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react"
+import { api } from "@/lib/api"
+import { usePageTitle } from "@/hooks/usePageTitle"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -65,6 +67,7 @@ function statusColor(status: string) {
 }
 
 export default function Clusters() {
+  usePageTitle("Clusters")
   const [clusters, setClusters] = useState<ClusterItem[]>([])
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -77,7 +80,7 @@ export default function Clusters() {
 
   const load = () => {
     setLoading(true)
-    fetch("/api/clusters")
+    api("/api/clusters")
       .then(r => r.json())
       .then(d => { setClusters(d || []); setLoading(false) })
       .catch(() => setLoading(false))
@@ -92,7 +95,7 @@ export default function Clusters() {
       return
     }
     setExpanded(id)
-    fetch(`/api/clusters/${id}`)
+    api(`/api/clusters/${id}`)
       .then(r => r.json())
       .then(setDetail)
       .catch(() => setDetail(null))
@@ -105,7 +108,7 @@ export default function Clusters() {
       if (form.tags.trim()) {
         try { tags = JSON.parse(form.tags) } catch { /* ignore */ }
       }
-      await fetch("/api/clusters", {
+      await api("/api/clusters", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: form.id, name: form.name, description: form.description, tags }),
@@ -119,14 +122,14 @@ export default function Clusters() {
   }
 
   const remove = async (id: string) => {
-    await fetch(`/api/clusters/${id}`, { method: "DELETE" })
+    await api(`/api/clusters/${id}`, { method: "DELETE" })
     load()
   }
 
   const sync = async (id: string) => {
     setSyncing(id)
     try {
-      await fetch(`/api/clusters/${id}/sync`, { method: "POST" })
+      await api(`/api/clusters/${id}/sync`, { method: "POST" })
     } finally {
       setSyncing(null)
     }

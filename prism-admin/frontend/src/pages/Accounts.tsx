@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import { api } from "@/lib/api"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
@@ -66,8 +67,8 @@ export default function Accounts() {
   const load = () => {
     setLoading(true)
     Promise.all([
-      fetch("/api/accounts").then(r => r.json()),
-      fetch("/api/providers").then(r => r.json()),
+      api("/api/accounts").then(r => r.json()),
+      api("/api/providers").then(r => r.json()),
     ]).then(([ad, pd]) => {
       setAccounts(ad.accounts || [])
       setProviders(pd.providers || [])
@@ -79,7 +80,7 @@ export default function Accounts() {
   const handleNew = () => { setForm(emptyForm); setEditing(null); setShowKey(false); setDialogOpen(true) }
 
   const handleEdit = async (id: string) => {
-    const res = await fetch(`/api/accounts/${id}`)
+    const res = await api(`/api/accounts/${id}`)
     const data: AccountFull = await res.json()
     setForm({
       id: data.id,
@@ -101,7 +102,7 @@ export default function Accounts() {
   }
 
   const handleDelete = async (id: string) => {
-    await fetch(`/api/accounts/${id}`, { method: "DELETE" })
+    await api(`/api/accounts/${id}`, { method: "DELETE" })
     load()
   }
 
@@ -130,7 +131,7 @@ export default function Accounts() {
     }
     const url = editing ? `/api/accounts/${editing}` : "/api/accounts"
     const method = editing ? "PUT" : "POST"
-    await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+    await api(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
     setSaving(false)
     setDialogOpen(false)
     load()

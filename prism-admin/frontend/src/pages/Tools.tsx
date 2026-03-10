@@ -1,4 +1,6 @@
 import { useState } from "react"
+import { api } from "@/lib/api"
+import { usePageTitle } from "@/hooks/usePageTitle"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -201,6 +203,7 @@ function mapProvider(raw: RawProvider): MappedProvider {
 }
 
 export default function Tools() {
+  usePageTitle("Tools")
   const [step, setStep] = useState<Step>("input")
   const [mode, setMode] = useState<"curl" | "manual">("curl")
   const [curlInput, setCurlInput] = useState("")
@@ -238,7 +241,7 @@ export default function Tools() {
     }
 
     try {
-      const proxyRes = await fetch("/api/proxy-fetch", {
+      const proxyRes = await api("/api/proxy-fetch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url, headers }),
@@ -286,7 +289,7 @@ export default function Tools() {
 
       // Upsert provider
       try {
-        const res = await fetch(`/api/providers/${m.provider.id}`, {
+        const res = await api(`/api/providers/${m.provider.id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -311,7 +314,7 @@ export default function Tools() {
       // Create accounts
       for (const acct of m.accounts) {
         try {
-          const res = await fetch("/api/accounts", {
+          const res = await api("/api/accounts", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(acct),

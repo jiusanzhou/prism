@@ -1,4 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react"
+import { api } from "@/lib/api"
+import { usePageTitle } from "@/hooks/usePageTitle"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog"
@@ -144,11 +146,19 @@ function DiscoveryFields({ discovery, onChange }: { discovery: ProviderForm["dis
 // ════════════════════════════════════════
 // Provider Detail View
 // ════════════════════════════════════════
+interface ModelVariantInfo {
+  model_id: string
+  display_name: string
+  variant_count: number
+  variants: { id: string; weight: number | null; upstream_model_name: string | null }[]
+}
+
 function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string; onBack: () => void; onUpdated: () => void }) {
   const [provider, setProvider] = useState<Provider | null>(null)
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [modelVariants, setModelVariants] = useState<ModelVariantInfo[]>([])
   const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState<"overview" | "accounts">("overview")
+  const [activeTab, setActiveTab] = useState<"overview" | "accounts" | "models">("overview")
 
   const [providerDialogOpen, setProviderDialogOpen] = useState(false)
   const [providerForm, setProviderForm] = useState<ProviderForm>(emptyProviderForm)
@@ -166,12 +176,32 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
   const loadDetail = useCallback(async () => {
     setLoading(true)
     try {
-      const [pRes, aRes] = await Promise.all([
-        fetch(`/api/providers/${providerId}`).then(r => r.json()),
-        fetch("/api/accounts").then(r => r.json()),
+      const [pRes, aRes, vRes, mRes] = await Promise.all([
+        api(`/api/providers/${providerId}`).then(r => r.json()),
+        api("/api/accounts").then(r => r.json()),
+        api("/api/variants").then(r => r.json()),
+        api("/api/models").then(r => r.json()),
       ])
       setProvider(pRes)
       setAccounts((aRes.accounts || []).filter((a: Account) => a.provider_id === providerId))
+      // Group variants by model for this provider
+      const providerVariants = (vRes.variants || []).filter((v: { provider_id: string }) => v.provider_id === providerId)
+      const modelsMap = new Map<string, ModelVariantInfo>()
+      for (const v of providerVariants) {
+        if (!modelsMap.has(v.model_id)) {
+          const model = (mRes.models || []).find((m: { id: string }) => m.id === v.model_id)
+          modelsMap.set(v.model_id, {
+            model_id: v.model_id,
+            display_name: model?.display_name || v.model_id,
+            variant_count: 0,
+            variants: [],
+          })
+        }
+        const info = modelsMap.get(v.model_id)!
+        info.variant_count++
+        info.variants.push({ id: v.id, weight: v.weight, upstream_model_name: v.upstream_model_name })
+      }
+      setModelVariants(Array.from(modelsMap.values()))
     } catch { /* */ }
     setLoading(false)
   }, [providerId])
@@ -190,7 +220,7 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
   const saveProvider = async () => {
     setProviderSaving(true)
     const body = buildProviderBody(providerForm)
-    await fetch(`/api/providers/${providerId}`, {
+    await api(`/api/providers/${providerId}`, {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     })
@@ -201,7 +231,7 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
   const toggleAccount = async (acct: Account) => {
     setTogglingId(acct.id)
     setAccounts(prev => prev.map(a => a.id === acct.id ? { ...a, enabled: !a.enabled } : a))
-    await fetch(`/api/accounts/${acct.id}`, {
+    await api(`/api/accounts/${acct.id}`, {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...acct, enabled: !acct.enabled }),
     })
@@ -212,7 +242,7 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
   const openNewAccount = () => { setAccountForm(emptyAccountForm(providerId)); setEditingAccount(null); setShowKey(false); setAccountDialogOpen(true) }
 
   const openEditAccount = async (id: string) => {
-    const data: Account = await fetch(`/api/accounts/${id}`).then(r => r.json())
+    const data: Account = await api(`/api/accounts/${id}`).then(r => r.json())
     setAccountForm({
       id: data.id, provider_id: data.provider_id, api_key: data.api_key || "", base_url: data.base_url || "",
       headers: Object.entries(data.headers || {}).map(([key, value]) => ({ key, value })),
@@ -240,13 +270,13 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
       rate_limit: hasRL ? { rpm: accountForm.rpm ? parseInt(accountForm.rpm) : null, tpm: accountForm.tpm ? parseInt(accountForm.tpm) : null, concurrent: accountForm.concurrent ? parseInt(accountForm.concurrent) : null } : null,
       metadata,
     }
-    await fetch(editingAccount ? `/api/accounts/${editingAccount}` : "/api/accounts", {
+    await api(editingAccount ? `/api/accounts/${editingAccount}` : "/api/accounts", {
       method: editingAccount ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     })
     setAccountSaving(false); setAccountDialogOpen(false); loadDetail(); onUpdated()
   }
 
-  const deleteAccount = async (id: string) => { await fetch(`/api/accounts/${id}`, { method: "DELETE" }); loadDetail(); onUpdated() }
+  const deleteAccount = async (id: string) => { await api(`/api/accounts/${id}`, { method: "DELETE" }); loadDetail(); onUpdated() }
 
   // Form helpers
   const addHeader = () => setAccountForm(f => ({ ...f, headers: [...f.headers, { key: "", value: "" }] }))
@@ -282,7 +312,10 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
 
       {/* Tabs */}
       <div className="flex gap-1 mb-4 border-b border-[hsl(var(--border))]">
-        {(isSidecar ? [["overview", "Overview"]] as const : [["overview", "Overview"], ["accounts", `Accounts (${accounts.length})`]] as const).map(([key, label]) => (
+        {(isSidecar
+          ? [["overview", "Overview"], ["models", `Models (${modelVariants.length})`]] as const
+          : [["overview", "Overview"], ["accounts", `Accounts (${accounts.length})`], ["models", `Models (${modelVariants.length})`]] as const
+        ).map(([key, label]) => (
           <button key={key} onClick={() => setActiveTab(key)}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${activeTab === key ? "border-[hsl(var(--foreground))] text-[hsl(var(--foreground))]" : "border-transparent text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"}`}>{label}</button>
         ))}
@@ -380,6 +413,59 @@ function ProviderDetail({ providerId, onBack, onUpdated }: { providerId: string;
                             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditAccount(acct.id)}><Pencil className="h-3.5 w-3.5" /></Button>
                             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDeleteTarget(acct.id)}><Trash2 className="h-3.5 w-3.5 text-red-400" /></Button>
                           </div></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Models Tab */}
+      {activeTab === "models" && (
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <div><h2 className="text-lg font-semibold">Models</h2><p className="text-sm text-[hsl(var(--muted-foreground))]">Models routed through this provider</p></div>
+          </div>
+          <Card>
+            <CardContent className="p-0">
+              {modelVariants.length === 0 ? (
+                <div className="text-center py-12 text-[hsl(var(--muted-foreground))]">No models use this provider</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead><tr className="border-b border-[hsl(var(--border))]">
+                      <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Model</th>
+                      <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))]">Variants</th>
+                      <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden sm:table-cell">Weights</th>
+                      <th className="text-left px-4 py-3 font-medium text-[hsl(var(--muted-foreground))] hidden md:table-cell">Upstream Names</th>
+                    </tr></thead>
+                    <tbody>
+                      {modelVariants.map(mv => (
+                        <tr key={mv.model_id} className="border-b border-[hsl(var(--border))] last:border-0 hover:bg-[hsl(var(--accent))]/50 transition-colors">
+                          <td className="px-4 py-3">
+                            <div className="font-medium">{mv.display_name}</div>
+                            <div className="text-xs text-[hsl(var(--muted-foreground))]">{mv.model_id}</div>
+                          </td>
+                          <td className="px-4 py-3"><span className="font-mono text-xs">{mv.variant_count}</span></td>
+                          <td className="px-4 py-3 hidden sm:table-cell">
+                            <div className="flex flex-wrap gap-1">
+                              {mv.variants.map(v => (
+                                <Badge key={v.id} variant="outline" className="text-[10px]">{v.id}: {v.weight ?? 1.0}</Badge>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 hidden md:table-cell">
+                            <div className="flex flex-wrap gap-1">
+                              {mv.variants.filter(v => v.upstream_model_name).map(v => (
+                                <span key={v.id} className="text-xs text-[hsl(var(--muted-foreground))]">{v.upstream_model_name}</span>
+                              ))}
+                              {mv.variants.every(v => !v.upstream_model_name) && <span className="text-xs text-[hsl(var(--muted-foreground))]">—</span>}
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -496,6 +582,7 @@ function providerToForm(p: Provider): ProviderForm {
 // Main Providers Page (Table)
 // ════════════════════════════════════════
 export default function Providers() {
+  usePageTitle("Providers")
   const [providers, setProviders] = useState<Provider[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [loading, setLoading] = useState(true)
@@ -509,7 +596,7 @@ export default function Providers() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [pRes, aRes] = await Promise.all([fetch("/api/providers").then(r => r.json()), fetch("/api/accounts").then(r => r.json())])
+      const [pRes, aRes] = await Promise.all([api("/api/providers").then(r => r.json()), api("/api/accounts").then(r => r.json())])
       setProviders(pRes.providers || []); setAccounts(aRes.accounts || [])
     } catch { /* */ }
     setLoading(false)
@@ -520,14 +607,14 @@ export default function Providers() {
   const handleNewProvider = async () => {
     setNewSaving(true)
     const body = buildProviderBody(newForm)
-    await fetch(`/api/providers/${newForm.id}`, {
+    await api(`/api/providers/${newForm.id}`, {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     })
     setNewSaving(false); setNewDialogOpen(false); setNewForm(emptyProviderForm); load()
   }
 
-  const handleDelete = async (id: string) => { await fetch(`/api/providers/${id}`, { method: "DELETE" }); load() }
+  const handleDelete = async (id: string) => { await api(`/api/providers/${id}`, { method: "DELETE" }); load() }
 
   if (selectedProvider) return <ProviderDetail providerId={selectedProvider} onBack={() => { setSelectedProvider(null); load() }} onUpdated={load} />
 

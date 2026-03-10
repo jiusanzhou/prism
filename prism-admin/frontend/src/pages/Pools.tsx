@@ -1,4 +1,6 @@
 import { useEffect, useState, useCallback } from "react"
+import { api } from "@/lib/api"
+import { usePageTitle } from "@/hooks/usePageTitle"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog"
@@ -33,9 +35,9 @@ function PoolDetail({ poolId, onBack, onUpdated }: { poolId: string; onBack: () 
     setLoading(true)
     try {
       const [pRes, vRes, mRes] = await Promise.all([
-        fetch("/api/pools").then(r => r.json()),
-        fetch("/api/variants").then(r => r.json()),
-        fetch("/api/models").then(r => r.json()),
+        api("/api/pools").then(r => r.json()),
+        api("/api/variants").then(r => r.json()),
+        api("/api/models").then(r => r.json()),
       ])
       const found = (pRes.pools || []).find((p: Pool) => p.id === poolId)
       setPool(found || null)
@@ -66,7 +68,7 @@ function PoolDetail({ poolId, onBack, onUpdated }: { poolId: string; onBack: () 
 
   const savePool = async () => {
     setSaving(true)
-    await fetch(`/api/pools/${poolId}`, {
+    await api(`/api/pools/${poolId}`, {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: poolId, name: form.name, variants: form.variants, selection_mode: form.selection_mode }),
     })
@@ -236,6 +238,7 @@ function PoolDetail({ poolId, onBack, onUpdated }: { poolId: string; onBack: () 
 
 // ═══ Main Pools Page ═══
 export default function Pools() {
+  usePageTitle("Pools")
   const [pools, setPools] = useState<Pool[]>([])
   const [allVariants, setAllVariants] = useState<VariantFull[]>([])
   const [models, setModels] = useState<ModelInfo[]>([])
@@ -251,9 +254,9 @@ export default function Pools() {
     setLoading(true)
     try {
       const [pRes, vRes, mRes] = await Promise.all([
-        fetch("/api/pools").then(r => r.json()),
-        fetch("/api/variants").then(r => r.json()),
-        fetch("/api/models").then(r => r.json()),
+        api("/api/pools").then(r => r.json()),
+        api("/api/variants").then(r => r.json()),
+        api("/api/models").then(r => r.json()),
       ])
       setPools(pRes.pools || [])
       setAllVariants(vRes.variants || [])
@@ -292,14 +295,14 @@ export default function Pools() {
 
   const handleSave = async () => {
     setSaving(true)
-    await fetch("/api/pools", {
+    await api("/api/pools", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: form.id, name: form.name, variants: form.variants, selection_mode: form.selection_mode }),
     })
     setSaving(false); setDialogOpen(false); setForm(emptyForm); load()
   }
 
-  const handleDelete = async (id: string) => { await fetch(`/api/pools/${id}`, { method: "DELETE" }); load() }
+  const handleDelete = async (id: string) => { await api(`/api/pools/${id}`, { method: "DELETE" }); load() }
 
   if (selectedPool) return <PoolDetail poolId={selectedPool} onBack={() => { setSelectedPool(null); load() }} onUpdated={load} />
 

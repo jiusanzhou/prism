@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react"
+import { api } from "@/lib/api"
+import { usePageTitle } from "@/hooks/usePageTitle"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -85,6 +87,7 @@ const RETRY_SCOPE_OPTIONS = ["SameVariant", "SameProvider", "CrossProvider"]
 // ── Component ──
 
 export default function Routing() {
+  usePageTitle("Routing")
   const [form, setForm] = useState<RoutingConfig>(DEFAULT_ROUTING)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -95,7 +98,7 @@ export default function Routing() {
   const [overrideForm, setOverrideForm] = useState<ModelStrategyOverride>({ model_id: "", strategy: "balanced", pool: "" })
 
   useEffect(() => {
-    fetch("/api/routing")
+    api("/api/routing")
       .then(r => r.json())
       .then(d => {
         if (d.routing) {
@@ -135,7 +138,7 @@ export default function Routing() {
   const handleSave = async () => {
     setSaving(true)
     try {
-      await fetch("/api/routing", {
+      await api("/api/routing", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),

@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react"
 import { BrowserRouter, Routes, Route, NavLink, useLocation } from "react-router-dom"
-import { LayoutDashboard, Box, Brain, GitBranch, Gauge, Layers, Puzzle, Shield, ScrollText, FileCode, Menu, Sun, Moon, Monitor, Server, Activity, Wrench, Shuffle, Key } from "lucide-react"
+import { LayoutDashboard, Box, Brain, GitBranch, Gauge, Layers, Puzzle, Shield, ScrollText, FileCode, Menu, Sun, Moon, Monitor, Server, Activity, Wrench, Shuffle, Key, LogOut } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useTheme } from "@/hooks/useTheme"
 import { Sheet, SheetTrigger, SheetContent } from "@/components/ui/sheet"
+import LoginGate from "@/components/LoginGate"
+import { getToken, clearToken } from "@/lib/api"
 import Dashboard from "./pages/Dashboard"
 import Providers from "./pages/Providers"
 import Models from "./pages/Models"
@@ -133,9 +135,16 @@ function AppLayout() {
         </div>
         <div className="p-3 border-t border-[hsl(var(--border))] flex items-center justify-between">
           <span className="text-xs text-[hsl(var(--muted-foreground))]">Prism Router v0.1.0</span>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={cycleTheme} title={themeLabel}>
-            <ThemeIcon className="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
-          </Button>
+          <div className="flex items-center gap-1">
+            {getToken() && (
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { clearToken(); window.location.reload() }} title="Logout">
+                <LogOut className="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+              </Button>
+            )}
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={cycleTheme} title={themeLabel}>
+              <ThemeIcon className="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+            </Button>
+          </div>
         </div>
       </nav>
 
@@ -161,6 +170,11 @@ function AppLayout() {
             </SheetContent>
           </Sheet>
           <h1 className="text-sm font-semibold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent flex-1">Prism Admin</h1>
+          {getToken() && (
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { clearToken(); window.location.reload() }} title="Logout">
+              <LogOut className="h-4 w-4 text-[hsl(var(--muted-foreground))]" />
+            </Button>
+          )}
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={cycleTheme} title={themeLabel}>
             <ThemeIcon className="h-4 w-4 text-[hsl(var(--muted-foreground))]" />
           </Button>
@@ -190,6 +204,39 @@ function AppLayout() {
 }
 
 export default function App() {
+  const [authed, setAuthed] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    // Check if auth is required
+    fetch("/api/models").then(res => {
+      if (res.ok) {
+        setAuthed(true) // No auth required, or token already valid
+      } else if (res.status === 401) {
+        // Auth required — check if we have a stored token
+        const token = getToken()
+        if (token) {
+          fetch("/api/models", { headers: { Authorization: `Bearer ${token}` } }).then(r => {
+            setAuthed(r.ok)
+          }).catch(() => setAuthed(false))
+        } else {
+          setAuthed(false)
+        }
+      }
+    }).catch(() => setAuthed(true)) // Network error, let app handle it
+  }, [])
+
+  useEffect(() => {
+    const handler = () => setAuthed(false)
+    window.addEventListener("prism:auth-required", handler)
+    return () => window.removeEventListener("prism:auth-required", handler)
+  }, [])
+
+  if (authed === null) return null // Loading
+
+  if (!authed) {
+    return <LoginGate onAuth={() => setAuthed(true)} />
+  }
+
   return (
     <BrowserRouter>
       <AppLayout />

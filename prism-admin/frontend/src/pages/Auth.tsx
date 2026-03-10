@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react"
+import { api } from "@/lib/api"
+import { usePageTitle } from "@/hooks/usePageTitle"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -15,6 +17,7 @@ interface AuthConfig {
 }
 
 export default function Auth() {
+  usePageTitle("Auth")
   const [form, setForm] = useState<AuthConfig>({
     enabled: false, header: "authorization", keys: [], strip_prefix: "Bearer ", skip_paths: [],
   })
@@ -23,7 +26,7 @@ export default function Auth() {
   const [saved, setSaved] = useState(false)
 
   useEffect(() => {
-    fetch("/api/auth").then(r => r.json()).then(d => {
+    api("/api/auth").then(r => r.json()).then(d => {
       setForm({
         enabled: d.enabled ?? false,
         header: d.header || "authorization",
@@ -37,7 +40,7 @@ export default function Auth() {
 
   const handleSave = async () => {
     setSaving(true)
-    await fetch("/api/auth", {
+    await api("/api/auth", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(form),

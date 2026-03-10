@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react"
+import { api } from "@/lib/api"
+import { usePageTitle } from "@/hooks/usePageTitle"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
@@ -41,6 +43,7 @@ const emptyForm: FormState = {
 }
 
 export default function RateLimits() {
+  usePageTitle("Rate Limits")
   const [rules, setRules] = useState<RateLimit[]>([])
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -52,7 +55,7 @@ export default function RateLimits() {
 
   const load = () => {
     setLoading(true)
-    fetch("/api/rate-limits").then(r => r.json()).then(d => { setRules(d.rate_limits || []); setLoading(false) }).catch(() => setLoading(false))
+    api("/api/rate-limits").then(r => r.json()).then(d => { setRules(d.rate_limits || []); setLoading(false) }).catch(() => setLoading(false))
   }
   useEffect(load, [])
 
@@ -73,14 +76,14 @@ export default function RateLimits() {
   }
 
   const handleDelete = async (name: string) => {
-    await fetch(`/api/rate-limits/${name}`, { method: "DELETE" })
+    await api(`/api/rate-limits/${name}`, { method: "DELETE" })
     load()
   }
 
   const toggleEnabled = async (r: RateLimit) => {
     setTogglingName(r.name)
     setRules(prev => prev.map(rule => rule.name === r.name ? { ...rule, enabled: !rule.enabled } : rule))
-    await fetch(`/api/rate-limits/${r.name}`, {
+    await api(`/api/rate-limits/${r.name}`, {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: r.name, key_headers: r.key_headers, window_secs: r.window_secs,
@@ -107,7 +110,7 @@ export default function RateLimits() {
     }
     const url = editing ? `/api/rate-limits/${editing}` : "/api/rate-limits"
     const method = editing ? "PUT" : "POST"
-    await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+    await api(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
     setSaving(false)
     setDialogOpen(false)
     load()
