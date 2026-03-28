@@ -1,4 +1,5 @@
 mod api;
+mod async_task;
 #[cfg(feature = "proxy")]
 mod client_keys;
 pub mod codec;

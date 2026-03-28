@@ -1,6 +1,7 @@
 //! prism-router library — re-exports for integration tests and embedding.
 
 pub mod api;
+pub mod async_task;
 pub mod client_keys;
 pub mod codec;
 pub mod config;
