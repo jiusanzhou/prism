@@ -250,6 +250,8 @@ pub unsafe extern "C" fn prism_route(request: *const PrismRouteRequest) -> *mut 
         inflight_snapshot: None,
         prefix_cache_index: None,
         required_protocol,
+        required_capability: None,
+        content_hint: None,
     };
 
     // Execute routing

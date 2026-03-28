@@ -6,8 +6,10 @@ use crate::analyzer::{AnalyzeContext, ChatMessage, RequestAnalyzer, RuleBasedAna
 use crate::feedback::{FeedbackCollector, OutcomeReport};
 use crate::plugin::{PluginFramework, PluginRegistry, PluginState, ResilienceHandler};
 use crate::plugins::affinity::AffinityPlugin;
+use crate::plugins::api_capability_filter::ApiCapabilityFilterPlugin;
 use crate::plugins::canary::CanaryPlugin;
 use crate::plugins::capability_filter::CapabilityFilterPlugin;
+use crate::plugins::content_aware::ContentAwarePlugin;
 use crate::plugins::cost_scorer::CostScorerPlugin;
 use crate::plugins::feedback_scorer::FeedbackScorerPlugin;
 use crate::plugins::geo_proximity::GeoProximityPlugin;
@@ -50,6 +52,13 @@ pub struct RouteRequest {
     pub inflight_snapshot: Option<std::collections::HashMap<String, u32>>,
     /// Shared prefix cache index for cache-aware routing.
     pub prefix_cache_index: Option<std::sync::Arc<dyn crate::prefix_cache::PrefixCacheIndex>>,
+
+    // ── Multi-modal routing fields ──
+    /// Required API capability for this request (e.g., AudioTranscription, ImageGeneration).
+    /// When set, only variants advertising this capability are considered.
+    pub required_capability: Option<ApiCapability>,
+    /// Content hint for routing decisions (e.g., audio duration, image size).
+    pub content_hint: Option<ContentHint>,
 }
 
 impl std::fmt::Debug for RouteRequest {
@@ -59,6 +68,8 @@ impl std::fmt::Debug for RouteRequest {
             .field("requested_model", &self.requested_model)
             .field("has_inflight", &self.inflight_snapshot.is_some())
             .field("has_prefix_cache", &self.prefix_cache_index.is_some())
+            .field("required_capability", &self.required_capability)
+            .field("has_content_hint", &self.content_hint.is_some())
             .finish()
     }
 }
@@ -108,18 +119,19 @@ impl std::error::Error for RouterError {}
 /// Create the default plugin profile that approximates the original L1–L5 behavior.
 ///
 /// Filter plugins:
-///   - ProtocolFilter, CapabilityFilter, HealthFilter, PinnedModel
+///   - ProtocolFilter, CapabilityFilter, ApiCapabilityFilter, HealthFilter, PinnedModel
 ///
 /// Score plugins (with weights approximating Balanced objective):
 ///   - QualityScorer (5), CostScorer (3), LatencyScorer (2),
 ///     SpecialtyScorer (4), GeoProximity (1), QuotaAware (2), Affinity (1),
-///     FeedbackScorer (3), StrategyScorer (10)
+///     FeedbackScorer (3), StrategyScorer (10), ContentAware (1)
 pub fn default_plugin_profile(feedback: Arc<FeedbackCollector>) -> PluginRegistry {
     let mut registry = PluginRegistry::new();
 
     // Filter plugins (score_weight irrelevant, but defaults to 1)
     registry.register_default(Arc::new(ProtocolFilterPlugin));
     registry.register_default(Arc::new(CapabilityFilterPlugin));
+    registry.register_default(Arc::new(ApiCapabilityFilterPlugin));
     registry.register_default(Arc::new(HealthFilterPlugin));
     registry.register_default(Arc::new(PinnedModelPlugin));
 
@@ -140,6 +152,9 @@ pub fn default_plugin_profile(feedback: Arc<FeedbackCollector>) -> PluginRegistr
     registry.register(Arc::new(PrefixAffinityPlugin::new()), 1);
     registry.register(Arc::new(InferenceLoadPlugin::new()), 1);
     registry.register(Arc::new(InFlightLoadPlugin::new()), 10);
+
+    // Content-aware scoring (multi-modal routing)
+    registry.register(Arc::new(ContentAwarePlugin), 1);
 
     registry
 }
@@ -487,6 +502,14 @@ impl Router for PrismRouter {
             );
         }
 
+        // Inject multi-modal routing fields
+        if let Some(ref cap) = request.required_capability {
+            state.set("required_api_capability", cap.clone());
+        }
+        if let Some(ref hint) = request.content_hint {
+            state.set("content_hint", hint.clone());
+        }
+
         // Run the plugin framework
         let result = self.framework.run_routing(&mut state, &candidates)?;
 
@@ -676,6 +699,8 @@ mod tests {
             requested_model: None,
             inflight_snapshot: None,
             prefix_cache_index: None,
+            required_capability: None,
+            content_hint: None,
         }
     }
 
@@ -728,6 +753,8 @@ mod tests {
             requested_model: None,
             inflight_snapshot: None,
             prefix_cache_index: None,
+            required_capability: None,
+            content_hint: None,
         };
 
         let decision = router
@@ -803,6 +830,8 @@ mod tests {
             requested_model: None,
             inflight_snapshot: None,
             prefix_cache_index: None,
+            required_capability: None,
+            content_hint: None,
         };
 
         let decision = router.route(&request).expect("geo routing should succeed");
@@ -938,6 +967,8 @@ mod tests {
             requested_model: Some("model-cheap".into()),
             inflight_snapshot: None,
             prefix_cache_index: None,
+            required_capability: None,
+            content_hint: None,
         };
 
         let decision = router.route(&request).expect("routing should succeed");
@@ -985,6 +1016,8 @@ mod tests {
             requested_model: Some("model-a".into()),
             inflight_snapshot: None,
             prefix_cache_index: None,
+            required_capability: None,
+            content_hint: None,
         };
 
         let decision = router.route(&request).expect("routing should succeed");
@@ -1026,6 +1059,8 @@ mod tests {
             requested_model: Some("model-a".into()),
             inflight_snapshot: None,
             prefix_cache_index: None,
+            required_capability: None,
+            content_hint: None,
         };
 
         let decision = router.route(&request).expect("routing should succeed");

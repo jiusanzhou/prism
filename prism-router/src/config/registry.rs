@@ -335,6 +335,7 @@ fn to_static_discovery_config(config: &PrismConfig) -> StaticDiscoveryConfig {
             upstream_model_name: vc.upstream_model_name.clone(),
             pricing_override: vc.pricing_override.clone(),
             metadata: vc.metadata.clone(),
+            capabilities: vc.capabilities.clone(),
         })
         .collect();
 
@@ -752,6 +753,8 @@ pools:
             requested_model: Some("gpt-4o-mini".into()),
             inflight_snapshot: None,
             prefix_cache_index: None,
+            required_capability: None,
+            content_hint: None,
         };
 
         let decision = router.route(&request).expect("routing should succeed");
@@ -802,6 +805,8 @@ pools:
             requested_model: None,
             inflight_snapshot: None,
             prefix_cache_index: None,
+            required_capability: None,
+            content_hint: None,
         };
 
         let decision = router.route(&request).expect("routing should succeed");
@@ -862,6 +867,8 @@ pools:
             requested_model: None,
             inflight_snapshot: None,
             prefix_cache_index: None,
+            required_capability: None,
+            content_hint: None,
         };
 
         let decision = router.route(&request).expect("routing should succeed");

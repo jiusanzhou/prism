@@ -147,6 +147,8 @@ pub async fn route_handler(
         inflight_snapshot: Some(state.inflight.snapshot()),
         prefix_cache_index: Some(state.prefix_cache.clone()),
         required_protocol: body.required_protocol,
+        required_capability: None,
+        content_hint: None,
     };
 
     let route_start = Instant::now();
