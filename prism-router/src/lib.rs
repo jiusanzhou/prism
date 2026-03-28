@@ -40,3 +40,5 @@ pub mod usage_pg;
 #[cfg(feature = "usage-db")]
 #[cfg(feature = "usage-db")]
 pub mod usage_store;
+#[cfg(feature = "proxy")]
+pub mod ws_codec;

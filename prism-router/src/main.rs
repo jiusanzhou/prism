@@ -36,6 +36,8 @@ mod proxy;
 #[cfg(feature = "proxy")]
 pub mod ratelimit;
 mod sidecar_discovery;
+#[cfg(feature = "proxy")]
+mod ws_codec;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

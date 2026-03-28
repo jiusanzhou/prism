@@ -173,6 +173,8 @@ pub struct ProxyContext {
     // ── WebSocket ──
     /// Whether this is a WebSocket upgrade request.
     pub is_websocket: bool,
+    /// Detected WebSocket protocol type.
+    pub ws_protocol: Option<crate::ws_codec::WsProtocol>,
 }
 
 impl Default for ProxyContext {
@@ -239,6 +241,7 @@ impl Default for ProxyContext {
             logged_request_body: None,
             logged_response_body: None,
             is_websocket: false,
+            ws_protocol: None,
         }
     }
 }
@@ -941,6 +944,23 @@ impl ProxyHttp for PrismProxy {
         if is_upgrade && is_ws {
             ctx.is_websocket = true;
             debug!(path = %path, "WebSocket upgrade detected — bypassing body read/codec");
+
+            // Detect WS protocol type from path
+            let ws_proto = crate::ws_codec::WsProtocol::from_path(&path);
+            ctx.ws_protocol = Some(ws_proto);
+
+            // Extract model from query params / path / headers for routing
+            let query = path.split('?').nth(1).unwrap_or("");
+            if let Some(model) =
+                crate::ws_codec::extract_ws_model(&path, query, &ctx.request_headers_snapshot)
+            {
+                let resolved = self.resolve_model_alias(&model);
+                if resolved != model {
+                    ctx.original_model = Some(model.to_string());
+                    debug!(original = %model, resolved = %resolved, "Resolved WS model alias");
+                }
+                ctx.requested_model = Some(resolved);
+            }
         }
 
         // Read body to extract model name for routing.
@@ -2735,6 +2755,11 @@ impl ProxyHttp for PrismProxy {
                 original_model: ctx.original_model.clone(),
                 request_body: ctx.logged_request_body.clone(),
                 response_body: ctx.logged_response_body.clone(),
+                is_websocket: ctx.is_websocket,
+                ws_protocol: ctx
+                    .ws_protocol
+                    .as_ref()
+                    .map(|p: &crate::ws_codec::WsProtocol| p.as_str().to_string()),
             };
             logger.log(&data);
         }
