@@ -10,6 +10,7 @@ proxy = ["pingora", "async-trait", "bytes"]
 wasm = ["wasmtime", "prism-core/wasm"]
 redis = ["dep:redis"]
 usage-db = ["dep:rusqlite"]
+usage-pg = ["dep:deadpool-postgres", "dep:tokio-postgres"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 
 [dependencies]
@@ -66,6 +67,8 @@ redis = { version = "0.27", features = ["tokio-comp", "connection-manager"], opt
 
 # Usage tracking SQLite (feature-gated)
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+deadpool-postgres = { version = "0.14", optional = true }
+tokio-postgres = { version = "0.7", optional = true }
 
 [build-dependencies]
 tonic-build = "0.12"

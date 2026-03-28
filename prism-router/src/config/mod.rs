@@ -289,6 +289,7 @@ fn merge_configs(base: PrismConfig, overlay: PrismConfig) -> PrismConfig {
         } else {
             base.usage_retention_days
         },
+        usage_pg_url: overlay.usage_pg_url.or(base.usage_pg_url),
     }
 }
 

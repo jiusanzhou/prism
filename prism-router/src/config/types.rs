@@ -66,11 +66,16 @@ pub struct PrismConfig {
     #[serde(default)]
     pub admin: AdminConfig,
 
-    /// Usage database path (default: ./prism-usage.db). Requires `usage-db` feature.
+    /// Usage database path for SQLite (default: ./prism-usage.db). Requires `usage-db` feature.
     #[serde(default = "default_usage_db_path")]
     pub usage_db_path: String,
 
-    /// Usage record retention in days (default: 90).
+    /// PostgreSQL connection URL for usage tracking. Requires `usage-pg` feature.
+    /// Example: postgresql://user:pass@localhost:5432/prism
+    #[serde(default)]
+    pub usage_pg_url: Option<String>,
+
+    /// Usage record retention in days (default: 90). Applies to both SQLite and PG.
     #[serde(default = "default_usage_retention_days")]
     pub usage_retention_days: u32,
 }
