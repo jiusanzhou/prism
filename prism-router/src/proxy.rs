@@ -2096,7 +2096,11 @@ impl ProxyHttp for PrismProxy {
     ) -> Result<(), Box<pingora::Error>> {
         let needs_model_rewrite = ctx.upstream_model_name.is_some();
 
-        if !ctx.needs_conversion && !needs_model_rewrite {
+        // Always run global chain body hooks (for metering, logging, etc.)
+        let should_process_body = ctx.needs_conversion || needs_model_rewrite;
+        let has_global_chain = self.codec_registry.global_chain().is_some();
+
+        if !should_process_body && !has_global_chain {
             return Ok(());
         }
 
@@ -2112,7 +2116,7 @@ impl ProxyHttp for PrismProxy {
         if end_of_stream {
             let mut full_body = ctx.request_body_buffer.take().unwrap_or_default();
 
-            // Model name rewrite — before codec conversion
+            // Model name rewrite — before codec conversion (only for JSON bodies)
             if let Some(ref upstream_name) = ctx.upstream_model_name {
                 if !full_body.is_empty() {
                     if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&full_body) {
@@ -2126,6 +2130,18 @@ impl ProxyHttp for PrismProxy {
                 }
             }
 
+            // Determine content kind for routing to the right chain method
+            let request_content_kind = ctx
+                .codec_ctx
+                .as_ref()
+                .map(|c| c.request_content_kind)
+                .or_else(|| {
+                    ctx.global_codec_ctx
+                        .as_ref()
+                        .map(|c| c.request_content_kind)
+                })
+                .unwrap_or(codec::ContentKind::Json);
+
             if ctx.needs_conversion && !full_body.is_empty() {
                 let provider_id = ctx.selected_provider.as_deref().unwrap_or("");
                 let inbound = ctx.protocol.as_str();
@@ -2136,14 +2152,19 @@ impl ProxyHttp for PrismProxy {
                     .get_chain(provider_id, inbound, outbound)
                 {
                     if let Some(ref mut codec_ctx) = ctx.codec_ctx {
-                        match chain.process_request_body(codec_ctx, full_body) {
+                        let result = match request_content_kind {
+                            codec::ContentKind::Binary | codec::ContentKind::Multipart => {
+                                chain.process_request_binary(codec_ctx, full_body)
+                            }
+                            _ => chain.process_request_body(codec_ctx, full_body),
+                        };
+                        match result {
                             Ok(transformed) => {
                                 debug!(
                                     original_len = transformed.len(),
                                     "Codec plugin chain transformed request body"
                                 );
-                                *body = Some(Bytes::from(transformed));
-                                return Ok(());
+                                full_body = transformed;
                             }
                             Err(e) => {
                                 error!(error = %e, "Codec plugin chain failed to transform request body");
@@ -2157,11 +2178,28 @@ impl ProxyHttp for PrismProxy {
                 }
             }
 
+            // Global chain body hook — runs for all requests regardless of conversion
+            if let Some(global_chain) = self.codec_registry.global_chain() {
+                if let Some(ref mut global_ctx) = ctx.global_codec_ctx {
+                    let global_result = match request_content_kind {
+                        codec::ContentKind::Binary | codec::ContentKind::Multipart => {
+                            global_chain.process_request_binary(global_ctx, full_body.clone())
+                        }
+                        _ => global_chain.process_request_body(global_ctx, full_body.clone()),
+                    };
+                    if let Err(e) = global_result {
+                        warn!(error = %e, "Global chain request body hook error");
+                    }
+                }
+            }
+
             // Emit the (possibly rewritten) body
             *body = Some(Bytes::from(full_body));
         } else {
             // Buffering — suppress partial chunks from going upstream
-            *body = None;
+            if should_process_body {
+                *body = None;
+            }
         }
 
         Ok(())
@@ -2411,6 +2449,34 @@ impl ProxyHttp for PrismProxy {
         // should be handled via Pingora's read_timeout on the upstream peer instead.
 
         if !ctx.needs_conversion {
+            // Even without conversion, global chain may need to run at end_of_stream
+            // (handled below), but we skip per-chunk codec processing.
+
+            // ── Global plugin chain: process response body at end_of_stream ──
+            if end_of_stream {
+                if let Some(global_chain) = self.codec_registry.global_chain() {
+                    if let Some(ref mut global_ctx) = ctx.global_codec_ctx {
+                        let response_kind = global_ctx.response_content_kind;
+                        match response_kind {
+                            codec::ContentKind::Binary | codec::ContentKind::Multipart => {
+                                let total_bytes = ctx.bytes_sent.unwrap_or(0);
+                                if total_bytes > 0 {
+                                    let placeholder = vec![0u8; total_bytes as usize];
+                                    let _ = global_chain
+                                        .process_response_binary(global_ctx, placeholder);
+                                }
+                            }
+                            _ => {
+                                if let Some(ref chunk) = body {
+                                    let _ = global_chain
+                                        .process_response_body(global_ctx, chunk.to_vec());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             return Ok(None);
         }
 
@@ -2420,30 +2486,67 @@ impl ProxyHttp for PrismProxy {
             .map(|c| c.is_streaming)
             .unwrap_or(false);
 
-        if is_streaming {
-            // Streaming mode: process each chunk individually
-            if let Some(ref chunk) = body {
-                if let Ok(chunk_str) = std::str::from_utf8(chunk) {
-                    let provider_id = ctx.selected_provider.as_deref().unwrap_or("");
-                    let inbound = ctx.protocol.as_str();
-                    let outbound = ctx.outbound_protocol.as_deref().unwrap_or("");
+        // Determine response content kind
+        let response_content_kind = ctx
+            .global_codec_ctx
+            .as_ref()
+            .map(|c| c.response_content_kind)
+            .unwrap_or(codec::ContentKind::Json);
 
-                    if let Some(chain) =
-                        self.codec_registry
-                            .get_chain(provider_id, inbound, outbound)
-                    {
-                        if let Some(ref mut codec_ctx) = ctx.codec_ctx {
-                            match chain.process_response_stream_chunk(codec_ctx, chunk_str) {
-                                Ok(Some(transformed)) => {
-                                    *body = Some(Bytes::from(transformed));
+        if is_streaming {
+            match response_content_kind {
+                codec::ContentKind::Binary | codec::ContentKind::Multipart => {
+                    // Binary streaming: pass raw bytes through binary chunk handler
+                    if let Some(ref chunk) = body {
+                        let provider_id = ctx.selected_provider.as_deref().unwrap_or("");
+                        let inbound = ctx.protocol.as_str();
+                        let outbound = ctx.outbound_protocol.as_deref().unwrap_or("");
+
+                        if let Some(chain) =
+                            self.codec_registry
+                                .get_chain(provider_id, inbound, outbound)
+                        {
+                            if let Some(ref mut codec_ctx) = ctx.codec_ctx {
+                                match chain.process_response_binary_chunk(codec_ctx, chunk) {
+                                    Ok(Some(transformed)) => {
+                                        *body = Some(Bytes::from(transformed));
+                                    }
+                                    Ok(None) => {
+                                        *body = Some(Bytes::new());
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, "Codec binary stream chunk transform error");
+                                    }
                                 }
-                                Ok(None) => {
-                                    // Chunk filtered out
-                                    *body = Some(Bytes::new());
-                                }
-                                Err(e) => {
-                                    warn!(error = %e, "Codec stream chunk transform error");
-                                    // Pass through on error
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // JSON/SSE streaming: existing UTF-8 chunk path
+                    if let Some(ref chunk) = body {
+                        if let Ok(chunk_str) = std::str::from_utf8(chunk) {
+                            let provider_id = ctx.selected_provider.as_deref().unwrap_or("");
+                            let inbound = ctx.protocol.as_str();
+                            let outbound = ctx.outbound_protocol.as_deref().unwrap_or("");
+
+                            if let Some(chain) =
+                                self.codec_registry
+                                    .get_chain(provider_id, inbound, outbound)
+                            {
+                                if let Some(ref mut codec_ctx) = ctx.codec_ctx {
+                                    match chain.process_response_stream_chunk(codec_ctx, chunk_str)
+                                    {
+                                        Ok(Some(transformed)) => {
+                                            *body = Some(Bytes::from(transformed));
+                                        }
+                                        Ok(None) => {
+                                            *body = Some(Bytes::new());
+                                        }
+                                        Err(e) => {
+                                            warn!(error = %e, "Codec stream chunk transform error");
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2471,7 +2574,13 @@ impl ProxyHttp for PrismProxy {
                             .get_chain(provider_id, inbound, outbound)
                     {
                         if let Some(ref mut codec_ctx) = ctx.codec_ctx {
-                            match chain.process_response_body(codec_ctx, full_body) {
+                            let result = match response_content_kind {
+                                codec::ContentKind::Binary | codec::ContentKind::Multipart => {
+                                    chain.process_response_binary(codec_ctx, full_body)
+                                }
+                                _ => chain.process_response_body(codec_ctx, full_body),
+                            };
+                            match result {
                                 Ok(transformed) => {
                                     debug!(
                                         len = transformed.len(),
@@ -2512,7 +2621,7 @@ impl ProxyHttp for PrismProxy {
                         // checks for "prism.response_content_kind" == "binary"
                         // and records bytes from the body length.
                         let placeholder = vec![0u8; total_bytes as usize];
-                        let _ = global_chain.process_response_body(global_ctx, placeholder);
+                        let _ = global_chain.process_response_binary(global_ctx, placeholder);
                     } else if !ctx.protocol.is_binary_response() {
                         // For JSON responses, pass the actual body if available
                         if let Some(ref chunk) = body {

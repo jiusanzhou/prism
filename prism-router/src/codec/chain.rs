@@ -4,7 +4,7 @@
 //! Request phases:  `on_request_headers` → `on_request_body` — plugins run **in order** (A→B→C).
 //! Response phases: `on_response_headers` → `on_response_body` — plugins run **in reverse** (C→B→A).
 
-use super::{Action, ProxyContext, ProxyPlugin};
+use super::{Action, ContentKind, ProxyContext, ProxyPlugin};
 
 // ════════════════════════════════════════════════
 // PluginConfig
@@ -136,6 +136,70 @@ impl ProxyPluginChain {
                 continue;
             }
             match entry.plugin.on_response_stream_chunk(ctx, &current)? {
+                Some(transformed) => current = transformed,
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(current))
+    }
+
+    /// Process binary request body through the chain (in order).
+    /// Only calls plugins whose `supported_content_kinds()` includes Binary or Multipart.
+    pub fn process_request_binary(
+        &self,
+        ctx: &mut ProxyContext,
+        mut body: Vec<u8>,
+    ) -> Result<Vec<u8>, String> {
+        let target = ctx.request_content_kind;
+        for entry in &self.plugins {
+            if !entry.enabled {
+                continue;
+            }
+            if !entry.plugin.supported_content_kinds().contains(&target) {
+                continue;
+            }
+            body = entry.plugin.on_request_binary(ctx, body)?;
+        }
+        Ok(body)
+    }
+
+    /// Process binary response body through the chain (in REVERSE order).
+    /// Only calls plugins whose `supported_content_kinds()` includes Binary or Multipart.
+    pub fn process_response_binary(
+        &self,
+        ctx: &mut ProxyContext,
+        mut body: Vec<u8>,
+    ) -> Result<Vec<u8>, String> {
+        let target = ctx.response_content_kind;
+        for entry in self.plugins.iter().rev() {
+            if !entry.enabled {
+                continue;
+            }
+            if !entry.plugin.supported_content_kinds().contains(&target) {
+                continue;
+            }
+            body = entry.plugin.on_response_binary(ctx, body)?;
+        }
+        Ok(body)
+    }
+
+    /// Process a binary streaming response chunk through the chain (in REVERSE order).
+    /// Only calls plugins whose `supported_content_kinds()` includes the response content kind.
+    pub fn process_response_binary_chunk(
+        &self,
+        ctx: &mut ProxyContext,
+        chunk: &[u8],
+    ) -> Result<Option<Vec<u8>>, String> {
+        let target = ctx.response_content_kind;
+        let mut current = chunk.to_vec();
+        for entry in self.plugins.iter().rev() {
+            if !entry.enabled {
+                continue;
+            }
+            if !entry.plugin.supported_content_kinds().contains(&target) {
+                continue;
+            }
+            match entry.plugin.on_response_binary_chunk(ctx, &current)? {
                 Some(transformed) => current = transformed,
                 None => return Ok(None),
             }
@@ -796,5 +860,198 @@ mod tests {
         let mut ctx = ProxyContext::new();
         chain2.process_log(&mut ctx);
         assert_eq!(ctx.get::<u32>("count"), Some(&1));
+    }
+
+    // ── Binary/multipart dispatch tests ──
+
+    /// Plugin that only supports Binary content kind.
+    struct BinaryOnlyPlugin {
+        name: String,
+    }
+
+    impl ProxyPlugin for BinaryOnlyPlugin {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn supported_content_kinds(&self) -> Vec<ContentKind> {
+            vec![ContentKind::Binary]
+        }
+
+        fn on_request_binary(
+            &self,
+            _ctx: &mut ProxyContext,
+            mut body: Vec<u8>,
+        ) -> Result<Vec<u8>, String> {
+            // Prepend a marker byte
+            let mut new = vec![0xBB];
+            new.append(&mut body);
+            Ok(new)
+        }
+
+        fn on_response_binary(
+            &self,
+            _ctx: &mut ProxyContext,
+            mut body: Vec<u8>,
+        ) -> Result<Vec<u8>, String> {
+            let mut new = vec![0xAA];
+            new.append(&mut body);
+            Ok(new)
+        }
+
+        fn on_response_binary_chunk(
+            &self,
+            _ctx: &mut ProxyContext,
+            chunk: &[u8],
+        ) -> Result<Option<Vec<u8>>, String> {
+            let mut new = vec![0xCC];
+            new.extend_from_slice(chunk);
+            Ok(Some(new))
+        }
+    }
+
+    #[test]
+    fn test_binary_plugin_called_for_binary_request() {
+        let mut chain = ProxyPluginChain::new();
+        chain.add(Box::new(BinaryOnlyPlugin { name: "bin".into() }));
+
+        let mut ctx = ProxyContext::new();
+        ctx.request_content_kind = ContentKind::Binary;
+        let body = vec![0x01, 0x02];
+        let result = chain.process_request_binary(&mut ctx, body).unwrap();
+        assert_eq!(result, vec![0xBB, 0x01, 0x02]);
+    }
+
+    #[test]
+    fn test_binary_plugin_skipped_for_json_request() {
+        let mut chain = ProxyPluginChain::new();
+        chain.add(Box::new(BinaryOnlyPlugin { name: "bin".into() }));
+
+        let mut ctx = ProxyContext::new();
+        ctx.request_content_kind = ContentKind::Json; // Binary plugin won't match
+        let body = vec![0x01, 0x02];
+        let result = chain
+            .process_request_binary(&mut ctx, body.clone())
+            .unwrap();
+        // Body unchanged — plugin was skipped
+        assert_eq!(result, body);
+    }
+
+    #[test]
+    fn test_json_default_plugin_skipped_for_binary() {
+        // PassthroughPlugin has default supported_content_kinds = [Json]
+        let mut chain = ProxyPluginChain::new();
+        chain.add(Box::new(PassthroughPlugin));
+
+        let mut ctx = ProxyContext::new();
+        ctx.request_content_kind = ContentKind::Binary;
+        let body = vec![0x01, 0x02];
+        let result = chain
+            .process_request_binary(&mut ctx, body.clone())
+            .unwrap();
+        // PassthroughPlugin only supports Json, so it's skipped
+        assert_eq!(result, body);
+    }
+
+    #[test]
+    fn test_binary_response_dispatch() {
+        let mut chain = ProxyPluginChain::new();
+        chain.add(Box::new(BinaryOnlyPlugin { name: "bin".into() }));
+
+        let mut ctx = ProxyContext::new();
+        ctx.response_content_kind = ContentKind::Binary;
+        let body = vec![0x10, 0x20];
+        let result = chain.process_response_binary(&mut ctx, body).unwrap();
+        assert_eq!(result, vec![0xAA, 0x10, 0x20]);
+    }
+
+    #[test]
+    fn test_binary_response_chunk_dispatch() {
+        let mut chain = ProxyPluginChain::new();
+        chain.add(Box::new(BinaryOnlyPlugin { name: "bin".into() }));
+
+        let mut ctx = ProxyContext::new();
+        ctx.response_content_kind = ContentKind::Binary;
+        let chunk = &[0x30, 0x40];
+        let result = chain
+            .process_response_binary_chunk(&mut ctx, chunk)
+            .unwrap();
+        assert_eq!(result, Some(vec![0xCC, 0x30, 0x40]));
+    }
+
+    #[test]
+    fn test_binary_passthrough_no_mangling() {
+        // Empty chain: binary data passes through untouched
+        let chain = ProxyPluginChain::new();
+        let mut ctx = ProxyContext::new();
+        ctx.response_content_kind = ContentKind::Binary;
+
+        let binary_data = (0..256).map(|i| i as u8).collect::<Vec<u8>>();
+        let result = chain
+            .process_response_binary(&mut ctx, binary_data.clone())
+            .unwrap();
+        assert_eq!(result, binary_data);
+    }
+
+    #[test]
+    fn test_sse_streaming_still_works_regression() {
+        // Ensure existing SSE/string streaming path is unaffected
+        let mut chain = ProxyPluginChain::new();
+        chain.add(Box::new(NamedMockPlugin::new("A")));
+
+        let mut ctx = ProxyContext::new();
+        let result = chain
+            .process_response_stream_chunk(&mut ctx, "data: {\"text\":\"hello\"}\n\n")
+            .unwrap();
+        assert_eq!(
+            result,
+            Some("[A]data: {\"text\":\"hello\"}\n\n".to_string())
+        );
+    }
+
+    #[test]
+    fn test_multi_binary_plugin_reverse_order() {
+        // Response binary should run in reverse order like response body
+        struct MarkerPlugin {
+            name: String,
+            marker: u8,
+        }
+        impl ProxyPlugin for MarkerPlugin {
+            fn name(&self) -> &str {
+                &self.name
+            }
+            fn supported_content_kinds(&self) -> Vec<ContentKind> {
+                vec![ContentKind::Binary]
+            }
+            fn on_response_binary(
+                &self,
+                _ctx: &mut ProxyContext,
+                mut body: Vec<u8>,
+            ) -> Result<Vec<u8>, String> {
+                let mut new = vec![self.marker];
+                new.append(&mut body);
+                Ok(new)
+            }
+        }
+
+        let mut chain = ProxyPluginChain::new();
+        chain.add(Box::new(MarkerPlugin {
+            name: "A".into(),
+            marker: 0xAA,
+        }));
+        chain.add(Box::new(MarkerPlugin {
+            name: "B".into(),
+            marker: 0xBB,
+        }));
+        chain.add(Box::new(MarkerPlugin {
+            name: "C".into(),
+            marker: 0xCC,
+        }));
+
+        let mut ctx = ProxyContext::new();
+        ctx.response_content_kind = ContentKind::Binary;
+        let result = chain.process_response_binary(&mut ctx, vec![0xFF]).unwrap();
+        // Reverse: C then B then A
+        assert_eq!(result, vec![0xAA, 0xBB, 0xCC, 0xFF]);
     }
 }

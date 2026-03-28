@@ -194,6 +194,37 @@ pub trait ProxyPlugin: Send + Sync {
         Ok(Some(chunk.to_string()))
     }
 
+    /// Content kinds this plugin can process. Default: Json only.
+    /// Plugins that handle binary/multipart should override this.
+    fn supported_content_kinds(&self) -> Vec<ContentKind> {
+        vec![ContentKind::Json]
+    }
+
+    /// Phase 2b: Binary request body (for multipart/binary requests).
+    /// Only called when request content kind is Binary or Multipart.
+    fn on_request_binary(&self, _ctx: &mut ProxyContext, body: Vec<u8>) -> Result<Vec<u8>, String> {
+        Ok(body)
+    }
+
+    /// Phase 4c: Binary response body (for audio/image binary responses).
+    fn on_response_binary(
+        &self,
+        _ctx: &mut ProxyContext,
+        body: Vec<u8>,
+    ) -> Result<Vec<u8>, String> {
+        Ok(body)
+    }
+
+    /// Phase 4d: Binary streaming chunk (for TTS audio streaming etc).
+    /// Unlike on_response_stream_chunk which takes &str, this takes raw bytes.
+    fn on_response_binary_chunk(
+        &self,
+        _ctx: &mut ProxyContext,
+        chunk: &[u8],
+    ) -> Result<Option<Vec<u8>>, String> {
+        Ok(Some(chunk.to_vec()))
+    }
+
     /// Phase 5: Called at request completion (logging phase).
     /// Used for metering, billing, auditing — has access to the full ctx
     /// including response status, duration, selected variant/provider/model, etc.
@@ -359,5 +390,38 @@ mod tests {
         let chunk = "data: {\"id\":\"1\"}\n\n";
         let result = plugin.on_response_stream_chunk(&mut ctx, chunk);
         assert_eq!(result.unwrap(), Some(chunk.to_string()));
+    }
+
+    #[test]
+    fn test_plugin_default_supported_content_kinds() {
+        let plugin = PassthroughPlugin;
+        assert_eq!(plugin.supported_content_kinds(), vec![ContentKind::Json]);
+    }
+
+    #[test]
+    fn test_plugin_default_on_request_binary() {
+        let plugin = PassthroughPlugin;
+        let mut ctx = ProxyContext::new();
+        let body = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let result = plugin.on_request_binary(&mut ctx, body.clone());
+        assert_eq!(result.unwrap(), body);
+    }
+
+    #[test]
+    fn test_plugin_default_on_response_binary() {
+        let plugin = PassthroughPlugin;
+        let mut ctx = ProxyContext::new();
+        let body = vec![0xFF, 0xD8, 0xFF, 0xE0]; // JPEG magic bytes
+        let result = plugin.on_response_binary(&mut ctx, body.clone());
+        assert_eq!(result.unwrap(), body);
+    }
+
+    #[test]
+    fn test_plugin_default_on_response_binary_chunk() {
+        let plugin = PassthroughPlugin;
+        let mut ctx = ProxyContext::new();
+        let chunk: &[u8] = &[0x00, 0x01, 0x02, 0x03];
+        let result = plugin.on_response_binary_chunk(&mut ctx, chunk);
+        assert_eq!(result.unwrap(), Some(chunk.to_vec()));
     }
 }
