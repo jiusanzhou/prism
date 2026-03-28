@@ -19,6 +19,7 @@ use crate::codec;
 use crate::codec::quota_recorder::{HEADERS_KEY, LIMITER_KEY};
 use crate::codec::registry::CodecRegistry;
 use crate::codec::usage_extractor::{ExtractedUsage, USAGE_KEY};
+use crate::config::types::EndpointConfig;
 use crate::metrics::{MetricsCollector, RequestRecord};
 use crate::protocol::{ApiProtocol, LlmProtocol};
 use crate::provider;
@@ -66,6 +67,8 @@ pub struct ProxyContext {
     pub needs_conversion: bool,
     /// Provider plugin request context (set in upstream_peer).
     pub provider_ctx: Option<provider::ProviderRequestContext>,
+    /// Resolved endpoint config for the detected API protocol (set in upstream_peer).
+    pub endpoint_config: Option<EndpointConfig>,
     /// Buffer for accumulating request body chunks when conversion is needed.
     pub request_body_buffer: Option<Vec<u8>>,
     /// Buffer for accumulating response body chunks when conversion is needed (non-streaming).
@@ -193,6 +196,7 @@ impl Default for ProxyContext {
             codec_ctx: None,
             needs_conversion: false,
             provider_ctx: None,
+            endpoint_config: None,
             request_body_buffer: None,
             response_body_buffer: None,
             pd_decision: None,
@@ -296,6 +300,10 @@ pub struct PrismProxy {
     pub pd_prefill_timeout_secs: u64,
     /// Tracks prefill outcomes by request_id for decode-side cancellation.
     pub prefill_tracker: Arc<dashmap::DashMap<String, PrefillStatus>>,
+    /// Per-provider endpoint configurations (from PrismConfig.providers).
+    /// Swappable for hot-reload support.
+    pub provider_configs:
+        Arc<ArcSwap<std::collections::HashMap<String, crate::config::types::ProviderConfig>>>,
 }
 
 impl PrismProxy {
@@ -329,6 +337,7 @@ impl PrismProxy {
             body_log_max_bytes: 4096,
             pd_prefill_timeout_secs: 30,
             prefill_tracker: Arc::new(dashmap::DashMap::new()),
+            provider_configs: Arc::new(ArcSwap::new(Arc::new(std::collections::HashMap::new()))),
         }
     }
 
@@ -366,6 +375,7 @@ impl PrismProxy {
             body_log_max_bytes: 4096,
             pd_prefill_timeout_secs: 30,
             prefill_tracker: Arc::new(dashmap::DashMap::new()),
+            provider_configs: Arc::new(ArcSwap::new(Arc::new(std::collections::HashMap::new()))),
         }
     }
 
@@ -390,6 +400,19 @@ impl PrismProxy {
             model.to_string()
         }
     }
+
+    /// Set provider configs (for endpoint config lookups).
+    #[allow(dead_code)]
+    pub fn with_provider_configs(
+        mut self,
+        configs: Arc<
+            ArcSwap<std::collections::HashMap<String, crate::config::types::ProviderConfig>>,
+        >,
+    ) -> Self {
+        self.provider_configs = configs;
+        self
+    }
+
     #[allow(dead_code)]
     pub fn with_auth(mut self, auth: crate::config::types::AuthConfig) -> Self {
         if auth.enabled {
@@ -552,6 +575,68 @@ impl PrismProxy {
         proxy_ctx.codec_ctx = Some(codec_ctx);
         proxy_ctx.request_body_buffer = Some(Vec::new());
         proxy_ctx.response_body_buffer = Some(Vec::new());
+    }
+
+    /// Look up the EndpointConfig content_type for the current request's protocol.
+    fn lookup_endpoint_content_type(&self, ctx: &ProxyContext) -> Option<String> {
+        let provider_id = ctx.selected_provider.as_ref()?;
+        let configs = self.provider_configs.load();
+        let provider_cfg = configs.get(provider_id)?;
+        let endpoint_type = ctx.protocol.to_endpoint_type();
+        let ep = provider_cfg.get_endpoint(endpoint_type)?;
+        Some(ep.content_type.clone())
+    }
+
+    /// Check if the current endpoint is configured with response_format = "binary".
+    fn is_binary_response_endpoint(&self, ctx: &ProxyContext) -> bool {
+        ctx.endpoint_config
+            .as_ref()
+            .map(|ep| ep.response_format == "binary")
+            .unwrap_or(false)
+    }
+
+    /// Apply endpoint config: custom path rewriting and extra headers.
+    fn apply_endpoint_config(
+        &self,
+        upstream_request: &mut pingora::http::RequestHeader,
+        ctx: &ProxyContext,
+    ) {
+        let Some(ref ep) = ctx.endpoint_config else {
+            return;
+        };
+
+        // Custom path rewriting with template variable expansion
+        if ep.path.is_some() {
+            let model = ctx
+                .upstream_model_name
+                .as_deref()
+                .or(ctx.selected_model.as_deref())
+                .unwrap_or("");
+            // voice_id is typically embedded in the path, not available in context yet;
+            // providers can pass it via provider_ctx or extract from body later.
+            let voice_id = ctx
+                .provider_ctx
+                .as_ref()
+                .and_then(|p| p.provider_extra.get("voice_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if let Some(new_path) = ep.expand_path(model, voice_id) {
+                if let Ok(uri) = new_path.parse::<http::Uri>() {
+                    debug!(
+                        path = %new_path,
+                        "Endpoint config rewrote upstream path"
+                    );
+                    upstream_request.set_uri(uri);
+                }
+            }
+        }
+
+        // Extra headers from endpoint config
+        for (key, value) in &ep.headers {
+            if let Ok(name) = http::header::HeaderName::from_bytes(key.as_bytes()) {
+                let _ = upstream_request.insert_header(name, value.as_str());
+            }
+        }
     }
 }
 
@@ -1495,6 +1580,15 @@ impl ProxyHttp for PrismProxy {
                     });
                 }
 
+                // ── Resolve EndpointConfig for this request's protocol ──
+                {
+                    let configs = self.provider_configs.load();
+                    if let Some(provider_cfg) = configs.get(&decision.selected_provider) {
+                        let endpoint_type = ctx.protocol.to_endpoint_type();
+                        ctx.endpoint_config = provider_cfg.get_endpoint(endpoint_type);
+                    }
+                }
+
                 // ── Codec: determine outbound protocol and check if conversion is needed ──
                 let outbound_protocol = provider
                     .and_then(|p| p.protocols.first())
@@ -1840,16 +1934,24 @@ impl ProxyHttp for PrismProxy {
         }
 
         // ── Default Content-Type to application/json ──
-        // LLM APIs are JSON-only. Default to application/json if missing or wrong.
+        // LLM APIs are typically JSON. Default to application/json unless endpoint config
+        // says otherwise (multipart or binary content types).
         {
-            let needs_fix = upstream_request
-                .headers
-                .get("content-type")
-                .and_then(|v| v.to_str().ok())
-                .map(|ct| !ct.contains("application/json"))
-                .unwrap_or(true);
-            if needs_fix {
-                let _ = upstream_request.insert_header("content-type", "application/json");
+            let endpoint_content_type = self.lookup_endpoint_content_type(ctx);
+            let skip_json_default = matches!(
+                endpoint_content_type.as_deref(),
+                Some("multipart") | Some("binary")
+            );
+            if !skip_json_default {
+                let needs_fix = upstream_request
+                    .headers
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|ct| !ct.contains("application/json"))
+                    .unwrap_or(true);
+                if needs_fix {
+                    let _ = upstream_request.insert_header("content-type", "application/json");
+                }
             }
         }
 
@@ -1949,6 +2051,9 @@ impl ProxyHttp for PrismProxy {
                 }
             }
         }
+
+        // ── Endpoint config: custom path rewriting + extra headers ──
+        self.apply_endpoint_config(upstream_request, ctx);
 
         // Forward X-Request-ID to upstream
         let _ = upstream_request.insert_header("X-Request-ID", &ctx.request_id);
@@ -2175,6 +2280,8 @@ impl ProxyHttp for PrismProxy {
         ctx: &mut Self::CTX,
     ) -> Result<(), Box<pingora::Error>> {
         // ── Global plugin chain: on_response_headers (all requests) ──
+        let is_binary_endpoint =
+            ctx.protocol.is_binary_response() || self.is_binary_response_endpoint(ctx);
         if let Some(global_chain) = self.codec_registry.global_chain() {
             if let Some(ref mut global_ctx) = ctx.global_codec_ctx {
                 global_ctx.response_status = Some(upstream_response.status.as_u16());
@@ -2187,8 +2294,9 @@ impl ProxyHttp for PrismProxy {
                 }
                 global_chain.process_response_headers(global_ctx);
 
-                // Detect binary response for protocols that produce non-JSON output
-                if ctx.protocol.is_binary_response() {
+                // Detect binary response for protocols that produce non-JSON output,
+                // or when EndpointConfig declares response_format = "binary".
+                if is_binary_endpoint {
                     let content_type = global_ctx
                         .response_headers
                         .get("content-type")

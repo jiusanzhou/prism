@@ -132,6 +132,26 @@ impl ApiProtocol {
     pub fn is_known(&self) -> bool {
         !matches!(self, Self::Unknown)
     }
+
+    /// Convert to the endpoint type string used in `EndpointConfig.endpoint_type`.
+    pub fn to_endpoint_type(&self) -> &'static str {
+        match self {
+            Self::ChatCompletion => "chat_completion",
+            Self::Completion => "completion",
+            Self::Messages => "chat_completion", // Anthropic messages maps to chat_completion
+            Self::Embedding => "embedding",
+            Self::Rerank => "rerank",
+            Self::AudioTranscription => "audio_transcription",
+            Self::AudioTranslation => "audio_translation",
+            Self::AudioSpeech => "audio_speech",
+            Self::ImageGeneration => "image_generation",
+            Self::ImageEdit => "image_edit",
+            Self::ImageVariation => "image_variation",
+            Self::VideoGeneration => "video_generation",
+            Self::Moderation => "moderation",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 // ── Backward compatibility ──

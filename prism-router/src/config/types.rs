@@ -298,6 +298,57 @@ pub enum ProviderAuthType {
     AwsSigV4,
 }
 
+/// Configuration for a specific API endpoint on a provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EndpointConfig {
+    /// API capability type (matches ApiProtocol variant names in snake_case):
+    /// chat_completion, completion, messages, embedding, rerank,
+    /// audio_transcription, audio_translation, audio_speech,
+    /// image_generation, image_edit, image_variation,
+    /// video_generation, moderation
+    #[serde(rename = "type")]
+    pub endpoint_type: String,
+
+    /// Custom upstream path. When set, overrides the default path for this endpoint type.
+    /// Supports `{model}` and `{voice_id}` template variables.
+    /// Example: "/text-to-speech/{voice_id}" for ElevenLabs
+    /// Example: "/v1beta/models/{model}:generateContent" for Gemini
+    #[serde(default)]
+    pub path: Option<String>,
+
+    /// Request content type: "json" (default), "multipart", "binary"
+    #[serde(default = "default_content_type")]
+    pub content_type: String,
+
+    /// Response format: "json" (default), "binary", "sse"
+    #[serde(default = "default_response_format")]
+    pub response_format: String,
+
+    /// Whether this endpoint supports streaming (default: inferred from type).
+    #[serde(default)]
+    pub streaming: Option<bool>,
+
+    /// Extra headers required for this specific endpoint.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+}
+
+fn default_content_type() -> String {
+    "json".to_string()
+}
+fn default_response_format() -> String {
+    "json".to_string()
+}
+
+impl EndpointConfig {
+    /// Expand template variables (`{model}`, `{voice_id}`) in the custom path.
+    pub fn expand_path(&self, model: &str, voice_id: &str) -> Option<String> {
+        self.path
+            .as_ref()
+            .map(|p| p.replace("{model}", model).replace("{voice_id}", voice_id))
+    }
+}
+
 /// Provider configuration — map key is the provider id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
@@ -351,6 +402,78 @@ pub struct ProviderConfig {
     /// Maximum time between SSE data chunks before considering upstream dead.
     #[serde(default)]
     pub idle_timeout_secs: Option<u64>,
+    /// API endpoints supported by this provider.
+    /// When empty, endpoints are inferred from the `protocols` field.
+    #[serde(default)]
+    pub endpoints: Vec<EndpointConfig>,
+}
+
+impl ProviderConfig {
+    /// Get effective endpoints — either explicitly configured or inferred from protocols.
+    pub fn effective_endpoints(&self) -> Vec<EndpointConfig> {
+        if !self.endpoints.is_empty() {
+            return self.endpoints.clone();
+        }
+        infer_endpoints_from_protocols(&self.protocols)
+    }
+
+    /// Check if this provider supports a given endpoint type.
+    pub fn supports_endpoint(&self, endpoint_type: &str) -> bool {
+        self.effective_endpoints()
+            .iter()
+            .any(|e| e.endpoint_type == endpoint_type)
+    }
+
+    /// Get the endpoint config for a given type (if supported).
+    /// When `streaming` is `Some(true)`, prefers a streaming-flagged endpoint if available.
+    pub fn get_endpoint(&self, endpoint_type: &str) -> Option<EndpointConfig> {
+        self.effective_endpoints()
+            .into_iter()
+            .find(|e| e.endpoint_type == endpoint_type)
+    }
+}
+
+/// Infer default endpoints from protocol strings.
+fn infer_endpoints_from_protocols(protocols: &[String]) -> Vec<EndpointConfig> {
+    let mut endpoints = Vec::new();
+    let make = |t: &str| EndpointConfig {
+        endpoint_type: t.to_string(),
+        path: None,
+        content_type: default_content_type(),
+        response_format: default_response_format(),
+        streaming: None,
+        headers: HashMap::new(),
+    };
+    let make_fmt = |t: &str, ct: &str, rf: &str| EndpointConfig {
+        endpoint_type: t.to_string(),
+        path: None,
+        content_type: ct.to_string(),
+        response_format: rf.to_string(),
+        streaming: None,
+        headers: HashMap::new(),
+    };
+    for proto in protocols {
+        match proto.as_str() {
+            "openai" => {
+                endpoints.push(make("chat_completion"));
+                endpoints.push(make("completion"));
+                endpoints.push(make("embedding"));
+                endpoints.push(make_fmt("audio_transcription", "multipart", "json"));
+                endpoints.push(make_fmt("audio_translation", "multipart", "json"));
+                endpoints.push(make_fmt("audio_speech", "json", "binary"));
+                endpoints.push(make("image_generation"));
+                endpoints.push(make_fmt("image_edit", "multipart", "json"));
+                endpoints.push(make_fmt("image_variation", "multipart", "json"));
+                endpoints.push(make("moderation"));
+                endpoints.push(make("rerank"));
+            }
+            "anthropic" => {
+                endpoints.push(make("chat_completion"));
+            }
+            _ => {}
+        }
+    }
+    endpoints
 }
 
 /// Discovery configuration embedded in a provider.

@@ -410,6 +410,12 @@ async fn main() {
                 Arc::clone(&state.metrics),
                 codec_registry,
             );
+            // Pass provider configs for endpoint configuration lookups.
+            {
+                let provider_configs =
+                    Arc::new(arc_swap::ArcSwap::new(Arc::new(config.providers.clone())));
+                prism_proxy = prism_proxy.with_provider_configs(provider_configs);
+            }
             prism_proxy = prism_proxy.with_inflight(Arc::clone(&state.inflight));
             prism_proxy = prism_proxy.with_model_aliases(Arc::clone(&state.model_aliases));
             prism_proxy.prefix_cache = state.prefix_cache.clone();

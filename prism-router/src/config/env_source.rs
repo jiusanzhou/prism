@@ -107,6 +107,7 @@ impl ConfigSource for EnvSource {
                                 circuit_breaker_recovery_secs: 30,
                                 request_timeout_secs: None,
                                 idle_timeout_secs: None,
+                                endpoints: vec![],
                             });
 
                     match field {

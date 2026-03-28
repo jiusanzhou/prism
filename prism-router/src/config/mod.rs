@@ -465,6 +465,7 @@ mod tests {
                 request_timeout_secs: None,
                 idle_timeout_secs: None,
                 discovery: None,
+                endpoints: vec![],
             },
         );
 
@@ -487,6 +488,7 @@ mod tests {
                 request_timeout_secs: None,
                 idle_timeout_secs: None,
                 discovery: None,
+                endpoints: vec![],
             },
         );
 
