@@ -594,6 +594,11 @@ pub struct MetricsCollector {
     pub md_ttft: MultiDimSumCount,
     pub md_input_tokens: MultiDimCounter,
     pub md_output_tokens: MultiDimCounter,
+
+    // ── P/D disaggregation metrics ──
+    pub pd_prefill_timeouts: AtomicU64,
+    pub pd_prefill_retries: AtomicU64,
+    pub pd_decode_cancelled: AtomicU64,
 }
 
 impl MetricsCollector {
@@ -642,6 +647,11 @@ impl MetricsCollector {
             md_ttft: MultiDimSumCount::new(),
             md_input_tokens: MultiDimCounter::new(),
             md_output_tokens: MultiDimCounter::new(),
+
+            // P/D disaggregation
+            pd_prefill_timeouts: AtomicU64::new(0),
+            pd_prefill_retries: AtomicU64::new(0),
+            pd_decode_cancelled: AtomicU64::new(0),
         }
     }
 
@@ -722,6 +732,21 @@ impl MetricsCollector {
     /// Record an experiment assignment.
     pub fn record_experiment(&self, exp_id: &str, variant: &str) {
         self.experiment_assignments.inc(exp_id, variant);
+    }
+
+    /// Record a P/D prefill timeout.
+    pub fn record_pd_prefill_timeout(&self) {
+        self.pd_prefill_timeouts.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a P/D prefill retry attempt.
+    pub fn record_pd_prefill_retry(&self) {
+        self.pd_prefill_retries.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a P/D decode cancellation (prefill failed so decode was skipped).
+    pub fn record_pd_decode_cancelled(&self) {
+        self.pd_decode_cancelled.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a DataLayer query.
@@ -1100,7 +1125,44 @@ impl MetricsCollector {
                 .load(Ordering::Relaxed),
         );
 
-        // ── 7. Multi-dimensional request metrics ──
+        // ── 7. P/D disaggregation metrics ──
+        prom_help_type(
+            &mut out,
+            "prism_pd_prefill_timeouts_total",
+            "P/D prefill fire-and-forget timeouts",
+            "counter",
+        );
+        prom_counter(
+            &mut out,
+            "prism_pd_prefill_timeouts_total",
+            self.pd_prefill_timeouts.load(Ordering::Relaxed),
+        );
+
+        prom_help_type(
+            &mut out,
+            "prism_pd_prefill_retries_total",
+            "P/D prefill retry attempts",
+            "counter",
+        );
+        prom_counter(
+            &mut out,
+            "prism_pd_prefill_retries_total",
+            self.pd_prefill_retries.load(Ordering::Relaxed),
+        );
+
+        prom_help_type(
+            &mut out,
+            "prism_pd_decode_cancelled_total",
+            "P/D decode requests cancelled due to prefill failure",
+            "counter",
+        );
+        prom_counter(
+            &mut out,
+            "prism_pd_decode_cancelled_total",
+            self.pd_decode_cancelled.load(Ordering::Relaxed),
+        );
+
+        // ── 8. Multi-dimensional request metrics ──
         let md_requests_snap = self.md_requests.snapshot();
         if !md_requests_snap.is_empty() {
             prom_help_type(
