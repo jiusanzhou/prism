@@ -35,6 +35,8 @@ pub mod protocol;
 pub mod proxy;
 #[cfg(feature = "proxy")]
 pub mod ratelimit;
+#[cfg(feature = "proxy")]
+pub mod request_parser;
 #[cfg(feature = "usage-pg")]
 pub mod usage_pg;
 #[cfg(feature = "usage-db")]
