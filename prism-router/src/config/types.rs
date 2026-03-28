@@ -147,6 +147,9 @@ pub struct ServerConfig {
     /// TLS termination configuration (optional).
     #[serde(default)]
     pub tls: Option<TlsConfig>,
+    /// P/D prefill fire-and-forget timeout in seconds (default: 30).
+    #[serde(default = "default_pd_prefill_timeout_secs")]
+    pub pd_prefill_timeout_secs: u64,
 }
 
 impl Default for ServerConfig {
@@ -166,6 +169,7 @@ impl Default for ServerConfig {
             retry_on_5xx: default_retry_on_5xx(),
             retry_5xx_codes: default_retry_5xx_codes(),
             tls: None,
+            pd_prefill_timeout_secs: default_pd_prefill_timeout_secs(),
         }
     }
 }
@@ -200,6 +204,10 @@ fn default_shutdown_timeout_secs() -> u64 {
 
 fn default_idle_timeout_secs() -> u64 {
     90
+}
+
+fn default_pd_prefill_timeout_secs() -> u64 {
+    30
 }
 
 fn default_listen() -> String {

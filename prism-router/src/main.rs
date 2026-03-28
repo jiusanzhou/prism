@@ -421,6 +421,8 @@ async fn main() {
                 config.server.keepalive_secs,
                 config.server.idle_timeout_secs,
             );
+            prism_proxy =
+                prism_proxy.with_pd_prefill_timeout(config.server.pd_prefill_timeout_secs);
             if let Some(concurrency) = concurrency_limiter {
                 prism_proxy = prism_proxy.with_concurrency_limiter(concurrency);
             }

@@ -25,6 +25,15 @@ use crate::provider;
 use crate::provider::registry::ProviderPluginRegistry;
 use crate::ratelimit::RateLimiter;
 
+/// Outcome of a P/D prefill request, tracked per request_id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrefillStatus {
+    /// Prefill completed successfully.
+    Success,
+    /// Prefill failed (timeout or error).
+    Failed(String),
+}
+
 /// Per-request context stored across Pingora proxy phases.
 pub struct ProxyContext {
     /// Detected LLM protocol
@@ -258,6 +267,10 @@ pub struct PrismProxy {
     pub retry_on_5xx: bool,
     /// Which 5xx status codes trigger retry (from config).
     pub retry_5xx_codes: Vec<u16>,
+    /// P/D prefill timeout in seconds (default: 30).
+    pub pd_prefill_timeout_secs: u64,
+    /// Tracks prefill outcomes by request_id for decode-side cancellation.
+    pub prefill_tracker: Arc<dashmap::DashMap<String, PrefillStatus>>,
 }
 
 impl PrismProxy {
@@ -284,6 +297,8 @@ impl PrismProxy {
             model_aliases: Arc::new(ArcSwap::new(Arc::new(std::collections::HashMap::new()))),
             retry_on_5xx: true,
             retry_5xx_codes: vec![502, 503, 504],
+            pd_prefill_timeout_secs: 30,
+            prefill_tracker: Arc::new(dashmap::DashMap::new()),
         }
     }
 
@@ -314,6 +329,8 @@ impl PrismProxy {
             model_aliases: Arc::new(ArcSwap::new(Arc::new(std::collections::HashMap::new()))),
             retry_on_5xx: true,
             retry_5xx_codes: vec![502, 503, 504],
+            pd_prefill_timeout_secs: 30,
+            prefill_tracker: Arc::new(dashmap::DashMap::new()),
         }
     }
 
@@ -409,6 +426,12 @@ impl PrismProxy {
     pub fn with_retry_on_5xx(mut self, enabled: bool, codes: Vec<u16>) -> Self {
         self.retry_on_5xx = enabled;
         self.retry_5xx_codes = codes;
+        self
+    }
+
+    /// Set P/D prefill timeout in seconds.
+    pub fn with_pd_prefill_timeout(mut self, secs: u64) -> Self {
+        self.pd_prefill_timeout_secs = secs;
         self
     }
 
@@ -1403,84 +1426,174 @@ impl ProxyHttp for PrismProxy {
                     ..
                 }) = decision.pd_decision
                 {
-                    // Fire-and-forget prefill: pick least-loaded P variant
-                    let prefill_variant_id =
-                        select_least_loaded(prefill_variant_ids, &self.inflight);
-                    let prefill_variant = router.registry.variants.get(prefill_variant_id);
-                    if let Some(pv) = prefill_variant {
-                        if let Some(ref purl) = pv.base_url {
-                            let prefill_url = format!(
-                                "{}{}",
-                                purl,
-                                ctx.provider_ctx
-                                    .as_ref()
-                                    .map(|p| p.original_path.as_str())
-                                    .unwrap_or("/v1/chat/completions")
-                            );
-                            let body = ctx.original_body_bytes.clone();
-                            let headers = ctx.provider_ctx.as_ref().map(|p| {
-                                let mut h = reqwest::header::HeaderMap::new();
-                                if let Some(ref key) = p.account_api_key {
-                                    if let Ok(v) = reqwest::header::HeaderValue::from_str(&format!(
+                    let request_id = ctx.request_id.clone();
+                    let prefill_timeout =
+                        std::time::Duration::from_secs(self.pd_prefill_timeout_secs);
+
+                    // Try prefill with timeout, with up to 1 retry on a different node
+                    let mut prefill_succeeded = false;
+                    let mut tried_variants: Vec<String> = Vec::new();
+
+                    for attempt in 0..2u32 {
+                        // Pick least-loaded prefill variant, excluding already-tried ones
+                        let candidates: Vec<&String> = prefill_variant_ids
+                            .iter()
+                            .filter(|id| !tried_variants.contains(id))
+                            .collect();
+                        if candidates.is_empty() {
+                            break;
+                        }
+
+                        let prefill_variant_id = if candidates.len() == 1 {
+                            candidates[0]
+                        } else {
+                            candidates
+                                .iter()
+                                .min_by_key(|id| self.inflight.get(id))
+                                .unwrap()
+                        };
+                        tried_variants.push(prefill_variant_id.to_string());
+
+                        let prefill_variant =
+                            router.registry.variants.get(prefill_variant_id.as_str());
+                        let pv = match prefill_variant {
+                            Some(pv) => pv,
+                            None => continue,
+                        };
+                        let purl = match pv.base_url {
+                            Some(ref u) => u,
+                            None => continue,
+                        };
+
+                        let prefill_url = format!(
+                            "{}{}",
+                            purl,
+                            ctx.provider_ctx
+                                .as_ref()
+                                .map(|p| p.original_path.as_str())
+                                .unwrap_or("/v1/chat/completions")
+                        );
+                        let body = ctx.original_body_bytes.clone();
+                        let headers = ctx.provider_ctx.as_ref().map(|p| {
+                            let mut h = reqwest::header::HeaderMap::new();
+                            if let Some(ref key) = p.account_api_key {
+                                if let Ok(v) =
+                                    reqwest::header::HeaderValue::from_str(&format!(
                                         "Bearer {}",
                                         key
-                                    )) {
-                                        h.insert(reqwest::header::AUTHORIZATION, v);
-                                    }
+                                    ))
+                                {
+                                    h.insert(reqwest::header::AUTHORIZATION, v);
                                 }
-                                for (k, v) in &p.account_headers {
-                                    if let (Ok(name), Ok(val)) = (
-                                        reqwest::header::HeaderName::from_bytes(k.as_bytes()),
-                                        reqwest::header::HeaderValue::from_str(v),
-                                    ) {
-                                        h.insert(name, val);
-                                    }
+                            }
+                            for (k, v) in &p.account_headers {
+                                if let (Ok(name), Ok(val)) = (
+                                    reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+                                    reqwest::header::HeaderValue::from_str(v),
+                                ) {
+                                    h.insert(name, val);
                                 }
-                                h
-                            });
+                            }
+                            h
+                        });
 
+                        if attempt > 0 {
                             info!(
                                 prefill_variant = %prefill_variant_id,
                                 prefill_url = %prefill_url,
-                                "P/D Split: firing prefill request (fire-and-forget)"
+                                attempt = attempt + 1,
+                                "P/D Split: retrying prefill on different node"
                             );
-
-                            tokio::spawn(async move {
-                                let client = reqwest::Client::builder()
-                                    .timeout(std::time::Duration::from_secs(120))
-                                    .build()
-                                    .unwrap_or_default();
-                                let mut req = client.post(&prefill_url);
-                                if let Some(h) = headers {
-                                    req = req.headers(h);
-                                }
-                                if let Some(b) = body {
-                                    req = req.body(b);
-                                    req = req.header("content-type", "application/json");
-                                }
-                                match req.send().await {
-                                    Ok(resp) => {
-                                        // Drain the response body to prevent connection issues
-                                        let status = resp.status();
-                                        let _ = resp.bytes().await;
-                                        if !status.is_success() {
-                                            tracing::warn!(
-                                                url = %prefill_url,
-                                                status = %status,
-                                                "Prefill fire-and-forget got error status"
-                                            );
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::error!(
-                                            url = %prefill_url,
-                                            error = %e,
-                                            "Prefill fire-and-forget failed"
-                                        );
-                                    }
-                                }
-                            });
+                            self.metrics.record_pd_prefill_retry();
+                        } else {
+                            info!(
+                                prefill_variant = %prefill_variant_id,
+                                prefill_url = %prefill_url,
+                                "P/D Split: firing prefill request with timeout"
+                            );
                         }
+
+                        // Await prefill with timeout (not fire-and-forget)
+                        let result = tokio::time::timeout(prefill_timeout, async {
+                            let client = reqwest::Client::builder()
+                                .timeout(prefill_timeout + std::time::Duration::from_secs(5))
+                                .build()
+                                .unwrap_or_default();
+                            let mut req = client.post(&prefill_url);
+                            if let Some(h) = headers {
+                                req = req.headers(h);
+                            }
+                            if let Some(b) = body {
+                                req = req.body(b);
+                                req = req.header("content-type", "application/json");
+                            }
+                            req.send().await
+                        })
+                        .await;
+
+                        match result {
+                            Ok(Ok(resp)) => {
+                                let status = resp.status();
+                                let _ = resp.bytes().await;
+                                if status.is_success() {
+                                    prefill_succeeded = true;
+                                    break;
+                                }
+                                warn!(
+                                    url = %prefill_url,
+                                    status = %status,
+                                    request_id = %request_id,
+                                    "Prefill got error status"
+                                );
+                            }
+                            Ok(Err(e)) => {
+                                error!(
+                                    url = %prefill_url,
+                                    error = %e,
+                                    request_id = %request_id,
+                                    "Prefill request failed"
+                                );
+                            }
+                            Err(_) => {
+                                warn!(
+                                    url = %prefill_url,
+                                    timeout_secs = self.pd_prefill_timeout_secs,
+                                    request_id = %request_id,
+                                    "Prefill request timed out"
+                                );
+                                self.metrics.record_pd_prefill_timeout();
+                            }
+                        }
+                    }
+
+                    // Track prefill outcome
+                    let status = if prefill_succeeded {
+                        PrefillStatus::Success
+                    } else {
+                        PrefillStatus::Failed("prefill failed or timed out".to_string())
+                    };
+                    self.prefill_tracker
+                        .insert(request_id.clone(), status);
+
+                    // Schedule cleanup of tracker entry after 60s
+                    let tracker = Arc::clone(&self.prefill_tracker);
+                    let rid = request_id.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                        tracker.remove(&rid);
+                    });
+
+                    // If prefill failed, cancel decode — return 503
+                    if !prefill_succeeded {
+                        self.metrics.record_pd_decode_cancelled();
+                        error!(
+                            request_id = %request_id,
+                            "P/D Split: prefill failed, cancelling decode request"
+                        );
+                        return Err(pingora::Error::explain(
+                            pingora::ErrorType::HTTPStatus(503),
+                            "prefill failed or timed out, decode cancelled",
+                        ));
                     }
                 }
 
@@ -2521,6 +2634,7 @@ impl ProxyHttp for PrismProxy {
 
 /// Select the variant with the fewest in-flight requests from a list.
 /// Falls back to first element if tracker has no data.
+#[allow(dead_code)]
 fn select_least_loaded<'a>(
     variant_ids: &'a [String],
     tracker: &prism_core::inflight::InFlightTracker,
@@ -3211,5 +3325,204 @@ mod tests {
 
         // No more retries possible
         assert!(ctx.retry_fallback_chain.is_empty());
+    }
+
+    // ── P/D Prefill failure handling tests ──
+
+    #[test]
+    fn test_prefill_status_variants() {
+        let success = PrefillStatus::Success;
+        let failed = PrefillStatus::Failed("timeout".to_string());
+
+        assert_eq!(success, PrefillStatus::Success);
+        assert_ne!(success, failed);
+        match &failed {
+            PrefillStatus::Failed(msg) => assert_eq!(msg, "timeout"),
+            _ => panic!("Expected Failed variant"),
+        }
+    }
+
+    #[test]
+    fn test_prefill_tracker_insert_and_lookup() {
+        let tracker: dashmap::DashMap<String, PrefillStatus> = dashmap::DashMap::new();
+
+        tracker.insert("req-1".to_string(), PrefillStatus::Success);
+        tracker.insert(
+            "req-2".to_string(),
+            PrefillStatus::Failed("timed out".to_string()),
+        );
+
+        assert_eq!(
+            *tracker.get("req-1").unwrap().value(),
+            PrefillStatus::Success
+        );
+        assert!(matches!(
+            tracker.get("req-2").unwrap().value(),
+            PrefillStatus::Failed(_)
+        ));
+        assert!(tracker.get("req-3").is_none());
+    }
+
+    #[test]
+    fn test_prefill_tracker_remove() {
+        let tracker: dashmap::DashMap<String, PrefillStatus> = dashmap::DashMap::new();
+        tracker.insert("req-1".to_string(), PrefillStatus::Success);
+        assert!(tracker.get("req-1").is_some());
+
+        tracker.remove("req-1");
+        assert!(tracker.get("req-1").is_none());
+    }
+
+    #[test]
+    fn test_pd_metrics_counters() {
+        let metrics = MetricsCollector::new(100);
+
+        assert_eq!(
+            metrics
+                .pd_prefill_timeouts
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            metrics
+                .pd_prefill_retries
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            metrics
+                .pd_decode_cancelled
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+
+        metrics.record_pd_prefill_timeout();
+        metrics.record_pd_prefill_timeout();
+        metrics.record_pd_prefill_retry();
+        metrics.record_pd_decode_cancelled();
+
+        assert_eq!(
+            metrics
+                .pd_prefill_timeouts
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+        assert_eq!(
+            metrics
+                .pd_prefill_retries
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            metrics
+                .pd_decode_cancelled
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prefill_timeout_detection() {
+        // Simulate a prefill that takes longer than the timeout
+        let timeout = std::time::Duration::from_millis(50);
+        let result = tokio::time::timeout(timeout, async {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            Ok::<(), &str>(())
+        })
+        .await;
+
+        assert!(result.is_err(), "Should have timed out");
+    }
+
+    #[tokio::test]
+    async fn test_prefill_success_within_timeout() {
+        let timeout = std::time::Duration::from_millis(200);
+        let result = tokio::time::timeout(timeout, async {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            Ok::<&str, &str>("done")
+        })
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().unwrap(), "done");
+    }
+
+    #[tokio::test]
+    async fn test_prefill_retry_skips_tried_variants() {
+        // Simulate the retry logic: filter out already-tried variants
+        let all_variants = vec!["p1".to_string(), "p2".to_string(), "p3".to_string()];
+        let mut tried: Vec<String> = Vec::new();
+
+        // First attempt: all candidates available
+        let candidates: Vec<&String> = all_variants
+            .iter()
+            .filter(|id| !tried.contains(id))
+            .collect();
+        assert_eq!(candidates.len(), 3);
+        tried.push("p1".to_string());
+
+        // Second attempt: p1 excluded
+        let candidates: Vec<&String> = all_variants
+            .iter()
+            .filter(|id| !tried.contains(id))
+            .collect();
+        assert_eq!(candidates.len(), 2);
+        assert!(!candidates.contains(&&"p1".to_string()));
+        tried.push("p2".to_string());
+
+        // Third: only p3
+        let candidates: Vec<&String> = all_variants
+            .iter()
+            .filter(|id| !tried.contains(id))
+            .collect();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(*candidates[0], "p3");
+    }
+
+    #[test]
+    fn test_decode_cancellation_on_prefill_failure() {
+        // Simulate the decode cancellation decision logic
+        let tracker: dashmap::DashMap<String, PrefillStatus> = dashmap::DashMap::new();
+
+        // Prefill succeeded → decode should proceed
+        tracker.insert("req-ok".to_string(), PrefillStatus::Success);
+        let status = tracker.get("req-ok").unwrap();
+        let should_cancel = matches!(status.value(), PrefillStatus::Failed(_));
+        assert!(!should_cancel, "Decode should proceed on prefill success");
+
+        // Prefill failed → decode should be cancelled
+        tracker.insert(
+            "req-fail".to_string(),
+            PrefillStatus::Failed("timeout".to_string()),
+        );
+        let status = tracker.get("req-fail").unwrap();
+        let should_cancel = matches!(status.value(), PrefillStatus::Failed(_));
+        assert!(should_cancel, "Decode should be cancelled on prefill failure");
+    }
+
+    #[test]
+    fn test_prism_proxy_pd_prefill_timeout_default() {
+        let registry = prism_core::registry::InMemoryRegistry::new();
+        let router = Arc::new(ArcSwap::new(Arc::new(PrismRouter::new(registry))));
+        let metrics = Arc::new(MetricsCollector::new(100));
+
+        let proxy = PrismProxy::new(router, metrics);
+        assert_eq!(proxy.pd_prefill_timeout_secs, 30);
+    }
+
+    #[test]
+    fn test_prism_proxy_with_pd_prefill_timeout() {
+        let registry = prism_core::registry::InMemoryRegistry::new();
+        let router = Arc::new(ArcSwap::new(Arc::new(PrismRouter::new(registry))));
+        let metrics = Arc::new(MetricsCollector::new(100));
+
+        let proxy = PrismProxy::new(router, metrics).with_pd_prefill_timeout(60);
+        assert_eq!(proxy.pd_prefill_timeout_secs, 60);
+    }
+
+    #[test]
+    fn test_pd_prefill_timeout_config_default() {
+        let config = crate::config::types::ServerConfig::default();
+        assert_eq!(config.pd_prefill_timeout_secs, 30);
     }
 }
