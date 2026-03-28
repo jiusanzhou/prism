@@ -2,18 +2,7 @@
 //!
 //! Supports JSON, multipart/form-data, URL-path, and no-body request formats.
 
-/// Describes the kind of content in the request body.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContentKind {
-    /// JSON body (application/json)
-    Json,
-    /// Multipart form data (multipart/form-data)
-    Multipart,
-    /// Raw binary body (application/octet-stream, audio/*, etc.)
-    Binary,
-    /// No body expected (e.g. WebSocket upgrade, GET requests)
-    None,
-}
+pub use crate::codec::ContentKind;
 
 /// Trait for extracting the model name from different request content types.
 pub trait RequestParser: Send + Sync {

@@ -2164,6 +2164,20 @@ impl ProxyHttp for PrismProxy {
                     }
                 }
                 global_chain.process_response_headers(global_ctx);
+
+                // Detect binary response for protocols that produce non-JSON output
+                if ctx.protocol.is_binary_response() {
+                    let content_type = global_ctx
+                        .response_headers
+                        .get("content-type")
+                        .cloned()
+                        .unwrap_or_default();
+                    let is_json = content_type.starts_with("application/json");
+                    if !is_json {
+                        global_ctx.set("prism.response_content_kind", "binary".to_string());
+                        global_ctx.response_content_kind = crate::codec::ContentKind::Binary;
+                    }
+                }
             }
         }
 
@@ -2459,6 +2473,31 @@ impl ProxyHttp for PrismProxy {
             } else {
                 // Buffering — suppress partial chunks from reaching downstream
                 *body = None;
+            }
+        }
+
+        // ── Global plugin chain: process response body at end_of_stream ──
+        // For binary responses (TTS, images), this triggers BinaryUsageStrategy
+        // in the usage extractor to record bytes_processed and media_type.
+        if end_of_stream {
+            if let Some(global_chain) = self.codec_registry.global_chain() {
+                if let Some(ref mut global_ctx) = ctx.global_codec_ctx {
+                    // For binary protocols, pass the total bytes as a synthetic body
+                    // so the usage extractor can record bytes_processed.
+                    let total_bytes = ctx.bytes_sent.unwrap_or(0);
+                    if ctx.protocol.is_binary_response() && total_bytes > 0 {
+                        // Create a small placeholder body — the usage extractor
+                        // checks for "prism.response_content_kind" == "binary"
+                        // and records bytes from the body length.
+                        let placeholder = vec![0u8; total_bytes as usize];
+                        let _ = global_chain.process_response_body(global_ctx, placeholder);
+                    } else if !ctx.protocol.is_binary_response() {
+                        // For JSON responses, pass the actual body if available
+                        if let Some(ref chunk) = body {
+                            let _ = global_chain.process_response_body(global_ctx, chunk.to_vec());
+                        }
+                    }
+                }
             }
         }
 

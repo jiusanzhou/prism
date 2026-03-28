@@ -18,6 +18,23 @@ pub mod wasm_host;
 use std::collections::HashMap;
 
 // ════════════════════════════════════════════════
+// ContentKind — shared across codec and request parser
+// ════════════════════════════════════════════════
+
+/// Describes the kind of content in request or response bodies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentKind {
+    /// JSON body (application/json)
+    Json,
+    /// Multipart form data (multipart/form-data)
+    Multipart,
+    /// Raw binary body (application/octet-stream, audio/*, etc.)
+    Binary,
+    /// No body expected (e.g. WebSocket upgrade, GET requests)
+    None,
+}
+
+// ════════════════════════════════════════════════
 // Action
 // ════════════════════════════════════════════════
 
@@ -41,6 +58,10 @@ pub struct ProxyContext {
     // ── Inbound (from user) ──
     /// Detected inbound protocol (e.g., "openai", "anthropic").
     pub inbound_protocol: String,
+    /// Content kind of the request body.
+    pub request_content_kind: ContentKind,
+    /// Content kind of the response body (set from upstream Content-Type).
+    pub response_content_kind: ContentKind,
     /// Original request path.
     pub request_path: String,
     /// Original request method.
@@ -83,6 +104,8 @@ impl ProxyContext {
     pub fn new() -> Self {
         Self {
             inbound_protocol: String::new(),
+            request_content_kind: ContentKind::Json,
+            response_content_kind: ContentKind::Json,
             request_path: String::new(),
             request_method: String::new(),
             request_headers: HashMap::new(),
@@ -202,6 +225,8 @@ mod tests {
     fn test_context_new_defaults() {
         let ctx = ProxyContext::new();
         assert_eq!(ctx.inbound_protocol, "");
+        assert_eq!(ctx.request_content_kind, ContentKind::Json);
+        assert_eq!(ctx.response_content_kind, ContentKind::Json);
         assert_eq!(ctx.request_path, "");
         assert_eq!(ctx.request_method, "");
         assert!(ctx.request_headers.is_empty());

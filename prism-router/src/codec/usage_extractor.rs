@@ -24,6 +24,10 @@ pub struct ExtractedUsage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
+    /// Bytes processed (for binary responses like TTS audio, images).
+    pub bytes_processed: Option<u64>,
+    /// Media type of the response (e.g., "audio/mpeg", "image/png").
+    pub media_type: Option<String>,
     /// Raw metric bag for future extensibility (e.g., AIGC: steps, pixels, duration_ms).
     pub metrics: std::collections::HashMap<String, u64>,
 }
@@ -33,6 +37,7 @@ impl ExtractedUsage {
         self.input_tokens.is_some()
             || self.output_tokens.is_some()
             || self.total_tokens.is_some()
+            || self.bytes_processed.is_some()
             || !self.metrics.is_empty()
     }
 
@@ -46,6 +51,12 @@ impl ExtractedUsage {
         }
         if other.total_tokens.is_some() {
             self.total_tokens = other.total_tokens;
+        }
+        if other.bytes_processed.is_some() {
+            self.bytes_processed = other.bytes_processed;
+        }
+        if other.media_type.is_some() {
+            self.media_type = other.media_type.clone();
         }
         for (k, v) in &other.metrics {
             self.metrics.insert(k.clone(), *v);
@@ -92,7 +103,7 @@ impl UsageExtractStrategy for OpenAIStrategy {
             input_tokens: u.prompt_tokens,
             output_tokens: u.completion_tokens,
             total_tokens: u.total_tokens,
-            metrics: Default::default(),
+            ..Default::default()
         };
         if result.has_data() {
             Some(result)
@@ -128,7 +139,7 @@ impl UsageExtractStrategy for AnthropicStrategy {
             input_tokens: u.input_tokens,
             output_tokens: u.output_tokens,
             total_tokens: u.input_tokens.zip(u.output_tokens).map(|(i, o)| i + o),
-            metrics: Default::default(),
+            ..Default::default()
         };
         if result.has_data() {
             Some(result)
@@ -150,6 +161,62 @@ impl UsageExtractStrategy for AutoStrategy {
         OpenAIStrategy
             .extract(json)
             .or_else(|| AnthropicStrategy.extract(json))
+    }
+}
+
+/// Strategy for binary (non-JSON) responses: TTS audio, raw images, etc.
+///
+/// Does not extract from JSON — instead, callers record `bytes_processed` and
+/// `media_type` directly into `ExtractedUsage` and store it in the context.
+/// This strategy exists so it can be registered as a named strategy for
+/// binary-response protocols.
+pub struct BinaryUsageStrategy;
+
+impl UsageExtractStrategy for BinaryUsageStrategy {
+    fn name(&self) -> &str {
+        "binary"
+    }
+
+    fn extract(&self, _json: &str) -> Option<ExtractedUsage> {
+        // Binary responses are not JSON — usage is tracked externally
+        // via bytes_processed / media_type fields.
+        None
+    }
+}
+
+impl BinaryUsageStrategy {
+    /// Create an `ExtractedUsage` from binary response metadata.
+    pub fn usage_from_binary(bytes: u64, media_type: &str) -> ExtractedUsage {
+        let mut metrics = std::collections::HashMap::new();
+        metrics.insert("bytes_sent".to_string(), bytes);
+
+        // Estimate audio duration from bytes + format (rough heuristic)
+        if let Some(duration_ms) = Self::estimate_audio_duration_ms(bytes, media_type) {
+            metrics.insert("duration_ms".to_string(), duration_ms);
+        }
+
+        ExtractedUsage {
+            bytes_processed: Some(bytes),
+            media_type: Some(media_type.to_string()),
+            metrics,
+            ..Default::default()
+        }
+    }
+
+    /// Rough estimate of audio duration from byte count and content type.
+    /// Returns None for non-audio or unknown formats.
+    fn estimate_audio_duration_ms(bytes: u64, media_type: &str) -> Option<u64> {
+        // Approximate bitrates (bytes/sec)
+        let bytes_per_sec = match media_type {
+            "audio/mpeg" | "audio/mp3" => 16_000, // ~128 kbps MP3
+            "audio/opus" | "audio/ogg" => 8_000,  // ~64 kbps Opus
+            "audio/aac" => 16_000,                // ~128 kbps AAC
+            "audio/flac" => 88_200,               // ~705 kbps FLAC (CD quality)
+            "audio/wav" | "audio/pcm" => 96_000,  // ~768 kbps (16-bit 48kHz stereo)
+            _ if media_type.starts_with("audio/") => 16_000, // fallback
+            _ => return None,
+        };
+        Some(bytes * 1000 / bytes_per_sec)
     }
 }
 
@@ -232,7 +299,24 @@ impl ProxyPlugin for UsageExtractorPlugin {
     }
 
     fn on_response_body(&self, ctx: &mut ProxyContext, body: Vec<u8>) -> Result<Vec<u8>, String> {
-        // Non-streaming: extract from the full response body (after codec conversion)
+        // Check if this is a binary response (stored by proxy in context)
+        let content_kind = ctx
+            .get::<String>("prism.response_content_kind")
+            .cloned()
+            .unwrap_or_default();
+        if content_kind == "binary" {
+            // For binary responses, record bytes + content-type as usage
+            let media_type = ctx
+                .response_headers
+                .get("content-type")
+                .cloned()
+                .unwrap_or_default();
+            let usage = BinaryUsageStrategy::usage_from_binary(body.len() as u64, &media_type);
+            ctx.set(USAGE_KEY, usage);
+            return Ok(body);
+        }
+
+        // Non-streaming JSON: extract from the full response body (after codec conversion)
         if let Ok(json) = std::str::from_utf8(&body) {
             // Use inbound protocol — after codec, body is in inbound format
             let protocol = &ctx.inbound_protocol;
@@ -433,13 +517,14 @@ mod tests {
             input_tokens: Some(10),
             output_tokens: None,
             total_tokens: None,
-            metrics: Default::default(),
+            ..Default::default()
         };
         let b = ExtractedUsage {
             input_tokens: None,
             output_tokens: Some(20),
             total_tokens: Some(30),
             metrics: [("steps".to_string(), 50)].into(),
+            ..Default::default()
         };
         a.merge(&b);
         assert_eq!(a.input_tokens, Some(10));
@@ -478,6 +563,7 @@ mod tests {
                     output_tokens: None,
                     total_tokens: None,
                     metrics,
+                    ..Default::default()
                 })
             }
         }
@@ -497,5 +583,72 @@ mod tests {
         assert_eq!(usage.metrics.get("steps"), Some(&50));
         assert_eq!(usage.metrics.get("pixels"), Some(&1048576));
         assert!(usage.input_tokens.is_none());
+    }
+
+    // ── Binary usage strategy tests ──
+
+    #[test]
+    fn test_binary_strategy_returns_none_for_json() {
+        let s = BinaryUsageStrategy;
+        assert!(s.extract(r#"{"usage":{"prompt_tokens":10}}"#).is_none());
+    }
+
+    #[test]
+    fn test_binary_usage_from_binary_audio() {
+        let usage = BinaryUsageStrategy::usage_from_binary(160_000, "audio/mpeg");
+        assert_eq!(usage.bytes_processed, Some(160_000));
+        assert_eq!(usage.media_type.as_deref(), Some("audio/mpeg"));
+        assert_eq!(usage.metrics.get("bytes_sent"), Some(&160_000));
+        // 160_000 bytes at ~16KB/s ≈ 10_000ms
+        assert_eq!(usage.metrics.get("duration_ms"), Some(&10_000));
+        assert!(usage.has_data());
+    }
+
+    #[test]
+    fn test_binary_usage_from_binary_non_audio() {
+        let usage = BinaryUsageStrategy::usage_from_binary(50_000, "image/png");
+        assert_eq!(usage.bytes_processed, Some(50_000));
+        assert_eq!(usage.media_type.as_deref(), Some("image/png"));
+        assert!(usage.metrics.get("duration_ms").is_none()); // No duration for images
+    }
+
+    #[test]
+    fn test_binary_usage_opus_format() {
+        let usage = BinaryUsageStrategy::usage_from_binary(80_000, "audio/opus");
+        // 80_000 bytes at ~8KB/s ≈ 10_000ms
+        assert_eq!(usage.metrics.get("duration_ms"), Some(&10_000));
+    }
+
+    #[test]
+    fn test_plugin_binary_response() {
+        let plugin = UsageExtractorPlugin::new();
+        let mut ctx = ProxyContext::new();
+        ctx.inbound_protocol = "openai".to_string();
+        ctx.set("prism.response_content_kind", "binary".to_string());
+        ctx.response_headers
+            .insert("content-type".to_string(), "audio/mpeg".to_string());
+
+        // Simulate a binary body (e.g., 1KB of TTS audio)
+        let body = vec![0u8; 1024];
+        plugin.on_response_body(&mut ctx, body).unwrap();
+
+        let usage = ctx.get::<ExtractedUsage>(USAGE_KEY).unwrap();
+        assert_eq!(usage.bytes_processed, Some(1024));
+        assert_eq!(usage.media_type.as_deref(), Some("audio/mpeg"));
+    }
+
+    // ── ExtractedUsage merge with new fields ──
+
+    #[test]
+    fn test_merge_binary_fields() {
+        let mut a = ExtractedUsage::default();
+        let b = ExtractedUsage {
+            bytes_processed: Some(5000),
+            media_type: Some("audio/mpeg".to_string()),
+            ..Default::default()
+        };
+        a.merge(&b);
+        assert_eq!(a.bytes_processed, Some(5000));
+        assert_eq!(a.media_type.as_deref(), Some("audio/mpeg"));
     }
 }
