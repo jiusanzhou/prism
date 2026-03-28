@@ -114,6 +114,10 @@ pub enum CommandOperator {
     RequestBody,
     /// Response body (truncated, if body logging enabled)
     ResponseBody,
+    /// Whether request was a WebSocket upgrade
+    IsWebSocket,
+    /// WebSocket protocol type (openai-realtime, binary-stream, passthrough)
+    WsProtocol,
 }
 
 impl CommandOperator {
@@ -168,6 +172,8 @@ impl CommandOperator {
             Self::OriginalModel => "original_model".into(),
             Self::RequestBody => "request_body".into(),
             Self::ResponseBody => "response_body".into(),
+            Self::IsWebSocket => "is_websocket".into(),
+            Self::WsProtocol => "ws_protocol".into(),
         }
     }
 
@@ -377,6 +383,8 @@ fn parse_operator(token: &str) -> Option<CommandOperator> {
         "ORIGINAL_MODEL" => Some(CommandOperator::OriginalModel),
         "REQ_BODY" => Some(CommandOperator::RequestBody),
         "RESP_BODY" => Some(CommandOperator::ResponseBody),
+        "IS_WEBSOCKET" => Some(CommandOperator::IsWebSocket),
+        "WS_PROTOCOL" => Some(CommandOperator::WsProtocol),
         _ => None,
     }
 }
@@ -466,6 +474,10 @@ pub struct AccessLogData {
     pub request_body: Option<Vec<u8>>,
     /// Captured response body (truncated, if body logging configured).
     pub response_body: Option<Vec<u8>>,
+    /// Whether this was a WebSocket upgrade request.
+    pub is_websocket: bool,
+    /// WebSocket protocol type (if WebSocket).
+    pub ws_protocol: Option<String>,
 }
 
 impl Default for AccessLogData {
@@ -518,6 +530,8 @@ impl Default for AccessLogData {
             original_model: None,
             request_body: None,
             response_body: None,
+            is_websocket: false,
+            ws_protocol: None,
         }
     }
 }
@@ -610,6 +624,8 @@ fn resolve_text(op: &CommandOperator, data: &AccessLogData) -> Option<String> {
             .response_body
             .as_ref()
             .map(|b| String::from_utf8_lossy(b).into_owned()),
+        CommandOperator::IsWebSocket => Some(data.is_websocket.to_string()),
+        CommandOperator::WsProtocol => data.ws_protocol.clone(),
     }
 }
 
@@ -792,6 +808,11 @@ fn resolve_json(op: &CommandOperator, data: &AccessLogData) -> Value {
         },
         CommandOperator::ResponseBody => match &data.response_body {
             Some(b) => Value::String(String::from_utf8_lossy(b).into_owned()),
+            None => Value::Null,
+        },
+        CommandOperator::IsWebSocket => Value::Bool(data.is_websocket),
+        CommandOperator::WsProtocol => match &data.ws_protocol {
+            Some(p) => Value::String(p.clone()),
             None => Value::Null,
         },
     }
@@ -1045,6 +1066,8 @@ mod tests {
             original_model: None,
             request_body: None,
             response_body: None,
+            is_websocket: false,
+            ws_protocol: None,
         }
     }
 
