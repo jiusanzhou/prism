@@ -169,6 +169,10 @@ pub struct ProxyContext {
     pub logged_request_body: Option<Vec<u8>>,
     /// Captured response body for access log (if configured).
     pub logged_response_body: Option<Vec<u8>>,
+
+    // ── WebSocket ──
+    /// Whether this is a WebSocket upgrade request.
+    pub is_websocket: bool,
 }
 
 impl Default for ProxyContext {
@@ -234,6 +238,7 @@ impl Default for ProxyContext {
             should_retry_5xx: false,
             logged_request_body: None,
             logged_response_body: None,
+            is_websocket: false,
         }
     }
 }
@@ -922,11 +927,27 @@ impl ProxyHttp for PrismProxy {
             }
         }
 
+        // ── WebSocket upgrade detection ──
+        // Check for Connection: Upgrade + Upgrade: websocket headers.
+        // WebSocket requests skip body reading, codec processing, and model extraction.
+        let is_upgrade = ctx
+            .request_headers_snapshot
+            .iter()
+            .any(|(k, v)| k == "connection" && v.to_lowercase().contains("upgrade"));
+        let is_ws = ctx
+            .request_headers_snapshot
+            .iter()
+            .any(|(k, v)| k == "upgrade" && v.to_lowercase() == "websocket");
+        if is_upgrade && is_ws {
+            ctx.is_websocket = true;
+            debug!(path = %path, "WebSocket upgrade detected — bypassing body read/codec");
+        }
+
         // Read body to extract model name for routing.
         // We use enable_retry_buffering() so Pingora saves the body internally.
         // After reading, proxy_handle_downstream will replay the retry buffer
         // through request_body_filter, where we do model rewrite / codec.
-        if ctx.protocol != LlmProtocol::Unknown {
+        if ctx.protocol != LlmProtocol::Unknown && !ctx.is_websocket {
             session.downstream_session.enable_retry_buffering();
             let mut body_bytes = Vec::new();
             loop {
@@ -1920,6 +1941,26 @@ impl ProxyHttp for PrismProxy {
         if ctx.upstream_model_name.is_some() || ctx.needs_conversion {
             let _ = upstream_request.remove_header("content-length");
             let _ = upstream_request.insert_header("transfer-encoding", "chunked");
+        }
+
+        // ── WebSocket: ensure Upgrade/Connection headers are forwarded ──
+        // Pingora may strip hop-by-hop headers; explicitly re-set them for WS.
+        if ctx.is_websocket {
+            let _ = upstream_request.insert_header("Connection", "Upgrade");
+            let _ = upstream_request.insert_header("Upgrade", "websocket");
+            // Preserve Sec-WebSocket-* headers from original request
+            let ws_headers: Vec<(String, String)> = ctx
+                .request_headers_snapshot
+                .iter()
+                .filter(|(k, _)| k.starts_with("sec-websocket-"))
+                .cloned()
+                .collect();
+            for (k, v) in ws_headers {
+                if let Ok(name) = http::header::HeaderName::from_bytes(k.as_bytes()) {
+                    let _ = upstream_request.append_header(name, v);
+                }
+            }
+            debug!("WebSocket upgrade headers forwarded to upstream");
         }
 
         // ── Codec: process request headers through plugin chain ──
