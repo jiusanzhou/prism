@@ -9,6 +9,7 @@ grpc = ["tonic", "prost", "prost-types"]
 proxy = ["pingora", "async-trait", "bytes"]
 wasm = ["wasmtime", "prism-core/wasm"]
 redis = ["dep:redis"]
+usage-db = ["dep:rusqlite"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 
 [dependencies]
@@ -62,6 +63,9 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Redis backend (feature-gated)
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"], optional = true }
+
+# Usage tracking SQLite (feature-gated)
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 
 [build-dependencies]
 tonic-build = "0.12"

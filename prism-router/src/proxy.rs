@@ -154,6 +154,12 @@ pub struct ProxyContext {
     pub retry_on_5xx: bool,
     /// Whether response_filter detected a retryable 5xx (used by error_while_proxy).
     pub should_retry_5xx: bool,
+
+    // ── Body logging ──
+    /// Captured request body for access log (if configured).
+    pub logged_request_body: Option<Vec<u8>>,
+    /// Captured response body for access log (if configured).
+    pub logged_response_body: Option<Vec<u8>>,
 }
 
 impl Default for ProxyContext {
@@ -217,6 +223,8 @@ impl Default for ProxyContext {
             last_data_chunk_at: None,
             retry_on_5xx: false,
             should_retry_5xx: false,
+            logged_request_body: None,
+            logged_response_body: None,
         }
     }
 }
@@ -258,6 +266,15 @@ pub struct PrismProxy {
     pub retry_on_5xx: bool,
     /// Which 5xx status codes trigger retry (from config).
     pub retry_5xx_codes: Vec<u16>,
+    /// Usage store for persisting token usage to SQLite.
+    #[cfg(feature = "usage-db")]
+    pub usage_store: Option<std::sync::Arc<crate::usage_store::UsageStore>>,
+    /// Whether to capture request bodies for access log.
+    pub log_request_body: bool,
+    /// Whether to capture response bodies for access log.
+    pub log_response_body: bool,
+    /// Maximum bytes of body to capture for logging.
+    pub body_log_max_bytes: usize,
 }
 
 impl PrismProxy {
@@ -284,6 +301,11 @@ impl PrismProxy {
             model_aliases: Arc::new(ArcSwap::new(Arc::new(std::collections::HashMap::new()))),
             retry_on_5xx: true,
             retry_5xx_codes: vec![502, 503, 504],
+            #[cfg(feature = "usage-db")]
+            usage_store: None,
+            log_request_body: false,
+            log_response_body: false,
+            body_log_max_bytes: 4096,
         }
     }
 
@@ -314,6 +336,11 @@ impl PrismProxy {
             model_aliases: Arc::new(ArcSwap::new(Arc::new(std::collections::HashMap::new()))),
             retry_on_5xx: true,
             retry_5xx_codes: vec![502, 503, 504],
+            #[cfg(feature = "usage-db")]
+            usage_store: None,
+            log_request_body: false,
+            log_response_body: false,
+            body_log_max_bytes: 4096,
         }
     }
 
@@ -409,6 +436,29 @@ impl PrismProxy {
     pub fn with_retry_on_5xx(mut self, enabled: bool, codes: Vec<u16>) -> Self {
         self.retry_on_5xx = enabled;
         self.retry_5xx_codes = codes;
+        self
+    }
+
+    /// Set usage store for SQLite persistence.
+    #[cfg(feature = "usage-db")]
+    pub fn with_usage_store(
+        mut self,
+        store: std::sync::Arc<crate::usage_store::UsageStore>,
+    ) -> Self {
+        self.usage_store = Some(store);
+        self
+    }
+
+    /// Configure body logging.
+    pub fn with_body_logging(
+        mut self,
+        log_request: bool,
+        log_response: bool,
+        max_bytes: usize,
+    ) -> Self {
+        self.log_request_body = log_request;
+        self.log_response_body = log_response;
+        self.body_log_max_bytes = max_bytes;
         self
     }
 
@@ -879,6 +929,16 @@ impl ProxyHttp for PrismProxy {
             }
             // Store body for P/D prefill fire-and-forget
             if !body_bytes.is_empty() {
+                // Capture for body logging if configured
+                if self.log_request_body {
+                    let max = self.body_log_max_bytes;
+                    let truncated = if body_bytes.len() > max {
+                        body_bytes[..max].to_vec()
+                    } else {
+                        body_bytes.clone()
+                    };
+                    ctx.logged_request_body = Some(truncated);
+                }
                 ctx.original_body_bytes = Some(body_bytes);
             }
             ctx.request_body_received_at = Some(Instant::now());
@@ -2144,6 +2204,17 @@ impl ProxyHttp for PrismProxy {
             if !chunk.is_empty() {
                 *ctx.bytes_sent.get_or_insert(0) += chunk.len() as u64;
                 ctx.last_data_chunk_at = Some(Instant::now());
+
+                // Capture response body for logging (up to max bytes)
+                if self.log_response_body {
+                    let buf = ctx.logged_response_body.get_or_insert_with(Vec::new);
+                    let max = self.body_log_max_bytes;
+                    if buf.len() < max {
+                        let remaining = max - buf.len();
+                        let to_copy = chunk.len().min(remaining);
+                        buf.extend_from_slice(&chunk[..to_copy]);
+                    }
+                }
             }
         }
 
@@ -2511,8 +2582,51 @@ impl ProxyHttp for PrismProxy {
                 request_id: Some(ctx.request_id.clone()),
                 downstream_tls_version: None,
                 original_model: ctx.original_model.clone(),
+                request_body: ctx.logged_request_body.clone(),
+                response_body: ctx.logged_response_body.clone(),
             };
             logger.log(&data);
+        }
+
+        // ── Usage Store: persist to SQLite ──
+        #[cfg(feature = "usage-db")]
+        {
+            if let Some(ref store) = self.usage_store {
+                let usage = ctx
+                    .global_codec_ctx
+                    .as_ref()
+                    .and_then(|c| c.get::<ExtractedUsage>(USAGE_KEY));
+                let input_tokens = usage.and_then(|u| u.input_tokens).unwrap_or(0);
+                let output_tokens = usage.and_then(|u| u.output_tokens).unwrap_or(0);
+                let total_tokens = usage
+                    .and_then(|u| u.total_tokens)
+                    .unwrap_or(input_tokens + output_tokens);
+
+                let record = crate::usage_store::UsageRecord {
+                    id: None,
+                    timestamp: Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+                    client_key: ctx
+                        .client_key
+                        .clone()
+                        .or_else(|| ctx.client_key_name.clone())
+                        .unwrap_or_default(),
+                    model: ctx.selected_model.clone().unwrap_or_default(),
+                    variant: ctx.selected_variant.clone().unwrap_or_default(),
+                    provider: ctx.selected_provider.clone().unwrap_or_default(),
+                    input_tokens: input_tokens as i64,
+                    output_tokens: output_tokens as i64,
+                    total_tokens: total_tokens as i64,
+                    latency_ms: elapsed.as_millis() as i64,
+                    status_code: status as i64,
+                    request_id: ctx.request_id.clone(),
+                };
+                let store = store.clone();
+                tokio::task::spawn_blocking(move || {
+                    if let Err(e) = store.record(&record) {
+                        error!("Usage store write failed: {}", e);
+                    }
+                });
+            }
         }
     }
 }
