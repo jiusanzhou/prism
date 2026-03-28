@@ -253,6 +253,8 @@ fn simple_request(content: &str) -> RouteRequest {
         requested_model: None,
         inflight_snapshot: None,
         prefix_cache_index: None,
+        required_capability: None,
+        content_hint: None,
     }
 }
 

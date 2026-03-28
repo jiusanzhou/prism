@@ -85,6 +85,8 @@ impl RouterService for GrpcRouterService {
             inflight_snapshot: Some(self.state.inflight.snapshot()),
             prefix_cache_index: Some(self.state.prefix_cache.clone()),
             required_protocol: None,
+            required_capability: None,
+            content_hint: None,
         };
 
         match self.state.router().route(&core_request) {

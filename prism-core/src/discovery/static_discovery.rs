@@ -61,9 +61,9 @@ pub struct StaticVariantConfig {
     pub pricing_override: Option<ModelPricing>,
     /// Arbitrary metadata (e.g. P/D role, pd_group).
     pub metadata: std::collections::HashMap<String, String>,
+    /// API capabilities served by this variant.
+    pub capabilities: Vec<String>,
 }
-
-/// Pool configuration for static discovery.
 #[derive(Debug, Clone)]
 pub struct StaticPoolConfig {
     pub id: String,
@@ -167,6 +167,15 @@ impl StaticDiscovery {
             let endpoint_id = format!("{}-ep", vc.provider_id);
             let default_account_id = format!("{}-acct", vc.provider_id);
 
+            let mut metadata = vc.metadata.clone();
+            // Inject API capabilities into metadata for plugin access
+            if !vc.capabilities.is_empty() {
+                metadata.insert(
+                    crate::types::VARIANT_API_CAPS_KEY.to_string(),
+                    vc.capabilities.join(","),
+                );
+            }
+
             result.variants.push(ModelVariant {
                 id: vc.id.clone(),
                 model_id: vc.model_id.clone(),
@@ -179,7 +188,7 @@ impl StaticDiscovery {
                 status: VariantStatus::Active,
                 base_url: vc.base_url.clone(),
                 upstream_model_name: vc.upstream_model_name.clone(),
-                metadata: vc.metadata.clone(),
+                metadata,
             });
         }
 
@@ -262,6 +271,7 @@ mod tests {
                 upstream_model_name: None,
                 pricing_override: None,
                 metadata: Default::default(),
+                capabilities: vec![],
             }],
             pools: vec![StaticPoolConfig {
                 id: "default".to_string(),
@@ -375,6 +385,7 @@ mod tests {
             upstream_model_name: None,
             pricing_override: None,
             metadata: Default::default(),
+            capabilities: vec![],
         });
 
         let d = StaticDiscovery::new(config);

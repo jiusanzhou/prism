@@ -431,6 +431,10 @@ pub struct VariantConfig {
     /// Arbitrary metadata (e.g. P/D role).
     #[serde(default)]
     pub metadata: std::collections::HashMap<String, String>,
+    /// API capabilities served by this variant (e.g. ["chat_completion", "embedding"]).
+    /// Used for multi-modal routing: only variants with the required capability are considered.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 fn default_variant_status() -> String {

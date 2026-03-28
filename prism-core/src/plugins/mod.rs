@@ -1,7 +1,9 @@
 pub mod affinity;
+pub mod api_capability_filter;
 pub mod canary;
 pub mod capability_filter;
 pub mod circuit_breaker;
+pub mod content_aware;
 pub mod cost_scorer;
 pub mod feedback_scorer;
 pub mod geo_proximity;

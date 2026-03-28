@@ -1220,6 +1220,8 @@ impl ProxyHttp for PrismProxy {
             } else {
                 None
             },
+            required_capability: None,
+            content_hint: None,
         };
 
         let router = self.router.load();

@@ -3,6 +3,85 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 // ──────────────────────────────────────────────
+// API Capability (multi-modal routing)
+// ──────────────────────────────────────────────
+
+/// API capability that a variant can serve.
+///
+/// Used for multi-modal routing: the proxy sets `required_capability` on the
+/// [`RouteRequest`] and only variants whose config advertises that capability
+/// are considered.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ApiCapability {
+    ChatCompletion,
+    Completion,
+    Embedding,
+    Rerank,
+    AudioTranscription,
+    AudioSpeech,
+    ImageGeneration,
+    ImageEdit,
+    VideoGeneration,
+    Realtime,
+    Custom(String),
+}
+
+impl ApiCapability {
+    /// Canonical string tag stored in variant metadata.
+    pub fn as_tag(&self) -> &str {
+        match self {
+            Self::ChatCompletion => "chat_completion",
+            Self::Completion => "completion",
+            Self::Embedding => "embedding",
+            Self::Rerank => "rerank",
+            Self::AudioTranscription => "audio_transcription",
+            Self::AudioSpeech => "audio_speech",
+            Self::ImageGeneration => "image_generation",
+            Self::ImageEdit => "image_edit",
+            Self::VideoGeneration => "video_generation",
+            Self::Realtime => "realtime",
+            Self::Custom(s) => s.as_str(),
+        }
+    }
+}
+
+impl std::fmt::Display for ApiCapability {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_tag())
+    }
+}
+
+// ──────────────────────────────────────────────
+// Content Hint (multi-modal routing)
+// ──────────────────────────────────────────────
+
+/// Hint about the request payload for content-aware routing decisions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ContentHint {
+    Text {
+        char_count: usize,
+    },
+    Audio {
+        duration_secs: Option<f32>,
+        format: Option<String>,
+        size_bytes: u64,
+    },
+    Image {
+        width: Option<u32>,
+        height: Option<u32>,
+        size_bytes: u64,
+    },
+    Video {
+        duration_secs: Option<f32>,
+        size_bytes: Option<u64>,
+    },
+    None,
+}
+
+/// Metadata key used to store comma-separated API capability tags on a variant.
+pub const VARIANT_API_CAPS_KEY: &str = "_api_caps";
+
+// ──────────────────────────────────────────────
 // Provider layer
 // ──────────────────────────────────────────────
 
