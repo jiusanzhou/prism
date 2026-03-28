@@ -12,6 +12,7 @@ use prism_core::registry::ModelRegistryTrait;
 use prism_core::router::{RouteMetadata, RouteRequest, Router, RouterError};
 use prism_core::strategy::ModelSelectionStrategy;
 
+use crate::async_task::TaskStatus;
 use crate::config::types::AdminConfig;
 use crate::metrics::{RequestLabels, RequestRecord};
 use crate::state::AppState;
@@ -438,6 +439,126 @@ pub async fn validate_config_handler(body: String) -> impl IntoResponse {
         }
     }
 }
+
+// ──────────────────────────────────────────────
+// Async Task handlers
+// ──────────────────────────────────────────────
+
+/// Query params for GET /v1/tasks
+#[derive(Debug, Deserialize)]
+pub struct TaskListQuery {
+    pub client_key: Option<String>,
+    pub status: Option<String>,
+    pub limit: Option<usize>,
+}
+
+/// GET /v1/tasks — list tasks
+pub async fn list_tasks_handler(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<TaskListQuery>,
+) -> impl IntoResponse {
+    let limit = query.limit.unwrap_or(50).min(200);
+    let tasks = state
+        .async_tasks
+        .list(query.client_key.as_deref(), query.status.as_deref(), limit);
+    (StatusCode::OK, Json(serde_json::to_value(&tasks).unwrap()))
+}
+
+/// GET /v1/tasks/{task_id} — get task status
+pub async fn get_task_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    match state.async_tasks.get(&task_id) {
+        Some(entry) => (StatusCode::OK, Json(serde_json::to_value(&entry).unwrap())),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "task not found", "code": "NOT_FOUND"})),
+        ),
+    }
+}
+
+/// POST /v1/tasks/{task_id}/cancel — cancel task
+pub async fn cancel_task_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    match state.async_tasks.cancel(&task_id) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "cancelled", "task_id": task_id})),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e, "code": "CANCEL_FAILED"})),
+        ),
+    }
+}
+
+/// Webhook payload from upstream providers.
+#[derive(Debug, Deserialize)]
+pub struct WebhookPayload {
+    pub task_id: String,
+    pub status: Option<String>,
+    pub progress: Option<f32>,
+    pub result_url: Option<String>,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
+
+/// POST /v1/tasks/webhook — receive upstream webhook callbacks
+pub async fn task_webhook_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<WebhookPayload>,
+) -> impl IntoResponse {
+    // Look up by upstream task ID
+    let entry = state.async_tasks.get_by_upstream(&payload.task_id);
+    if entry.is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "unknown upstream task_id", "code": "NOT_FOUND"})),
+        );
+    }
+    let entry = entry.unwrap();
+
+    let new_status = match payload.status.as_deref() {
+        Some("completed") | Some("complete") | Some("success") => TaskStatus::Completed {
+            result_url: payload.result_url,
+            result: payload.result,
+        },
+        Some("failed") | Some("error") => TaskStatus::Failed {
+            error: payload.error.unwrap_or_else(|| "unknown error".to_string()),
+        },
+        Some("processing") | Some("in_progress") | Some("running") => TaskStatus::Processing {
+            progress: payload.progress,
+        },
+        Some("cancelled") | Some("canceled") => TaskStatus::Cancelled,
+        _ => {
+            // If no status string but has result_url, treat as completed
+            if payload.result_url.is_some() || payload.result.is_some() {
+                TaskStatus::Completed {
+                    result_url: payload.result_url,
+                    result: payload.result,
+                }
+            } else if payload.error.is_some() {
+                TaskStatus::Failed {
+                    error: payload.error.unwrap(),
+                }
+            } else {
+                TaskStatus::Processing {
+                    progress: payload.progress,
+                }
+            }
+        }
+    };
+
+    state.async_tasks.update_status(&entry.task_id, new_status);
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"status": "updated", "task_id": entry.task_id})),
+    )
+}
+
 // ──────────────────────────────────────────────
 // Admin auth middleware
 // ──────────────────────────────────────────────
@@ -481,6 +602,10 @@ pub fn build_app(state: AppState, admin_config: &AdminConfig) -> axum::Router {
     let public = axum::Router::new()
         .route("/v1/route", post(route_handler))
         .route("/v1/outcomes", post(outcomes_handler))
+        .route("/v1/tasks", get(list_tasks_handler))
+        .route("/v1/tasks/webhook", post(task_webhook_handler))
+        .route("/v1/tasks/{task_id}", get(get_task_handler))
+        .route("/v1/tasks/{task_id}/cancel", post(cancel_task_handler))
         .route("/health", get(health_handler))
         .route("/readyz", get(readyz_handler))
         .route("/version", get(version_handler))
