@@ -275,9 +275,9 @@ pub struct PrismProxy {
     pub retry_on_5xx: bool,
     /// Which 5xx status codes trigger retry (from config).
     pub retry_5xx_codes: Vec<u16>,
-    /// Usage store for persisting token usage to SQLite.
+    /// Usage backend for persistence (requires `usage-db` feature).
     #[cfg(feature = "usage-db")]
-    pub usage_store: Option<std::sync::Arc<crate::usage_store::UsageStore>>,
+    pub usage_store: Option<std::sync::Arc<dyn prism_core::usage::UsageBackend>>,
     /// Whether to capture request bodies for access log.
     pub log_request_body: bool,
     /// Whether to capture response bodies for access log.
@@ -314,7 +314,7 @@ impl PrismProxy {
             model_aliases: Arc::new(ArcSwap::new(Arc::new(std::collections::HashMap::new()))),
             retry_on_5xx: true,
             retry_5xx_codes: vec![502, 503, 504],
-#[cfg(feature = "usage-db")]
+            #[cfg(feature = "usage-db")]
             usage_store: None,
             log_request_body: false,
             log_response_body: false,
@@ -351,7 +351,7 @@ impl PrismProxy {
             model_aliases: Arc::new(ArcSwap::new(Arc::new(std::collections::HashMap::new()))),
             retry_on_5xx: true,
             retry_5xx_codes: vec![502, 503, 504],
-#[cfg(feature = "usage-db")]
+            #[cfg(feature = "usage-db")]
             usage_store: None,
             log_request_body: false,
             log_response_body: false,
@@ -456,11 +456,11 @@ impl PrismProxy {
         self
     }
 
-/// Set usage store for SQLite persistence.
+    /// Set usage backend for persistence.
     #[cfg(feature = "usage-db")]
     pub fn with_usage_store(
         mut self,
-        store: std::sync::Arc<crate::usage_store::UsageStore>,
+        store: std::sync::Arc<dyn prism_core::usage::UsageBackend>,
     ) -> Self {
         self.usage_store = Some(store);
         self
@@ -1537,12 +1537,10 @@ impl ProxyHttp for PrismProxy {
                         let headers = ctx.provider_ctx.as_ref().map(|p| {
                             let mut h = reqwest::header::HeaderMap::new();
                             if let Some(ref key) = p.account_api_key {
-                                if let Ok(v) =
-                                    reqwest::header::HeaderValue::from_str(&format!(
-                                        "Bearer {}",
-                                        key
-                                    ))
-                                {
+                                if let Ok(v) = reqwest::header::HeaderValue::from_str(&format!(
+                                    "Bearer {}",
+                                    key
+                                )) {
                                     h.insert(reqwest::header::AUTHORIZATION, v);
                                 }
                             }
@@ -1632,8 +1630,7 @@ impl ProxyHttp for PrismProxy {
                     } else {
                         PrefillStatus::Failed("prefill failed or timed out".to_string())
                     };
-                    self.prefill_tracker
-                        .insert(request_id.clone(), status);
+                    self.prefill_tracker.insert(request_id.clone(), status);
 
                     // Schedule cleanup of tracker entry after 60s
                     let tracker = Arc::clone(&self.prefill_tracker);
@@ -2715,7 +2712,7 @@ impl ProxyHttp for PrismProxy {
                     .and_then(|u| u.total_tokens)
                     .unwrap_or(input_tokens + output_tokens);
 
-                let record = crate::usage_store::UsageRecord {
+                let record = prism_core::usage::UsageRecord {
                     id: None,
                     timestamp: Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
                     client_key: ctx
@@ -3611,7 +3608,10 @@ mod tests {
         );
         let status = tracker.get("req-fail").unwrap();
         let should_cancel = matches!(status.value(), PrefillStatus::Failed(_));
-        assert!(should_cancel, "Decode should be cancelled on prefill failure");
+        assert!(
+            should_cancel,
+            "Decode should be cancelled on prefill failure"
+        );
     }
 
     #[test]

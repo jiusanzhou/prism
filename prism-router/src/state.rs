@@ -34,9 +34,9 @@ pub struct AppState {
     /// Model alias / fallback mapping: client name → internal model id.
     /// Atomically swappable for hot-reload.
     pub model_aliases: Arc<ArcSwap<HashMap<String, String>>>,
-    /// Usage store for SQLite persistence (requires `usage-db` feature).
+    /// Usage backend for persistence (requires `usage-db` feature).
     #[cfg(feature = "usage-db")]
-    pub usage_store: Option<Arc<crate::usage_store::UsageStore>>,
+    pub usage_store: Option<Arc<dyn prism_core::usage::UsageBackend>>,
 }
 
 impl AppState {

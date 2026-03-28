@@ -1,59 +1,21 @@
-//! Usage Store — persists token usage records to SQLite for auditing and billing.
+//! SQLite-backed usage backend.
 //!
-//! Wraps `rusqlite::Connection` behind a `Mutex` for thread safety.
-//! All writes use `spawn_blocking` to avoid blocking the Tokio runtime.
+//! Implements `prism_core::usage::UsageBackend` with WAL mode, connection pooling
+//! via `Mutex<Connection>`, and configurable retention.
 
 use std::sync::Mutex;
 
+use prism_core::usage::{UsageBackend, UsageQuery, UsageRecord, UsageSummary};
 use rusqlite::{params, Connection};
-use serde::{Deserialize, Serialize};
 use tracing::{debug, error, warn};
 
-/// A single usage record persisted to SQLite.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UsageRecord {
-    pub id: Option<i64>,
-    pub timestamp: String,
-    pub client_key: String,
-    pub model: String,
-    pub variant: String,
-    pub provider: String,
-    pub input_tokens: i64,
-    pub output_tokens: i64,
-    pub total_tokens: i64,
-    pub latency_ms: i64,
-    pub status_code: i64,
-    pub request_id: String,
-}
-
-/// Query parameters for usage aggregation.
-#[derive(Debug, Deserialize)]
-pub struct UsageQuery {
-    pub client_key: Option<String>,
-    pub model: Option<String>,
-    pub from: Option<String>,
-    pub to: Option<String>,
-}
-
-/// Aggregated usage summary row.
-#[derive(Debug, Serialize)]
-pub struct UsageSummary {
-    pub client_key: String,
-    pub model: String,
-    pub total_requests: i64,
-    pub total_input_tokens: i64,
-    pub total_output_tokens: i64,
-    pub total_tokens: i64,
-    pub avg_latency_ms: f64,
-}
-
-/// SQLite-backed usage store.
-pub struct UsageStore {
+/// SQLite implementation of [`UsageBackend`].
+pub struct SqliteUsageBackend {
     conn: Mutex<Connection>,
     retention_days: u32,
 }
 
-impl UsageStore {
+impl SqliteUsageBackend {
     /// Open (or create) the SQLite database at `path` and initialize the schema.
     pub fn new(path: &str, retention_days: u32) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|e| format!("Failed to open usage DB: {e}"))?;
@@ -86,16 +48,21 @@ impl UsageStore {
         )
         .map_err(|e| format!("Failed to create usage schema: {e}"))?;
 
-        debug!(path, retention_days, "Usage store initialized");
+        debug!(path, retention_days, "SQLite usage backend initialized");
 
         Ok(Self {
             conn: Mutex::new(conn),
             retention_days,
         })
     }
+}
 
-    /// Insert a usage record. Call from `spawn_blocking`.
-    pub fn record(&self, rec: &UsageRecord) -> Result<(), String> {
+impl UsageBackend for SqliteUsageBackend {
+    fn name(&self) -> &str {
+        "sqlite"
+    }
+
+    fn record(&self, rec: &UsageRecord) -> Result<(), String> {
         let conn = self
             .conn
             .lock()
@@ -121,8 +88,7 @@ impl UsageStore {
         Ok(())
     }
 
-    /// Query aggregated usage by client_key/model within a time range.
-    pub fn query_usage(&self, query: &UsageQuery) -> Result<Vec<UsageSummary>, String> {
+    fn query(&self, query: &UsageQuery) -> Result<Vec<UsageSummary>, String> {
         let conn = self
             .conn
             .lock()
@@ -188,8 +154,7 @@ impl UsageStore {
         Ok(results)
     }
 
-    /// Purge records older than the configured retention period.
-    pub fn cleanup(&self) -> Result<u64, String> {
+    fn cleanup(&self) -> Result<u64, String> {
         let conn = self
             .conn
             .lock()
@@ -214,14 +179,14 @@ impl UsageStore {
 }
 
 /// Spawn a background task that runs cleanup periodically.
-pub fn spawn_cleanup_task(store: std::sync::Arc<UsageStore>, interval_hours: u64) {
+pub fn spawn_cleanup_task(backend: std::sync::Arc<dyn UsageBackend>, interval_hours: u64) {
     tokio::spawn(async move {
         let mut interval =
             tokio::time::interval(std::time::Duration::from_secs(interval_hours * 3600));
         loop {
             interval.tick().await;
-            let store = store.clone();
-            if let Err(e) = tokio::task::spawn_blocking(move || store.cleanup()).await {
+            let backend = backend.clone();
+            if let Err(e) = tokio::task::spawn_blocking(move || backend.cleanup()).await {
                 error!("Usage cleanup task failed: {e}");
             }
         }
@@ -232,8 +197,8 @@ pub fn spawn_cleanup_task(store: std::sync::Arc<UsageStore>, interval_hours: u64
 mod tests {
     use super::*;
 
-    fn temp_store() -> UsageStore {
-        UsageStore::new(":memory:", 90).unwrap()
+    fn temp_store() -> SqliteUsageBackend {
+        SqliteUsageBackend::new(":memory:", 90).unwrap()
     }
 
     fn sample_record(client_key: &str, model: &str) -> UsageRecord {
@@ -256,6 +221,12 @@ mod tests {
     }
 
     #[test]
+    fn test_backend_name() {
+        let store = temp_store();
+        assert_eq!(store.name(), "sqlite");
+    }
+
+    #[test]
     fn test_record_and_query() {
         let store = temp_store();
         store.record(&sample_record("sk-test", "gpt-4o")).unwrap();
@@ -264,23 +235,14 @@ mod tests {
             .record(&sample_record("sk-other", "claude-sonnet-4"))
             .unwrap();
 
-        let results = store
-            .query_usage(&UsageQuery {
-                client_key: None,
-                model: None,
-                from: None,
-                to: None,
-            })
-            .unwrap();
+        let results = store.query(&UsageQuery::default()).unwrap();
         assert_eq!(results.len(), 2);
 
         // Filter by client_key
         let results = store
-            .query_usage(&UsageQuery {
+            .query(&UsageQuery {
                 client_key: Some("sk-test".to_string()),
-                model: None,
-                from: None,
-                to: None,
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -289,11 +251,9 @@ mod tests {
 
         // Filter by model
         let results = store
-            .query_usage(&UsageQuery {
-                client_key: None,
+            .query(&UsageQuery {
                 model: Some("claude-sonnet-4".to_string()),
-                from: None,
-                to: None,
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -306,16 +266,9 @@ mod tests {
         store.record(&sample_record("sk-test", "gpt-4o")).unwrap();
 
         let deleted = store.cleanup().unwrap();
-        assert_eq!(deleted, 0); // record is recent
+        assert_eq!(deleted, 0);
 
-        let results = store
-            .query_usage(&UsageQuery {
-                client_key: None,
-                model: None,
-                from: None,
-                to: None,
-            })
-            .unwrap();
+        let results = store.query(&UsageQuery::default()).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -323,7 +276,6 @@ mod tests {
     fn test_cleanup_purges_old() {
         let store = temp_store();
 
-        // Insert a record with an old timestamp
         let mut rec = sample_record("sk-test", "gpt-4o");
         rec.timestamp = "2020-01-01T00:00:00.000Z".to_string();
         store.record(&rec).unwrap();
@@ -344,11 +296,9 @@ mod tests {
         store.record(&rec).unwrap();
 
         let results = store
-            .query_usage(&UsageQuery {
-                client_key: None,
-                model: None,
+            .query(&UsageQuery {
                 from: Some("2025-06-10T00:00:00.000Z".to_string()),
-                to: None,
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -358,14 +308,16 @@ mod tests {
     #[test]
     fn test_empty_query() {
         let store = temp_store();
-        let results = store
-            .query_usage(&UsageQuery {
-                client_key: None,
-                model: None,
-                from: None,
-                to: None,
-            })
-            .unwrap();
+        let results = store.query(&UsageQuery::default()).unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_trait_object() {
+        let store = temp_store();
+        let backend: std::sync::Arc<dyn UsageBackend> = std::sync::Arc::new(store);
+        backend.record(&sample_record("sk-test", "gpt-4o")).unwrap();
+        let results = backend.query(&UsageQuery::default()).unwrap();
+        assert_eq!(results.len(), 1);
     }
 }

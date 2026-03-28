@@ -442,11 +442,11 @@ pub async fn validate_config_handler(body: String) -> impl IntoResponse {
 // Admin auth middleware
 // ──────────────────────────────────────────────
 
-/// GET /admin/usage — query aggregated usage from SQLite
+/// GET /admin/usage — query aggregated usage
 #[cfg(feature = "usage-db")]
 pub async fn usage_handler(
     State(state): State<AppState>,
-    axum::extract::Query(query): axum::extract::Query<crate::usage_store::UsageQuery>,
+    axum::extract::Query(query): axum::extract::Query<prism_core::usage::UsageQuery>,
 ) -> impl IntoResponse {
     let store = match &state.usage_store {
         Some(s) => s.clone(),
@@ -460,7 +460,7 @@ pub async fn usage_handler(
         }
     };
 
-    match tokio::task::spawn_blocking(move || store.query_usage(&query)).await {
+    match tokio::task::spawn_blocking(move || store.query(&query)).await {
         Ok(Ok(results)) => (StatusCode::OK, Json(serde_json::to_value(results).unwrap())),
         Ok(Err(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
