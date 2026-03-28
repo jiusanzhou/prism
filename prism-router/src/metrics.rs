@@ -292,6 +292,57 @@ impl UsHistogram {
     }
 }
 
+/// Histogram with f64 second-granularity buckets (for Prometheus `_seconds` histograms).
+pub struct SecondsHistogram {
+    bucket_bounds: Vec<f64>,
+    bucket_counts: Vec<AtomicU64>,
+    count: AtomicU64,
+    /// Sum stored as integer nanoseconds for atomicity, converted to f64 seconds on read.
+    sum_ns: AtomicU64,
+}
+
+impl SecondsHistogram {
+    pub fn new(bounds: Vec<f64>) -> Self {
+        let n = bounds.len();
+        let mut bucket_counts = Vec::with_capacity(n + 1);
+        for _ in 0..=n {
+            bucket_counts.push(AtomicU64::new(0));
+        }
+        Self {
+            bucket_bounds: bounds,
+            bucket_counts,
+            count: AtomicU64::new(0),
+            sum_ns: AtomicU64::new(0),
+        }
+    }
+
+    /// Record a duration.
+    pub fn observe(&self, duration: Duration) {
+        let secs = duration.as_secs_f64();
+        let ns = duration.as_nanos() as u64;
+        self.count.fetch_add(1, Ordering::Relaxed);
+        self.sum_ns.fetch_add(ns, Ordering::Relaxed);
+        for (i, &bound) in self.bucket_bounds.iter().enumerate() {
+            if secs <= bound {
+                self.bucket_counts[i].fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        self.bucket_counts[self.bucket_bounds.len()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Snapshot: (bounds, cumulative_counts_including_inf, total_count, sum_seconds).
+    pub fn snapshot(&self) -> (Vec<f64>, Vec<u64>, u64, f64) {
+        let counts: Vec<u64> = self
+            .bucket_counts
+            .iter()
+            .map(|c| c.load(Ordering::Relaxed))
+            .collect();
+        let count = self.count.load(Ordering::Relaxed);
+        let sum_secs = self.sum_ns.load(Ordering::Relaxed) as f64 / 1_000_000_000.0;
+        (self.bucket_bounds.clone(), counts, count, sum_secs)
+    }
+}
+
 /// Counter with a single string label dimension.
 pub struct LabeledCounter {
     values: RwLock<HashMap<String, u64>>,
@@ -344,8 +395,12 @@ impl DualLabeledCounter {
     }
 
     pub fn inc(&self, l1: &str, l2: &str) {
+        self.inc_by(l1, l2, 1);
+    }
+
+    pub fn inc_by(&self, l1: &str, l2: &str, n: u64) {
         let mut map = self.values.write().unwrap();
-        *map.entry((l1.to_string(), l2.to_string())).or_insert(0) += 1;
+        *map.entry((l1.to_string(), l2.to_string())).or_insert(0) += n;
     }
 
     pub fn snapshot(&self) -> Vec<((String, String), u64)> {
@@ -599,6 +654,16 @@ pub struct MetricsCollector {
     pub pd_prefill_timeouts: AtomicU64,
     pub pd_prefill_retries: AtomicU64,
     pub pd_decode_cancelled: AtomicU64,
+
+    // ── Standardized Prometheus metrics ──
+    /// Config reload counter.
+    pub config_reload_total: AtomicU64,
+    /// Request duration histogram in seconds (Prometheus-standard buckets).
+    pub request_duration_seconds: SecondsHistogram,
+    /// Unified token counter: label1=variant, label2=direction (input|output).
+    pub tokens_total: DualLabeledCounter,
+    /// Upstream health gauge: endpoint_id → (provider_id, healthy:bool).
+    pub upstream_health: RwLock<HashMap<String, (String, bool)>>,
 }
 
 impl MetricsCollector {
@@ -652,6 +717,14 @@ impl MetricsCollector {
             pd_prefill_timeouts: AtomicU64::new(0),
             pd_prefill_retries: AtomicU64::new(0),
             pd_decode_cancelled: AtomicU64::new(0),
+
+            // Standardized Prometheus
+            config_reload_total: AtomicU64::new(0),
+            request_duration_seconds: SecondsHistogram::new(vec![
+                0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+            ]),
+            tokens_total: DualLabeledCounter::new(),
+            upstream_health: RwLock::new(HashMap::new()),
         }
     }
 
@@ -681,14 +754,21 @@ impl MetricsCollector {
             self.md_ttft.observe(labels, ttft);
         }
 
-        // Token counters (multi-dim + legacy single-label)
+        // Request duration histogram (seconds)
+        self.request_duration_seconds
+            .observe(Duration::from_millis(record.latency_ms));
+
+        // Token counters (multi-dim + legacy single-label + unified direction-labeled)
         if let Some(inp) = record.input_tokens {
             self.input_tokens.inc_by(&record.variant_id, inp as u64);
             self.md_input_tokens.inc_by(labels, inp as u64);
+            self.tokens_total.inc_by(&labels.model, "input", inp as u64);
         }
         if let Some(out) = record.output_tokens {
             self.output_tokens.inc_by(&record.variant_id, out as u64);
             self.md_output_tokens.inc_by(labels, out as u64);
+            self.tokens_total
+                .inc_by(&labels.model, "output", out as u64);
         }
 
         // Provider stats (legacy)
@@ -717,6 +797,17 @@ impl MetricsCollector {
     /// Record a fallback trigger.
     pub fn record_fallback(&self) {
         self.fallback_triggered.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a config reload.
+    pub fn record_config_reload(&self) {
+        self.config_reload_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Update upstream health status for an endpoint.
+    pub fn update_upstream_health(&self, endpoint_id: &str, provider_id: &str, healthy: bool) {
+        let mut map = self.upstream_health.write().unwrap();
+        map.insert(endpoint_id.to_string(), (provider_id.to_string(), healthy));
     }
 
     /// Record plugin filter duration (microseconds).
@@ -967,6 +1058,60 @@ impl MetricsCollector {
             out.push_str(&format!(
                 "prism_circuit_breaker_state{{variant=\"{}\"}} {}\n",
                 label, val as u64
+            ));
+        }
+
+        // ── Upstream health ──
+        prom_help_type(
+            &mut out,
+            "prism_upstream_health",
+            "Upstream endpoint health (0=unhealthy, 1=healthy)",
+            "gauge",
+        );
+        {
+            let health_map = self.upstream_health.read().unwrap();
+            for (endpoint, (provider, healthy)) in health_map.iter() {
+                out.push_str(&format!(
+                    "prism_upstream_health{{provider=\"{}\",endpoint=\"{}\"}} {}\n",
+                    provider,
+                    endpoint,
+                    if *healthy { 1 } else { 0 }
+                ));
+            }
+        }
+
+        // ── Config reload ──
+        prom_help_type(
+            &mut out,
+            "prism_config_reload_total",
+            "Total config reloads",
+            "counter",
+        );
+        prom_counter(
+            &mut out,
+            "prism_config_reload_total",
+            self.config_reload_total.load(Ordering::Relaxed),
+        );
+
+        // ── Request duration histogram (seconds) ──
+        format_seconds_histogram(
+            &mut out,
+            "prism_request_duration_seconds",
+            "Request duration in seconds",
+            &self.request_duration_seconds,
+        );
+
+        // ── Tokens total (direction-labeled) ──
+        prom_help_type(
+            &mut out,
+            "prism_tokens_total",
+            "Total tokens processed",
+            "counter",
+        );
+        for ((model, direction), val) in self.tokens_total.snapshot() {
+            out.push_str(&format!(
+                "prism_tokens_total{{model=\"{}\",direction=\"{}\"}} {}\n",
+                model, direction, val
             ));
         }
 
@@ -1378,6 +1523,29 @@ fn format_histogram(out: &mut String, name: &str, help: &str, histogram: &UsHist
         counts[bounds.len()]
     ));
     out.push_str(&format!("{}_sum {}\n", name, sum));
+    out.push_str(&format!("{}_count {}\n", name, count));
+}
+
+fn format_seconds_histogram(
+    out: &mut String,
+    name: &str,
+    help: &str,
+    histogram: &SecondsHistogram,
+) {
+    let (bounds, counts, count, sum) = histogram.snapshot();
+    prom_help_type(out, name, help, "histogram");
+    for (i, bound) in bounds.iter().enumerate() {
+        out.push_str(&format!(
+            "{}_bucket{{le=\"{}\"}} {}\n",
+            name, bound, counts[i]
+        ));
+    }
+    out.push_str(&format!(
+        "{}_bucket{{le=\"+Inf\"}} {}\n",
+        name,
+        counts[bounds.len()]
+    ));
+    out.push_str(&format!("{}_sum {:.6}\n", name, sum));
     out.push_str(&format!("{}_count {}\n", name, count));
 }
 
@@ -2289,5 +2457,126 @@ mod tests {
         // Multi-dim tokens
         assert!(output.contains("prism_md_input_tokens_total{"));
         assert!(output.contains("prism_md_output_tokens_total{"));
+    }
+
+    #[test]
+    fn test_prometheus_help_type_lines() {
+        let collector = MetricsCollector::new(100);
+        let output = collector.format_prometheus(42, 3, 5);
+
+        // Every metric family must have # HELP and # TYPE lines
+        for name in &[
+            "prism_requests_total",
+            "prism_errors_total",
+            "prism_uptime_seconds",
+            "prism_registered_models",
+            "prism_active_variants",
+            "prism_config_reload_total",
+            "prism_upstream_health",
+            "prism_tokens_total",
+            "prism_request_duration_seconds",
+        ] {
+            assert!(
+                output.contains(&format!("# HELP {}", name)),
+                "missing # HELP for {}",
+                name
+            );
+            assert!(
+                output.contains(&format!("# TYPE {}", name)),
+                "missing # TYPE for {}",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_prometheus_config_reload_counter() {
+        let collector = MetricsCollector::new(100);
+        collector.record_config_reload();
+        collector.record_config_reload();
+
+        let output = collector.format_prometheus(0, 0, 0);
+        assert!(output.contains("# TYPE prism_config_reload_total counter"));
+        assert!(output.contains("prism_config_reload_total 2"));
+    }
+
+    #[test]
+    fn test_prometheus_upstream_health_gauge() {
+        let collector = MetricsCollector::new(100);
+        collector.update_upstream_health("ep-1", "openai", true);
+        collector.update_upstream_health("ep-2", "anthropic", false);
+
+        let output = collector.format_prometheus(0, 0, 0);
+        assert!(output.contains("# TYPE prism_upstream_health gauge"));
+        assert!(output.contains("prism_upstream_health{provider=\"openai\",endpoint=\"ep-1\"} 1"));
+        assert!(
+            output.contains("prism_upstream_health{provider=\"anthropic\",endpoint=\"ep-2\"} 0")
+        );
+    }
+
+    #[test]
+    fn test_prometheus_request_duration_seconds_histogram() {
+        let collector = MetricsCollector::new(100);
+        let labels = RequestLabels {
+            model: "gpt-4o".into(),
+            provider: "openai".into(),
+            endpoint: "ep1".into(),
+            account: "acct1".into(),
+            region: "us".into(),
+            variant: "gpt-4o@openai".into(),
+        };
+        collector.record_with_context(make_record("gpt-4o@openai", 150, true), &labels);
+
+        let output = collector.format_prometheus(0, 0, 0);
+        assert!(output.contains("# TYPE prism_request_duration_seconds histogram"));
+        assert!(output.contains("prism_request_duration_seconds_bucket{le=\"0.1\"} 0"));
+        assert!(output.contains("prism_request_duration_seconds_bucket{le=\"0.25\"} 1"));
+        assert!(output.contains("prism_request_duration_seconds_bucket{le=\"+Inf\"} 1"));
+        assert!(output.contains("prism_request_duration_seconds_count 1"));
+    }
+
+    #[test]
+    fn test_prometheus_tokens_total_direction() {
+        let collector = MetricsCollector::new(100);
+        let labels = RequestLabels {
+            model: "gpt-4o".into(),
+            provider: "openai".into(),
+            endpoint: "ep1".into(),
+            account: "acct1".into(),
+            region: "us".into(),
+            variant: "gpt-4o@openai".into(),
+        };
+        collector.record_with_context(make_record("gpt-4o@openai", 100, true), &labels);
+
+        let output = collector.format_prometheus(0, 0, 0);
+        assert!(output.contains("# TYPE prism_tokens_total counter"));
+        assert!(output.contains("prism_tokens_total{model=\"gpt-4o\",direction=\"input\"}"));
+        assert!(output.contains("prism_tokens_total{model=\"gpt-4o\",direction=\"output\"}"));
+    }
+
+    #[test]
+    fn test_prometheus_uptime_gauge() {
+        let collector = MetricsCollector::new(100);
+        let output = collector.format_prometheus(12345, 2, 4);
+        assert!(output.contains("# TYPE prism_uptime_seconds gauge"));
+        assert!(output.contains("prism_uptime_seconds 12345"));
+    }
+
+    #[test]
+    fn test_seconds_histogram_basic() {
+        let h = SecondsHistogram::new(vec![0.01, 0.05, 0.1]);
+        h.observe(Duration::from_millis(5)); // 0.005s → le=0.01
+        h.observe(Duration::from_millis(30)); // 0.030s → le=0.05
+        h.observe(Duration::from_millis(75)); // 0.075s → le=0.1
+        h.observe(Duration::from_millis(200)); // 0.200s → +Inf only
+
+        let (bounds, counts, count, sum) = h.snapshot();
+        assert_eq!(bounds, vec![0.01, 0.05, 0.1]);
+        assert_eq!(count, 4);
+        assert!(sum > 0.30 && sum < 0.32); // ~0.310s
+        assert_eq!(counts[0], 1); // le=0.01
+        assert_eq!(counts[1], 2); // le=0.05
+        assert_eq!(counts[2], 3); // le=0.1
+        assert_eq!(counts[3], 4); // +Inf
     }
 }
