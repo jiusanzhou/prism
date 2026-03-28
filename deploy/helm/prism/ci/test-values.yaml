@@ -1,0 +1,61 @@
+# CI test values — exercises most optional features
+replicaCount: 1
+
+image:
+  tag: latest
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: prism-ci.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          port: proxy
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+
+serviceMonitor:
+  enabled: true
+  interval: 15s
+  labels:
+    release: prometheus
+
+redis:
+  enabled: true
+  url: redis://redis:6379
+
+tls:
+  enabled: true
+  secretName: prism-tls
+
+sidecar:
+  enabled: true
+
+secrets:
+  create: true
+  data:
+    OPENAI_API_KEY: test-key
+
+config:
+  server:
+    listen: "0.0.0.0"
+    http_port: 8080
+    grpc_port: 9090
+    proxy_port: 8000
+  auth:
+    enabled: false
+  admin:
+    enabled: true
+  providers: {}
+  accounts: []
+  models: []
+  variants: []
+  pools: []
+  routing:
+    default_strategy: balanced

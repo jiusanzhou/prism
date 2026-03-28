@@ -1,0 +1,15 @@
+apiVersion: v2
+name: prism
+description: AI model router — routing, load balancing, and observability for LLM API requests
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - ai
+  - llm
+  - router
+  - proxy
+  - load-balancer
+home: https://github.com/jiusanzhou/prism
+maintainers:
+  - name: jiusanzhou

@@ -1,0 +1,134 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/jiusanzhou/prism
+  pullPolicy: IfNotPresent
+  tag: "0.1.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: ClusterIP
+  proxyPort: 8000
+  httpPort: 8080
+  grpcPort: 9090
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: prism.local
+      paths:
+        - path: /
+          pathType: Prefix
+          port: proxy
+  tls: []
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# -- Inline prism config (rendered as /etc/prism/prism.yaml inside the container)
+config:
+  server:
+    listen: "0.0.0.0"
+    http_port: 8080
+    grpc_port: 9090
+    proxy_port: 8000
+    request_timeout_secs: 300
+  auth:
+    enabled: false
+    api_keys: []
+  admin:
+    enabled: true
+  providers: {}
+  accounts: []
+  models: []
+  variants: []
+  pools: []
+  routing:
+    default_strategy: balanced
+
+# -- Extra environment variables (list of name/value or valueFrom)
+extraEnv: []
+
+# -- Extra volumes to add to the pod
+extraVolumes: []
+
+# -- Extra volume mounts for the prism container
+extraVolumeMounts: []
+
+# -- TLS termination by Prism itself
+tls:
+  enabled: false
+  # Name of an existing Secret containing tls.crt and tls.key
+  secretName: ""
+
+# -- Optional Redis for distributed rate limiting
+redis:
+  enabled: false
+  url: ""
+
+# -- Prometheus ServiceMonitor (requires Prometheus Operator CRDs)
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+
+# -- K8s discovery sidecar (from prism-plugins repo)
+sidecar:
+  enabled: false
+  image:
+    repository: ghcr.io/jiusanzhou/prism-k8s-discovery
+    tag: latest
+    pullPolicy: IfNotPresent
+  port: 9091
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  # Extra args passed to the sidecar binary
+  extraArgs: []
+
+# -- API key secrets (mounted as env vars)
+secrets:
+  # If set, creates a Secret with these key-value pairs
+  # Keys are used as env var names.
+  create: false
+  data: {}
+  # Example:
+  #   OPENAI_API_KEY: sk-...
+  #   ANTHROPIC_API_KEY: sk-ant-...
+  # Reference an existing secret instead
+  existingSecret: ""
