@@ -344,7 +344,14 @@ pub async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse
         .metrics
         .format_prometheus(uptime, model_count, variant_count);
 
-    (StatusCode::OK, output)
+    (
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        output,
+    )
 }
 
 /// POST /admin/reload — trigger manual config reload
@@ -353,6 +360,7 @@ pub async fn reload_handler(State(state): State<AppState>) -> impl IntoResponse 
 
     match reload_config(&state, &state.config_path) {
         Ok(result) => {
+            state.metrics.record_config_reload();
             let json = serde_json::json!({
                 "status": "ok",
                 "generation": result.generation,
