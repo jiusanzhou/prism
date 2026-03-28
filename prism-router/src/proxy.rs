@@ -20,7 +20,7 @@ use crate::codec::quota_recorder::{HEADERS_KEY, LIMITER_KEY};
 use crate::codec::registry::CodecRegistry;
 use crate::codec::usage_extractor::{ExtractedUsage, USAGE_KEY};
 use crate::metrics::{MetricsCollector, RequestRecord};
-use crate::protocol::LlmProtocol;
+use crate::protocol::{ApiProtocol, LlmProtocol};
 use crate::provider;
 use crate::provider::registry::ProviderPluginRegistry;
 use crate::ratelimit::RateLimiter;
@@ -178,7 +178,7 @@ pub struct ProxyContext {
 impl Default for ProxyContext {
     fn default() -> Self {
         Self {
-            protocol: LlmProtocol::Unknown,
+            protocol: ApiProtocol::Unknown,
             selected_variant: None,
             selected_provider: None,
             selected_model: None,
@@ -568,7 +568,7 @@ impl ProxyHttp for PrismProxy {
     ) -> Result<bool, Box<pingora::Error>> {
         let path = session.req_header().uri.path().to_string();
         let method = session.req_header().method.as_str().to_string();
-        ctx.protocol = LlmProtocol::from_path(&path);
+        ctx.protocol = ApiProtocol::from_path(&path);
         ctx.request_start = Instant::now();
         ctx.request_method = method;
         ctx.request_path = path.clone();
@@ -947,7 +947,7 @@ impl ProxyHttp for PrismProxy {
         // We use enable_retry_buffering() so Pingora saves the body internally.
         // After reading, proxy_handle_downstream will replay the retry buffer
         // through request_body_filter, where we do model rewrite / codec.
-        if ctx.protocol != LlmProtocol::Unknown && !ctx.is_websocket {
+        if ctx.protocol != ApiProtocol::Unknown && !ctx.is_websocket {
             session.downstream_session.enable_retry_buffering();
             let mut body_bytes = Vec::new();
             loop {
@@ -2164,6 +2164,20 @@ impl ProxyHttp for PrismProxy {
                     }
                 }
                 global_chain.process_response_headers(global_ctx);
+
+                // Detect binary response for protocols that produce non-JSON output
+                if ctx.protocol.is_binary_response() {
+                    let content_type = global_ctx
+                        .response_headers
+                        .get("content-type")
+                        .cloned()
+                        .unwrap_or_default();
+                    let is_json = content_type.starts_with("application/json");
+                    if !is_json {
+                        global_ctx.set("prism.response_content_kind", "binary".to_string());
+                        global_ctx.response_content_kind = crate::codec::ContentKind::Binary;
+                    }
+                }
             }
         }
 
@@ -2459,6 +2473,31 @@ impl ProxyHttp for PrismProxy {
             } else {
                 // Buffering — suppress partial chunks from reaching downstream
                 *body = None;
+            }
+        }
+
+        // ── Global plugin chain: process response body at end_of_stream ──
+        // For binary responses (TTS, images), this triggers BinaryUsageStrategy
+        // in the usage extractor to record bytes_processed and media_type.
+        if end_of_stream {
+            if let Some(global_chain) = self.codec_registry.global_chain() {
+                if let Some(ref mut global_ctx) = ctx.global_codec_ctx {
+                    // For binary protocols, pass the total bytes as a synthetic body
+                    // so the usage extractor can record bytes_processed.
+                    let total_bytes = ctx.bytes_sent.unwrap_or(0);
+                    if ctx.protocol.is_binary_response() && total_bytes > 0 {
+                        // Create a small placeholder body — the usage extractor
+                        // checks for "prism.response_content_kind" == "binary"
+                        // and records bytes from the body length.
+                        let placeholder = vec![0u8; total_bytes as usize];
+                        let _ = global_chain.process_response_body(global_ctx, placeholder);
+                    } else if !ctx.protocol.is_binary_response() {
+                        // For JSON responses, pass the actual body if available
+                        if let Some(ref chunk) = body {
+                            let _ = global_chain.process_response_body(global_ctx, chunk.to_vec());
+                        }
+                    }
+                }
             }
         }
 
@@ -2816,7 +2855,7 @@ mod tests {
     #[test]
     fn test_proxy_context_default() {
         let ctx = ProxyContext::default();
-        assert_eq!(ctx.protocol, LlmProtocol::Unknown);
+        assert_eq!(ctx.protocol, ApiProtocol::Unknown);
         assert!(ctx.selected_variant.is_none());
         assert!(ctx.selected_provider.is_none());
         assert!(ctx.selected_model.is_none());
@@ -2908,7 +2947,7 @@ mod tests {
     #[test]
     fn test_init_codec_ctx() {
         let mut ctx = ProxyContext {
-            protocol: LlmProtocol::OpenAI,
+            protocol: ApiProtocol::ChatCompletion,
             selected_provider: Some("anthropic-main".to_string()),
             selected_model: Some("claude-3-opus".to_string()),
             selected_variant: Some("claude-variant".to_string()),
@@ -2937,7 +2976,7 @@ mod tests {
     #[test]
     fn test_init_codec_ctx_without_upstream_url() {
         let mut ctx = ProxyContext {
-            protocol: LlmProtocol::OpenAI,
+            protocol: ApiProtocol::ChatCompletion,
             outbound_protocol: Some("anthropic".to_string()),
             ..Default::default()
         };

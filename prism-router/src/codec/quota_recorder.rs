@@ -144,7 +144,7 @@ mod tests {
                 input_tokens: Some(42),
                 output_tokens: Some(128),
                 total_tokens: Some(170),
-                metrics: Default::default(),
+                ..Default::default()
             },
         );
         ctx.set(LIMITER_KEY, Arc::clone(&limiter));
@@ -186,7 +186,7 @@ mod tests {
                 input_tokens: Some(42),
                 output_tokens: None,
                 total_tokens: None,
-                metrics: Default::default(),
+                ..Default::default()
             },
         );
         // No limiter set — should be a no-op
@@ -212,6 +212,7 @@ mod tests {
                 output_tokens: None,
                 total_tokens: None,
                 metrics: [("steps".to_string(), 50)].into(),
+                ..Default::default()
             },
         );
         ctx.set(LIMITER_KEY, Arc::clone(&limiter));
@@ -247,7 +248,7 @@ mod tests {
                 input_tokens: Some(101), // over limit
                 output_tokens: None,
                 total_tokens: None,
-                metrics: Default::default(),
+                ..Default::default()
             },
         );
         ctx.set(LIMITER_KEY, Arc::clone(&limiter));
