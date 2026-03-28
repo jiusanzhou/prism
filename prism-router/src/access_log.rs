@@ -110,6 +110,10 @@ pub enum CommandOperator {
     DownstreamTlsVersion,
     /// Original model name before alias resolution (if alias was applied)
     OriginalModel,
+    /// Request body (truncated, if body logging enabled)
+    RequestBody,
+    /// Response body (truncated, if body logging enabled)
+    ResponseBody,
 }
 
 impl CommandOperator {
@@ -162,6 +166,8 @@ impl CommandOperator {
             Self::RequestId => "request_id".into(),
             Self::DownstreamTlsVersion => "downstream_tls_version".into(),
             Self::OriginalModel => "original_model".into(),
+            Self::RequestBody => "request_body".into(),
+            Self::ResponseBody => "response_body".into(),
         }
     }
 
@@ -369,6 +375,8 @@ fn parse_operator(token: &str) -> Option<CommandOperator> {
         "REQUEST_ID" => Some(CommandOperator::RequestId),
         "DOWNSTREAM_TLS_VERSION" => Some(CommandOperator::DownstreamTlsVersion),
         "ORIGINAL_MODEL" => Some(CommandOperator::OriginalModel),
+        "REQ_BODY" => Some(CommandOperator::RequestBody),
+        "RESP_BODY" => Some(CommandOperator::ResponseBody),
         _ => None,
     }
 }
@@ -454,6 +462,10 @@ pub struct AccessLogData {
     pub downstream_tls_version: Option<String>,
     /// Original model name before alias resolution (if alias was applied).
     pub original_model: Option<String>,
+    /// Captured request body (truncated, if body logging configured).
+    pub request_body: Option<Vec<u8>>,
+    /// Captured response body (truncated, if body logging configured).
+    pub response_body: Option<Vec<u8>>,
 }
 
 impl Default for AccessLogData {
@@ -504,6 +516,8 @@ impl Default for AccessLogData {
             request_id: None,
             downstream_tls_version: None,
             original_model: None,
+            request_body: None,
+            response_body: None,
         }
     }
 }
@@ -588,6 +602,14 @@ fn resolve_text(op: &CommandOperator, data: &AccessLogData) -> Option<String> {
         CommandOperator::RequestId => data.request_id.clone(),
         CommandOperator::DownstreamTlsVersion => data.downstream_tls_version.clone(),
         CommandOperator::OriginalModel => data.original_model.clone(),
+        CommandOperator::RequestBody => data
+            .request_body
+            .as_ref()
+            .map(|b| String::from_utf8_lossy(b).into_owned()),
+        CommandOperator::ResponseBody => data
+            .response_body
+            .as_ref()
+            .map(|b| String::from_utf8_lossy(b).into_owned()),
     }
 }
 
@@ -762,6 +784,14 @@ fn resolve_json(op: &CommandOperator, data: &AccessLogData) -> Value {
         },
         CommandOperator::OriginalModel => match &data.original_model {
             Some(v) => Value::String(v.clone()),
+            None => Value::Null,
+        },
+        CommandOperator::RequestBody => match &data.request_body {
+            Some(b) => Value::String(String::from_utf8_lossy(b).into_owned()),
+            None => Value::Null,
+        },
+        CommandOperator::ResponseBody => match &data.response_body {
+            Some(b) => Value::String(String::from_utf8_lossy(b).into_owned()),
             None => Value::Null,
         },
     }
@@ -1013,6 +1043,8 @@ mod tests {
             request_id: Some("req-uuid-001".into()),
             downstream_tls_version: Some("TLSv1.3".into()),
             original_model: None,
+            request_body: None,
+            response_body: None,
         }
     }
 

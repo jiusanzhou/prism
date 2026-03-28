@@ -434,6 +434,37 @@ pub async fn validate_config_handler(body: String) -> impl IntoResponse {
 // Admin auth middleware
 // ──────────────────────────────────────────────
 
+/// GET /admin/usage — query aggregated usage from SQLite
+#[cfg(feature = "usage-db")]
+pub async fn usage_handler(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<crate::usage_store::UsageQuery>,
+) -> impl IntoResponse {
+    let store = match &state.usage_store {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(
+                    serde_json::json!({"error": "usage-db not configured", "code": "UNAVAILABLE"}),
+                ),
+            );
+        }
+    };
+
+    match tokio::task::spawn_blocking(move || store.query_usage(&query)).await {
+        Ok(Ok(results)) => (StatusCode::OK, Json(serde_json::to_value(results).unwrap())),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e, "code": "QUERY_FAILED"})),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string(), "code": "INTERNAL_ERROR"})),
+        ),
+    }
+}
+
 /// Build the Axum router with optional admin auth middleware.
 pub fn build_app(state: AppState, admin_config: &AdminConfig) -> axum::Router {
     use axum::routing::{get, post};
@@ -448,9 +479,15 @@ pub fn build_app(state: AppState, admin_config: &AdminConfig) -> axum::Router {
         .route("/metrics", get(metrics_handler));
 
     // Admin routes
-    let admin = axum::Router::new()
+    let mut admin = axum::Router::new()
         .route("/admin/reload", post(reload_handler))
         .route("/admin/config/validate", post(validate_config_handler));
+
+    // Usage endpoint (requires usage-db feature)
+    #[cfg(feature = "usage-db")]
+    {
+        admin = admin.route("/admin/usage", get(usage_handler));
+    }
 
     // Apply auth middleware to admin routes if token is configured
     let admin = if let Some(ref token) = admin_config.auth_token {

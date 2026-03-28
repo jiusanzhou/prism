@@ -279,6 +279,16 @@ fn merge_configs(base: PrismConfig, overlay: PrismConfig) -> PrismConfig {
         } else {
             base.admin
         },
+        usage_db_path: if overlay.usage_db_path != default_usage_db_path() {
+            overlay.usage_db_path
+        } else {
+            base.usage_db_path
+        },
+        usage_retention_days: if overlay.usage_retention_days != default_usage_retention_days() {
+            overlay.usage_retention_days
+        } else {
+            base.usage_retention_days
+        },
     }
 }
 

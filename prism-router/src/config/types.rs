@@ -65,6 +65,14 @@ pub struct PrismConfig {
     /// Admin UI configuration.
     #[serde(default)]
     pub admin: AdminConfig,
+
+    /// Usage database path (default: ./prism-usage.db). Requires `usage-db` feature.
+    #[serde(default = "default_usage_db_path")]
+    pub usage_db_path: String,
+
+    /// Usage record retention in days (default: 90).
+    #[serde(default = "default_usage_retention_days")]
+    pub usage_retention_days: u32,
 }
 
 impl PrismConfig {
@@ -204,6 +212,14 @@ fn default_idle_timeout_secs() -> u64 {
 
 fn default_listen() -> String {
     "0.0.0.0:8080".to_string()
+}
+
+pub(crate) fn default_usage_db_path() -> String {
+    "./prism-usage.db".to_string()
+}
+
+pub(crate) fn default_usage_retention_days() -> u32 {
+    90
 }
 
 fn default_http_port() -> u16 {
@@ -861,6 +877,15 @@ pub struct AccessLogConfig {
     /// Maximum number of rotated log files to keep (default: 5).
     #[serde(default = "default_max_files")]
     pub max_files: u32,
+    /// Log request body in access log (default: false).
+    #[serde(default)]
+    pub log_request_body: bool,
+    /// Log response body in access log (default: false).
+    #[serde(default)]
+    pub log_response_body: bool,
+    /// Maximum bytes of body to log (default: 4096).
+    #[serde(default = "default_body_log_max_bytes")]
+    pub body_log_max_bytes: usize,
 }
 
 fn default_max_file_size_mb() -> u64 {
@@ -869,6 +894,10 @@ fn default_max_file_size_mb() -> u64 {
 
 fn default_max_files() -> u32 {
     5
+}
+
+fn default_body_log_max_bytes() -> usize {
+    4096
 }
 
 impl Default for AccessLogConfig {
@@ -882,6 +911,9 @@ impl Default for AccessLogConfig {
             fields: Vec::new(),
             max_file_size_mb: default_max_file_size_mb(),
             max_files: default_max_files(),
+            log_request_body: false,
+            log_response_body: false,
+            body_log_max_bytes: default_body_log_max_bytes(),
         }
     }
 }
