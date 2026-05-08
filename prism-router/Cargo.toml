@@ -41,7 +41,7 @@ async-trait = { version = "0.1", optional = true }
 bytes = { version = "1", optional = true }
 
 # wasm feature deps
-wasmtime = { version = "42", optional = true }
+wasmtime = { version = "43", optional = true }
 
 # Plugin loader deps
 sha2 = "0.10"

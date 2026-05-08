@@ -16,7 +16,7 @@ dashmap = "5"
 rand = "0.8"
 regex = "1"
 ureq = { version = "2", features = ["json"] }
-wasmtime = { version = "42", optional = true }
+wasmtime = { version = "43", optional = true }
 tracing = "0.1"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 lru = "0.16"
