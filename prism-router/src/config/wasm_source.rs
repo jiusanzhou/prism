@@ -258,10 +258,20 @@ mod tests {
             ProviderConfig {
                 provider_type: Some("openai".into()),
                 api_key: Some("sk-test".into()),
-                base_url: "https://api.openai.com/v1".into(),
+                base_url: Some("https://api.openai.com/v1".into()),
                 timeout_ms: Some(30000),
                 protocols: vec!["http".into()],
+                auth_type: Default::default(),
+                aws_region: None,
+                aws_access_key: None,
+                aws_secret_key: None,
                 headers: std::collections::HashMap::new(),
+                discovery: None,
+                circuit_breaker_threshold: 5,
+                circuit_breaker_recovery_secs: 30,
+                request_timeout_secs: None,
+                idle_timeout_secs: None,
+                endpoints: vec![],
             },
         );
 
@@ -272,7 +282,7 @@ mod tests {
         assert_eq!(loaded.server.http_port, 3000);
         assert_eq!(loaded.providers.len(), 1);
         let p = loaded.providers.get("openai").unwrap();
-        assert_eq!(p.base_url, "https://api.openai.com/v1");
+        assert_eq!(p.base_url.as_deref(), Some("https://api.openai.com/v1"));
         assert_eq!(p.api_key.as_deref(), Some("sk-test"));
     }
 
