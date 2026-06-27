@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Discussions
+    url: https://github.com/jiusanzhou/prism/discussions
+    about: Questions, ideas, and community Q&A. Bugs and features go in Issues.
+  - name: 🔒 Security disclosure
+    url: mailto:security@zoe.im
+    about: Report a security vulnerability privately.

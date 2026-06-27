@@ -43,6 +43,23 @@ When you use multiple LLMs (GPT-4o, Claude, DeepSeek, etc.) simultaneously, you 
 | 🧩 | **5-Dimension WASM** | Config / Discovery / Route / Proxy / Analyze — all extensible via WASM |
 | ⚙️ | **Pluggable Config** | ConfigSource trait with file, env, WASM, and composite sources |
 
+## How Prism Compares
+
+| | **Prism** | LiteLLM | OpenRouter | Portkey |
+|---|---|---|---|---|
+| **Language** | 🦀 Rust | 🐍 Python | hosted only | 🐍 Python + 🟦 TS |
+| **Routing decision latency** | **~90 µs** (100 variants) | ~1–5 ms | network RTT | ~1–3 ms |
+| **Self-hosted** | ✅ Single binary | ✅ Pip / Docker | ❌ | ✅ Docker |
+| **Multi-strategy routing** | ✅ 4 built-in + custom | ⚠️ Basic | ⚠️ Basic | ✅ |
+| **Inference-aware** (vLLM/SGLang KV cache, P/D split) | ✅ Prefix affinity + GPU load | ❌ | ❌ | ❌ |
+| **Plugin system** | ✅ 18 built-in + WASM (5 phases) | ⚠️ Callbacks | ❌ | ⚠️ Hooks |
+| **Reverse proxy mode** | ✅ Pingora-based | ⚠️ Python proxy | n/a | ⚠️ Node proxy |
+| **Config hot-reload** | ✅ 9.8 ns/req lookup (arc-swap) | partial | n/a | ✅ |
+| **Distributed rate limiting** | ✅ Redis Lua sliding window | ✅ Redis | ✅ | ✅ |
+| **License** | MIT | MIT | proprietary | MIT |
+
+> **TL;DR:** If you need a hosted aggregator → OpenRouter. If you're a Python shop and don't mind the latency → LiteLLM. **If you run self-hosted inference (vLLM/SGLang/TGI) at scale, care about µs-level overhead, and want one Rust binary that does HTTP + gRPC + proxy + plugins — Prism is built for you.**
+
 ## Architecture
 
 Prism is a Rust workspace with two crates:
@@ -645,6 +662,37 @@ cargo bench --bench proxy -- "e2e/"
 - [Configuration Example](./configs/prism.example.yaml)
 - [Protobuf Definitions](./proto/prism/router/v1/router.proto)
 
+## Roadmap
+
+What's next, roughly in priority order. PRs welcome on any of these — open an issue first to align on approach.
+
+- 🚧 **Usage tracking persistence** — token usage to PG/SQLite for audit & billing
+- 🚧 **Prometheus `/metrics` polish** — alignment with industry-standard label conventions
+- 🚧 **OpenTelemetry tracing** — `tracing-opentelemetry` → Jaeger / Tempo
+- 🚧 **Helm chart** — first-class K8s deployment
+- 🚧 **WebSocket / streaming protocols** — beyond SSE
+- 🚧 **GPU filter plugin** — multi-tenant GPU isolation for self-hosted clusters
+- 💡 **Community ideas** → see [Discussions](https://github.com/jiusanzhou/prism/discussions/categories/ideas)
+
+See the full roadmap in [`MEMORY.md`](./MEMORY.md) (work log) and tagged issues for in-flight work.
+
+## Community
+
+- 💬 **Questions / ideas** → [GitHub Discussions](https://github.com/jiusanzhou/prism/discussions)
+- 🐛 **Bug / feature** → [Issues](https://github.com/jiusanzhou/prism/issues)
+- 🤝 **First-time contributor** → look for [`good first issue`](https://github.com/jiusanzhou/prism/labels/good%20first%20issue), then read [CONTRIBUTING.md](./CONTRIBUTING.md)
+- 🔒 **Security disclosure** → `security@zoe.im` (please, not public issues)
+
+If Prism saved you time, **starring the repo** is the cheapest way to help others discover it — and it lets us know what to build next.
+
+## Don't Want to Self-Host?
+
+A managed Prism with team accounts, hosted config, dashboards, and SLAs is on the way. **[Drop your email here](https://github.com/jiusanzhou/prism/discussions/categories/announcements)** (or watch this repo) to get notified when it lands.
+
+> Self-hosted is — and will always be — fully open source under MIT. The hosted version is for teams that don't want to operate the control plane themselves.
+
 ## License
 
-MIT
+[MIT](./LICENSE) © Zoe and Prism contributors.
+
+You can use Prism in commercial products, fork it, modify it, and ship it — no permission needed. If you build something cool with it, we'd love to hear about it in [Discussions](https://github.com/jiusanzhou/prism/discussions).
