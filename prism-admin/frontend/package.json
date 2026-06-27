@@ -25,7 +25,7 @@
     "lucide-react": "^0.576.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-router-dom": "^7.13.1",
+    "react-router-dom": "^7.18.0",
     "tailwind-merge": "^3.5.0",
     "tailwindcss": "^4.2.1"
   },
@@ -41,6 +41,13 @@
     "globals": "^16.5.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.48.0",
-    "vite": "^7.3.1"
+    "vite": "^7.3.6"
+  },
+  "pnpm": {
+    "overrides": {
+      "glob@>=10.2.0 <10.5.0": "^10.5.0",
+      "esbuild@>=0.27.3 <0.28.1": "^0.28.1",
+      "yaml@>=2.0.0 <2.8.3": "^2.8.3"
+    }
   }
 }
