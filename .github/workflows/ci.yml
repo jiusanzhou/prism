@@ -26,6 +26,24 @@ jobs:
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
+      # prism-admin embeds prism-admin/frontend/dist via rust-embed at
+      # compile time. If the directory is missing (fresh CI checkout),
+      # rust-embed emits an empty impl and `Assets::get` fails to compile.
+      # Build the frontend so the embed target exists.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: prism-admin/frontend/pnpm-lock.yaml
+      - name: Build admin frontend
+        working-directory: prism-admin/frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
       - name: Format check
         run: cargo fmt --all -- --check
 
@@ -46,6 +64,21 @@ jobs:
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      # Build admin frontend first (see comment in `check` job above).
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: prism-admin/frontend/pnpm-lock.yaml
+      - name: Build admin frontend
+        working-directory: prism-admin/frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
 
       - name: Unit tests (default)
         run: cargo test -p prism-core -p prism-router -p prism-admin
